@@ -1,0 +1,37 @@
+# Bazel configuration. This repository is Bazel-only; see MODULE.bazel.
+
+# Local caches (the CI restores and saves both — see .github/workflows/ci.yaml).
+build --disk_cache=~/.cache/bazel-disk
+build --repository_cache=~/.cache/bazel-repo
+
+# Reproducible builds.
+build --incompatible_strict_action_env
+build --show_timestamps
+build --color=yes
+
+# Rust: one edition and one target triple for the whole workspace.
+build --@rules_rust//rust/settings:pipelined_compilation=True
+
+# clippy runs under `bazel build` through the rules_rust aspect, with the
+# lints the Directive makes build errors: a std::sync::MutexGuard held
+# across an .await and the disallowed types (tokio::sync::Mutex, RefCell in
+# a nanoservice crate — clippy.toml).
+build --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
+build --output_groups=+clippy_checks
+build --@rules_rust//rust/settings:clippy_flags=-Dwarnings,-Dclippy::await_holding_lock,-Dclippy::disallowed_types
+
+# rustfmt is checked the same way; `bazel run @rules_rust//:rustfmt` fixes.
+build --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect
+build --output_groups=+rustfmt_checks
+build --@rules_rust//rust/settings:rustfmt.toml=//:rustfmt.toml
+
+# Tests.
+test --test_output=errors
+test --test_summary=detailed
+
+# --config=ci: what the workflow runs. Optimised, no debug info, one graph
+# for tests and any image so nothing is compiled twice.
+build:ci --compilation_mode=opt
+build:ci --@rules_rust//rust/settings:extra_rustc_flags=-Cdebuginfo=0
+build:ci --jobs=4
+build:ci --local_resources=cpu=HOST_CPUS

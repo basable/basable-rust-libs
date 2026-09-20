@@ -1,0 +1,35 @@
+# Workspace metadata for crate_universe (dependency resolution) and for
+# `cargo publish` (the release job). Bazel is the build; see MODULE.bazel.
+#
+# One workspace version: the basable-* crates are released in lockstep and a
+# tenant pins them with `=x.y.z` (the scaffolder's FrameworkVersion).
+[workspace]
+resolver = "3"
+members = [
+    "crates/basable-core",
+    "crates/basable-publicid",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# connect-rust's MSRV; the rules_rust toolchain (MODULE.bazel) is newer.
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/basable/basable-rust-libs"
+homepage = "https://basable.com"
+authors = ["basable"]
+
+# The curated dependency baseline. A crate takes one with `workspace = true`;
+# a tenant project inherits the same table, so the agent rarely needs a new
+# crate. Never openssl, never a crate that needs a system library.
+[workspace.dependencies]
+basable-core = { version = "=0.1.0", path = "crates/basable-core" }
+basable-publicid = { version = "=0.1.0", path = "crates/basable-publicid" }
+
+uuid = { version = "1", default-features = false, features = ["std"] }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+tracing = "0.1"

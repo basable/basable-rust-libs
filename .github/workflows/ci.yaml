@@ -1,0 +1,85 @@
+# Bazel is the only build: `bazel test //...` under --config=ci, with the
+# clippy and rustfmt aspects .bazelrc turns on for every build.
+#
+# Two caches, keyed by how often they change: the repository cache and
+# bazelisk by the lockfiles (they change only with a dependency), the disk
+# cache per SHA with a prefix restore (it changes every commit). Restore and
+# save are separate steps so the disk cache is pruned to what THIS build
+# touched before it is saved — the naive single per-SHA cache is what ran the
+# basable monorepo's own CI out of disk and filled its cache quota.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore repository cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/bazel-repo
+            ~/.cache/bazelisk
+          key: repo-cache-${{ hashFiles('MODULE.bazel.lock', 'Cargo.Bazel.lock') }}
+          restore-keys: repo-cache-
+
+      - name: Restore disk cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: disk-cache-${{ github.sha }}
+          restore-keys: disk-cache-
+
+      # Everything the build touches refreshes its mtime past this marker;
+      # the prune step deletes what it did not.
+      - name: Mark the cache
+        run: mkdir -p ~/.cache/bazel-disk && touch ~/.cache/bazel-disk/.marker && sleep 1
+
+      - name: Lockfiles are current
+        # Without CARGO_BAZEL_REPIN in the environment, a Cargo.Bazel.lock
+        # that no longer matches Cargo.toml fails analysis with the repin
+        # instruction instead of silently re-resolving in CI.
+        run: bazelisk build --config=ci --nobuild //...
+
+      - name: Test
+        run: bazelisk test --config=ci //...
+
+      - name: Prune the disk cache to this build
+        run: find ~/.cache/bazel-disk -type f ! -newer ~/.cache/bazel-disk/.marker -delete
+
+      - name: Save disk cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: disk-cache-${{ github.sha }}
+
+      - name: Save repository cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cache/bazel-repo
+            ~/.cache/bazelisk
+          key: repo-cache-${{ hashFiles('MODULE.bazel.lock', 'Cargo.Bazel.lock') }}
+
+      # A per-SHA key is required (a cache entry is immutable), so the
+      # superseded entries go, or a ~GB entry per commit piles up to the quota.
+      - name: Delete superseded disk caches
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list --key disk-cache- --limit 100 --json key --jq '.[].key' \
+            | grep -v "disk-cache-${{ github.sha }}" \
+            | xargs -r -n1 gh cache delete || true

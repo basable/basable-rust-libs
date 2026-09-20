@@ -1,0 +1,21 @@
+[package]
+name = "basable-publicid"
+description = "Public, base62, type-prefixed ids from UUIDs (proj_3kFz…), with an explicit boot-time registry of resource types. A port of the basable monorepo's golang/lib/publicid."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+basable-core = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true, features = ["v4"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
