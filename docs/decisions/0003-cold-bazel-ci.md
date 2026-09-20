@@ -23,6 +23,7 @@ project, so the mitigations are not optional for launch. In order:
 | Date | Where | What | Cold | Warm |
 |---|---|---|---|---|
 | 2026-09-20 | Apple M-series laptop, Bazel 9.2.0, rules_rust 0.74.0, Rust 1.98.1 | Phase 0: two leaf crates (396 actions), including the rules_rust and toolchain downloads and the crate_universe repin; clippy and rustfmt aspects on | 114 s | 1 s (nothing rebuilt, 3 tests cached) |
+| 2026-09-20 | GitHub-hosted `ubuntu-latest` (2 vCPU), empty caches, CI run 35519185578 | Phase 0, same tree: analysis + downloads 70 s (`--nobuild`), then `bazel test //...` 61 s; whole job 2 min 26 s | 131 s | — (first run; the disk cache saved was 2 s to upload) |
 
 Each phase appends a row from the CI run that landed it; Phase 10
 (`examples/orderly`) is the baseline the "repo to live in ten minutes"
