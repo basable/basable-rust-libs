@@ -7,8 +7,8 @@
 //!   render as a SQL literal.
 //! - [`Deadline`]: a horizon held against BOTH the monotonic and the wall
 //!   clock, the local ownership proof of a claim.
-//! - [`Cause`]: the boxed error a framework call carries when the caller
-//!   needs the source chain and nothing more.
+//! - [`BoxError`]: any error boxed with its source chain, for the call whose
+//!   caller only displays or walks it.
 //! - [`AppError`] and [`Code`]: the application error with the sixteen
 //!   Connect codes, the boundary's error vocabulary.
 //! - [`Ctx`]: the request context handed to every handler and reconciler.
@@ -22,14 +22,12 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-mod cause;
 mod ctx;
 mod deadline;
 mod error;
 pub mod labels;
 pub mod names;
 
-pub use cause::Cause;
 pub use ctx::Ctx;
 pub use deadline::Deadline;
-pub use error::{AppError, Code, PAYMENT_REQUIRED_MESSAGE};
+pub use error::{AppError, BoxError, Code, PAYMENT_REQUIRED_MESSAGE};

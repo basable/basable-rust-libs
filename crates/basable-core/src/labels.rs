@@ -69,8 +69,9 @@ impl fmt::Display for InvalidLabel {
 
 impl std::error::Error for InvalidLabel {}
 
-/// Checks a label set: at most 8 pairs; keys and values are 1–63 characters
-/// of `[a-z0-9_.-]`, keys may also carry `/` and must start with a letter.
+/// Checks a label set: at most [`MAX_LABELS`] pairs; keys and values are
+/// 1–[`MAX_LABEL_LEN`] characters of `[a-z0-9_.-]`, keys may also carry `/`
+/// and must start with a letter.
 pub fn validate_labels(labels: &Labels) -> Result<(), InvalidLabel> {
     if labels.is_empty() {
         return Ok(());

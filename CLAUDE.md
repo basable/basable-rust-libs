@@ -31,6 +31,10 @@ and every such deviation is listed in `docs/porting-notes.md`.
 - **Dependency direction is strictly downward**: core → publicid → db →
   {processingobject, config} → app; externaleffect depends on core only;
   a testkit depends on what it tests, never the reverse.
+- **Errors are typed enums, or `BoxError`; both hand-written.** An error a
+  consumer decides on is an enum with its `Display` and `Error` impls spelled
+  out; one nobody inspects is `basable_core::BoxError`. No `anyhow`, no
+  `thiserror` (porting note 2).
 - **Every crate has a `CLAUDE.md`** once it exists, ported from the Go
   original's, and links the Directive.
 
@@ -38,7 +42,7 @@ and every such deviation is listed in `docs/porting-notes.md`.
 
 | Path | What |
 |---|---|
-| `crates/basable-core` | Leaf: naming rules, labels, the two-clock `Deadline`, `Cause`, `AppError` with the Connect codes, `Ctx` |
+| `crates/basable-core` | Leaf: naming rules, labels, the two-clock `Deadline`, `BoxError`, `AppError` with the Connect codes, `Ctx` |
 | `crates/basable-publicid` | `encode`/`decode`, the boot-time `Registry` (a port of `golang/lib/publicid`) |
 | `docs/decisions/` | The spikes, one file each, with what was measured |
 | `docs/porting-notes.md` | Every deviation from the Go originals |

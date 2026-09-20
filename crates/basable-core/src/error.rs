@@ -13,9 +13,18 @@
 //! [`AppError::unimplemented`], `conflict` → [`AppError::failed_precondition`],
 //! which is also what Go's server mapped `CodeConflict` to).
 
+use std::error::Error;
 use std::fmt;
 
-use crate::Cause;
+/// Any error, boxed with its source chain: the standard library's own
+/// spelling of "an error the caller will only display or walk". A framework
+/// call returns it when no consumer decides on the error's kind (a
+/// reconciler's retry cause, a provider's transport failure), and
+/// [`AppError`] holds one as its source. Where a consumer DOES decide, the
+/// error is a typed enum instead ([`crate::names::InvalidName`],
+/// [`crate::labels::InvalidLabel`]). `?` converts any `std::error::Error`,
+/// a `String` or a `&str` into it.
+pub type BoxError = Box<dyn Error + Send + Sync + 'static>;
 
 /// The Connect error codes (identical to gRPC's), with the HTTP status the
 /// Connect protocol assigns each in the unary error response.
@@ -144,30 +153,31 @@ impl fmt::Display for Code {
 pub const PAYMENT_REQUIRED_MESSAGE: &str = "payment method required";
 
 /// The canonical application error: a code, a message, and optionally the
-/// cause it wraps.
+/// error that caused it, reachable through [`Error::source`].
 #[derive(Debug)]
 pub struct AppError {
     code: Code,
     message: String,
-    cause: Option<Cause>,
+    source: Option<BoxError>,
 }
 
 impl AppError {
-    /// An error with a code and a message and no cause.
+    /// An error with a code and a message and no source.
     pub fn new(code: Code, message: impl Into<String>) -> AppError {
         AppError {
             code,
             message: message.into(),
-            cause: None,
+            source: None,
         }
     }
 
-    /// An error wrapping a cause, the `Wrap*` constructors of the Go original.
-    pub fn wrap(code: Code, cause: impl Into<Cause>, message: impl Into<String>) -> AppError {
+    /// An error with a code and a message wrapping the error that caused it,
+    /// the `Wrap*` constructors of the Go original.
+    pub fn wrap(code: Code, message: impl Into<String>, source: impl Into<BoxError>) -> AppError {
         AppError {
             code,
             message: message.into(),
-            cause: Some(cause.into()),
+            source: Some(source.into()),
         }
     }
 
@@ -176,31 +186,29 @@ impl AppError {
         self.code
     }
 
-    /// The message without the cause.
+    /// The message without the source.
     pub fn message(&self) -> &str {
         &self.message
     }
 
-    /// The wrapped cause, when there is one.
-    pub fn cause(&self) -> Option<&Cause> {
-        self.cause.as_ref()
-    }
-
-    /// Attaches a cause to an error built without one.
-    pub fn with_cause(mut self, cause: impl Into<Cause>) -> AppError {
-        self.cause = Some(cause.into());
+    /// Attaches the error that caused this one.
+    pub fn with_source(mut self, source: impl Into<BoxError>) -> AppError {
+        self.source = Some(source.into());
         self
     }
 
-    /// The code of any error chain: the first `AppError` in it, or
-    /// [`Code::Internal`] when there is none — `apperror.GetCode`.
-    pub fn code_of(cause: &Cause) -> Code {
-        cause.find::<AppError>().map_or(Code::Internal, |e| e.code)
+    /// The code of any error: the first `AppError` in its source chain (the
+    /// error itself included), or [`Code::Internal`] when there is none —
+    /// `apperror.GetCode`. The chain is walked through [`Error::source`], so
+    /// an `AppError` wrapped by another crate's error keeps its code.
+    pub fn code_of(err: &(dyn Error + 'static)) -> Code {
+        AppError::find(err).map_or(Code::Internal, |e| e.code)
     }
 
-    /// The first `AppError` in a chain — `apperror.GetError`.
-    pub fn find_in(cause: &Cause) -> Option<&AppError> {
-        cause.find::<AppError>()
+    /// The first `AppError` in an error's source chain, the error itself
+    /// included — `apperror.GetError`.
+    pub fn find<'a>(err: &'a (dyn Error + 'static)) -> Option<&'a AppError> {
+        std::iter::successors(Some(err), |&e| e.source()).find_map(|e| e.downcast_ref::<AppError>())
     }
 
     /// Whether this is the payment-required failure the frontend recognises.
@@ -272,20 +280,22 @@ impl AppError {
     }
 }
 
+/// `Display` includes the source, against the usual advice, because the
+/// platform logs errors as `%err` and carries no error reporter that would
+/// print the chain; the message alone would drop the cause from every log
+/// line. [`AppError::message`] is the message by itself.
 impl fmt::Display for AppError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.cause {
-            Some(cause) => write!(f, "{}: {}", self.message, cause),
+        match &self.source {
+            Some(source) => write!(f, "{}: {}", self.message, source),
             None => f.write_str(&self.message),
         }
     }
 }
 
-impl std::error::Error for AppError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.cause
-            .as_ref()
-            .map(|c| &**c as &(dyn std::error::Error + 'static))
+impl Error for AppError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.source.as_ref().map(|e| &**e as &(dyn Error + 'static))
     }
 }
 
@@ -310,24 +320,40 @@ mod tests {
     fn display_and_source_follow_the_go_shape() {
         let plain = AppError::not_found("tenant t1 not found");
         assert_eq!(plain.to_string(), "tenant t1 not found");
-        assert!(std::error::Error::source(&plain).is_none());
+        assert!(plain.source().is_none());
 
-        let wrapped = AppError::wrap(
-            Code::Internal,
-            Cause::msg("connection reset"),
-            "loading tenant",
-        );
+        let wrapped = AppError::wrap(Code::Internal, "loading tenant", "connection reset");
         assert_eq!(wrapped.to_string(), "loading tenant: connection reset");
-        assert!(std::error::Error::source(&wrapped).is_some());
+        assert_eq!(wrapped.source().unwrap().to_string(), "connection reset");
     }
 
     #[test]
-    fn code_of_walks_the_chain_and_defaults_to_internal() {
-        let inner = AppError::invalid_argument("bad name");
-        let chain = Cause::context("creating", Cause::new(inner));
+    fn code_of_walks_the_source_chain_and_defaults_to_internal() {
+        // Another crate's error wrapping an AppError: found through source().
+        #[derive(Debug)]
+        struct Creating(AppError);
+        impl fmt::Display for Creating {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("creating")
+            }
+        }
+        impl Error for Creating {
+            fn source(&self) -> Option<&(dyn Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let chain = Creating(AppError::invalid_argument("bad name"));
         assert_eq!(AppError::code_of(&chain), Code::InvalidArgument);
-        assert_eq!(AppError::find_in(&chain).unwrap().message(), "bad name");
-        assert_eq!(AppError::code_of(&Cause::msg("plain")), Code::Internal);
+        assert_eq!(AppError::find(&chain).unwrap().message(), "bad name");
+
+        let direct = AppError::not_found("gone");
+        assert_eq!(AppError::code_of(&direct), Code::NotFound);
+
+        let plain: BoxError = "plain".into();
+        assert_eq!(AppError::code_of(&*plain), Code::Internal);
+        let parse: BoxError = "x".parse::<i32>().unwrap_err().into();
+        assert_eq!(AppError::code_of(&*parse), Code::Internal);
     }
 
     #[test]

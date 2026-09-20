@@ -17,10 +17,18 @@ here.
    `PAYMENT_REQUIRED_MESSAGE` discriminator the frontend matches on, kept
    because the reason for the magic string (no structured detail in the
    status) still holds.
-2. **`Cause` is a box, not `std::error::Error`.** Like `anyhow::Error`: the
-   reflexive `From<Cause> for Cause` would otherwise collide with the blanket
-   conversion that makes `?` work. It derefs to the boxed error, and
-   `chain()` / `find::<T>()` are `errors.Is` / `errors.As`.
+2. **Errors are typed enums, or a plain `Box<dyn Error + Send + Sync>`.**
+   Go passes one `error` value everywhere and recovers its meaning with
+   `errors.As`. The port lets the seam decide: where a consumer acts on the
+   kind of failure the error is an enum (`InvalidName`, `InvalidLabel`,
+   `DecodeError`, `RegistryError`; the effect framework's `SendError` and
+   `DispatchError`), and where nobody inspects it (a reconciler's retry
+   cause, an `AppError`'s source) it is `BoxError`, the standard library's
+   own boxed error, which `?` converts any error, `String` or `&str` into.
+   No `anyhow` and no `thiserror`: the `Display` and `Error` impls are
+   written out. `AppError::code_of` still walks the `source()` chain for the
+   first `AppError`, because a boundary error wrapped by another crate's
+   error must keep its code.
 3. **`Deadline` is a value with both clock readings.** Go's `requireProof`
    checks `time.Now()` against a `time.Time` twice (with and without the
    monotonic reading). The port stores both readings and `is_live` applies
