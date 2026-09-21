@@ -27,6 +27,10 @@ build --@rules_rust//rust/settings:rustfmt.toml=//:rustfmt.toml
 
 # Tests.
 test --test_output=errors
+# The database-backed suites read the Postgres to use from the environment
+# (basable-testkit); unset, they return early. The tests carry env_inherit
+# for it too, this line lets `bazel test` pick it up for every target.
+test --test_env=TEST_DATABASE_URL
 test --test_summary=detailed
 
 # --config=ci: what the workflow runs. Optimised, no debug info, one graph

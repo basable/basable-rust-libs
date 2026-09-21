@@ -50,3 +50,41 @@ here.
 6. **The encoding is byte-identical.** `tests/go_fixture.rs` pins twenty ids
    the Go implementation produced, including the leading-zero-byte cases the
    format is lenient about on decode (`proj_abc` = `proj_0abc`).
+
+## basable-db and basable-testkit
+
+7. **One `app` login, `SET ROLE` per pool, not a login per nanoservice.**
+   Plan B3 preferred per-role logins; the tenant template settled on the
+   one login CNPG mints (`app`, `CREATEROLE`), a member of every
+   `nano_<name>` role `WITH SET TRUE, INHERIT FALSE`. `NanoPool<N>` runs
+   `SET ROLE` and `SET search_path` in `after_connect` and proves the switch
+   on a direct connection first, so a missing role fails at boot with the
+   database's error rather than as a pool timeout. `RESET ROLE` remains the
+   one convention-enforced escape.
+8. **The migrator owns the nanoservice schema; the role owns what is in it.**
+   `CREATE SCHEMA nano_x AUTHORIZATION nano_x` cannot work: the migrator must
+   create a type's envelope partition inside the schema (only the parent's
+   owner may) and cannot `GRANT` on a schema it does not own without
+   inheriting the role. So the migration creates the schema as `app`, grants
+   `USAGE, CREATE` to the role, and the role creates and owns its tables;
+   unswitched, `app` is refused on them like anyone else (pinned by
+   `tests/ownership.rs`).
+9. **Typed tables reference the partition, not the envelope parent.** Go's
+   composite FK points at the parent, which needs `REFERENCES` on it. The
+   port points it at `processing_object_<type>`: the same rows, and the role
+   holds nothing on the parent at all, which is what makes every statement
+   shape work on the partition alone (F.7, pinned).
+10. **Role-switching migrations end with `RESET ROLE`.** dbmate records the
+    version in the migration's own transaction, after the file's statements,
+    so a file that leaves `SET LOCAL ROLE nano_x` in force makes dbmate write
+    the ledger as a role that may not; the runner here does the same on
+    purpose, so the tests fail where the Job would.
+11. **The testkit uses `TEST_DATABASE_URL`, not testcontainers.** The tenant
+    template's CI provides a Postgres service and its tests skip without the
+    variable; the libs follow the same contract so one harness serves both.
+    The harness creates the `app` login (CNPG's job in production) and a
+    database per test, and applies the migrations as `app`.
+12. **`CommitFaultProxy` is a TCP proxy, not a dial hook.** pgx let the Go
+    testkit wrap the connection's dial function; sqlx has no such seam, so
+    the proxy sits on a loopback port in front of Postgres. The two modes
+    and the ReadyForQuery-bounded ack drop are the Go ones byte for byte.

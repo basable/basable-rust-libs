@@ -1,0 +1,46 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "basable_testkit",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "basable_testkit",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//crates/basable-core:basable_core",
+        "//crates/basable-db:basable_db",
+    ] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "basable_testkit_test",
+    crate = ":basable_testkit",
+    deps = all_crate_deps(normal_dev = True),
+)
+
+# The database-backed suites: one target per file under tests/, against the
+# Postgres TEST_DATABASE_URL names (skipped, loudly, without it). They pin
+# the ownership model (plan B3) and the commit-fault proxy for basable-db as
+# well as for this crate, since basable-db cannot depend on its own testkit.
+[
+    rust_test(
+        name = "basable_testkit_" + src[len("tests/"):-len(".rs")],
+        srcs = [
+            src,
+            "tests/common/mod.rs",
+        ],
+        crate_root = src,
+        data = glob(["tests/fixtures/**"]),
+        env_inherit = ["TEST_DATABASE_URL"],
+        tags = ["requires-network"],
+        deps = [
+            ":basable_testkit",
+            "//crates/basable-core:basable_core",
+            "//crates/basable-db:basable_db",
+        ] + all_crate_deps(
+            normal = True,
+            normal_dev = True,
+        ),
+    )
+    for src in glob(["tests/*.rs"])
+]

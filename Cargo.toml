@@ -8,6 +8,8 @@ resolver = "3"
 members = [
     "crates/basable-core",
     "crates/basable-publicid",
+    "crates/basable-db",
+    "crates/basable-testkit",
 ]
 
 [workspace.package]
@@ -26,9 +28,15 @@ authors = ["basable"]
 [workspace.dependencies]
 basable-core = { version = "=0.1.0", path = "crates/basable-core" }
 basable-publicid = { version = "=0.1.0", path = "crates/basable-publicid" }
+basable-db = { version = "=0.1.0", path = "crates/basable-db" }
+basable-testkit = { version = "=0.1.0", path = "crates/basable-testkit" }
 
 uuid = { version = "1", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+# Runtime API only, never the query! macros (they need a database at compile
+# time, which the Bazel sandbox does not have). rustls, never openssl.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid"] }
+futures-core = "0.3"
 tracing = "0.1"

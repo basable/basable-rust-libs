@@ -1,6 +1,6 @@
 # F.4 — migrations under rules_rust
 
-**Status: open; approach decided, verified in Phase 1 (`basable-db`).**
+**Status: resolved in Phase 1 (`basable-db`, 2026-09-22), with one revision: the framework DDL is not embedded in the crates but vendored verbatim into the tenant's `db/app/migrations/` by the scaffolder (`framework.sql.tmpl`), so there is ONE ledger and one path; the crate ships the runner and the boot-time `verify`. Under Bazel the SQL files reach the tests as `data`, resolved through `TEST_SRCDIR` (`basable_testkit::runfile`).**
 
 Two migration paths exist by design and must not be confused:
 

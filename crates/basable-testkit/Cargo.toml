@@ -1,0 +1,22 @@
+[package]
+name = "basable-testkit"
+description = "Test harness for basable nanoservices: a database per test from TEST_DATABASE_URL with the tenant's migrations applied as the app login, a NanoPool per nanoservice, and the CommitFaultProxy that drops one COMMIT acknowledgement."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+basable-core = { workspace = true }
+basable-db = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util"] }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

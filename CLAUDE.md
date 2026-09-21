@@ -35,6 +35,11 @@ and every such deviation is listed in `docs/porting-notes.md`.
   consumer decides on is an enum with its `Display` and `Error` impls spelled
   out; one nobody inspects is `basable_core::BoxError`. No `anyhow`, no
   `thiserror` (porting note 2).
+- **Database-backed tests read `TEST_DATABASE_URL`** (a login that can
+  create roles and databases; the CI's Postgres service, locally the
+  monorepo's `test_postgres` container on port 29000) and return early
+  without it. `bazel test //...` alone is therefore not the whole gate: run
+  it with the variable set before a change to `basable-db` or the testkit.
 - **Every crate has a `CLAUDE.md`** once it exists, ported from the Go
   original's, and links the Directive.
 
@@ -44,6 +49,8 @@ and every such deviation is listed in `docs/porting-notes.md`.
 |---|---|
 | `crates/basable-core` | Leaf: naming rules, labels, the two-clock `Deadline`, `BoxError`, `AppError` with the Connect codes, `Ctx` |
 | `crates/basable-publicid` | `encode`/`decode`, the boot-time `Registry` (a port of `golang/lib/publicid`) |
+| `crates/basable-db` | `Nanoservice`/`Stateful` markers, `NanoPool<N>` (the `app` login switched to `nano_<name>`, `search_path` pinned), `MigratorPool`, the dbmate-format runner and ledger `verify`, SQLSTATE helpers, `begin_snapshot`, `release_listen_conn` |
+| `crates/basable-testkit` | `TestDb` (a database per test from `TEST_DATABASE_URL`, migrations applied as `app`), `nano_pool::<N>()`, `CommitFaultProxy` (drops one COMMIT ack, applied or rolled back) |
 | `docs/decisions/` | The spikes, one file each, with what was measured |
 | `docs/porting-notes.md` | Every deviation from the Go originals |
 | `.github/workflows/ci.yaml` | `bazel test //...` with the two-cache hygiene |
