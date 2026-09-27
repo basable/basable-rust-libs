@@ -1,0 +1,18 @@
+{
+  "apiVersion": "basable.com/v1",
+  "kind": "PricingRule",
+  "items": [
+    {
+      "metadata": { "namespace": "default", "name": "standard", "labels": { "tier": "standard" } },
+      "spec": { "rateCents": 165, "currency": "EUR" }
+    },
+    {
+      "metadata": { "namespace": "default", "name": "premium" },
+      "spec": { "rateCents": 330, "currency": "EUR", "supersedes": "#{pricing_rule:default:standard}" }
+    },
+    {
+      "metadata": { "namespace": "eu", "name": "standard" },
+      "spec": { "rateCents": 170, "currency": "EUR", "home": "#{namespace:eu}" }
+    }
+  ]
+}

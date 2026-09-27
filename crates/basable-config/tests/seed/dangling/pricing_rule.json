@@ -1,0 +1,10 @@
+{
+  "apiVersion": "basable.com/v1",
+  "kind": "PricingRule",
+  "items": [
+    {
+      "metadata": { "namespace": "default", "name": "orphan" },
+      "spec": { "rateCents": 1, "currency": "EUR", "supersedes": "#{pricing_rule:default:ghost}" }
+    }
+  ]
+}

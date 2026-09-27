@@ -1,0 +1,28 @@
+[package]
+name = "basable-config"
+description = "The declarative configuration framework for basable nanoservices: config types registered at boot, seed JSON under config/base/ loaded in one transaction with cross-references resolved in dependency order, and a repository for runtime reads and the rare programmatic write."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+basable-core = { workspace = true }
+basable-db = { workspace = true }
+basable-publicid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+basable-testkit = { workspace = true }
+tokio = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

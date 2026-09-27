@@ -30,8 +30,9 @@ and every such deviation is listed in `docs/porting-notes.md`.
   formatting.
 - **Dependency direction is strictly downward**: core → publicid → db →
   {processingobject, config} → app; externaleffect depends on core only
-  (and processingobject on it, for the `Owner` impl on `Claim`); a
-  testkit depends on what it tests, never the reverse.
+  (and processingobject on it, for the `Owner` impl on `Claim`); config
+  depends on core, publicid and db; a testkit depends on what it tests,
+  never the reverse.
 - **Errors are typed enums, or `BoxError`; both hand-written.** An error a
   consumer decides on is an enum with its `Display` and `Error` impls spelled
   out; one nobody inspects is `basable_core::BoxError`. No `anyhow`, no
@@ -56,6 +57,7 @@ and every such deviation is listed in `docs/porting-notes.md`.
 | `crates/basable-processingobject-testkit` | The conformance nanoservice (key 32000, prefix `ek`: role, schema, migrations, adapter), `WidgetSim` (an HTTP provider simulator: idempotent widgets and keyed orders) with `WidgetClient` (the provider boundary's error mapping), the `Harness` (create, `claim_batch`, `drive_once`, `force_expire_claim`, envelope readers, `start_worker`), `ExampleReconciler` with `hook` / `Gate` injection points, `Replica`; `tests/` are the ported conformance suites: store, fencing, writestatus, deletion, schema, commitfault, worker, carveouts |
 | `crates/basable-externaleffect` | The effect admission contract as types: the closed `Strategy` enum (`Idempotent`, `LookBeforeAct`, `KeyedReplay`, `Declared { Resolve \| Hold }`), `Adapter` validated into `Call` (`dispatch`, `declare`, `resolve`, `lookup`, `resolve_keyed`), `DispatchError`/`ResolveError`, classifiers with the `TransportError`/`definitive` markers, `Owner`/`Unfenced`, `EffectSlot`/`AttemptState`/`Resolution`. No runtime, no SQL; core only. Has its own `CLAUDE.md` |
 | `crates/basable-effecttest` | The per-adapter audit: `Harness` + `run`/`try_run`/`audit!` over the universal, per-strategy and late-call probes, `AckLossProxy` (an HTTP proxy that lands a request and drops its answer); `tests/reference.rs` audits three adapters over `WidgetSim` |
+| `crates/basable-config` | The declarative configuration framework over the tenant's `basable_config` schema: `TypeInfo` + `ConfigTypesBuilder` (`register::<Msg>`, `register_binder`, refused on a duplicate id/name/prefix), seed files `{apiVersion, kind, items[{metadata, spec, operation}]}` scoped by `<name>.<env>.json`, `#{type:namespace:name}` references, `Loader::load` (validate deps → topo sort → ONE transaction under a table lock, history on change, never prune), `load_seed`, `Repository` (`get`/`list`/`lookup_id`/`namespace_id`, `upsert`/`delete` stamped `managed-by=runtime`); `tests/` over the fixture's `pricing_rule` type and the seed directories under `tests/seed/` |
 | `docs/decisions/` | The spikes, one file each, with what was measured |
 | `docs/porting-notes.md` | Every deviation from the Go originals |
 | `.github/workflows/ci.yaml` | `bazel test //...` with the two-cache hygiene |

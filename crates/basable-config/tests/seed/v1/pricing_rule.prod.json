@@ -1,0 +1,10 @@
+{
+  "apiVersion": "basable.com/v1",
+  "kind": "PricingRule",
+  "items": [
+    {
+      "metadata": { "namespace": "default", "name": "prod-only" },
+      "spec": { "rateCents": 999, "currency": "EUR" }
+    }
+  ]
+}

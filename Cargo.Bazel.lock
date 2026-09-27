@@ -1,5 +1,5 @@
 {
-  "checksum": "b80a71a70de7e57564b3fd5992d5a221cbfe31ad516046555f802eb9c3fb5a0f",
+  "checksum": "c5fad280415eaa8e463454db9a2a190d1d34c37f1b54e5c50142166da5cc09cb",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -696,6 +696,56 @@
         }
       ],
       "version": "0.5.6"
+    },
+    "basable-config 0.1.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "serde_json 1.0.151",
+            "target": "serde_json"
+          },
+          {
+            "id": "sqlx 0.8.6",
+            "target": "sqlx"
+          },
+          {
+            "id": "tracing 0.1.44",
+            "target": "tracing"
+          },
+          {
+            "id": "uuid 1.26.1",
+            "target": "uuid"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tokio 1.53.1",
+            "target": "tokio"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "basable_config",
+      "license": "MIT",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "basable-config",
+      "package_url": "https://github.com/basable/basable-rust-libs",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "basable_config",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.1.0"
     },
     "basable-core 0.1.0": {
       "common_attrs": {
@@ -14320,6 +14370,7 @@
   ],
   "direct_dev_deps": [],
   "workspace_members": {
+    "basable-config 0.1.0": "crates/basable-config",
     "basable-core 0.1.0": "crates/basable-core",
     "basable-db 0.1.0": "crates/basable-db",
     "basable-effecttest 0.1.0": "crates/basable-effecttest",

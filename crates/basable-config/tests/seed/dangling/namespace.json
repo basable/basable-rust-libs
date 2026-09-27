@@ -1,0 +1,7 @@
+{
+  "apiVersion": "basable.com/v1",
+  "kind": "Namespace",
+  "items": [
+    { "metadata": { "name": "default" } }
+  ]
+}

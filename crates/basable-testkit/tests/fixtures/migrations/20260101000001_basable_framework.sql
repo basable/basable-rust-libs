@@ -123,7 +123,8 @@ GRANT USAGE ON SCHEMA basable TO app;
 GRANT SELECT ON basable.processing_object_type TO app;
 GRANT USAGE ON SCHEMA basable_config TO app;
 GRANT SELECT ON ALL TABLES IN SCHEMA basable_config TO app;
-GRANT INSERT, UPDATE ON basable_config.configuration_object, basable_config.configuration_object_history TO app;
+GRANT INSERT, UPDATE, DELETE ON basable_config.configuration_object TO app;
+GRANT INSERT ON basable_config.configuration_object_history TO app;
 
 -- migrate:down
 DROP SCHEMA IF EXISTS basable_config CASCADE;

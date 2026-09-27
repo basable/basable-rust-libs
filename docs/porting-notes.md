@@ -312,3 +312,68 @@ here.
     `basable-processingobject` depends on `basable-externaleffect` (still
     downward: the effect crate depends on core only) and implements the
     trait for both. A claim past its proof, or completed, answers `None`.
+
+## basable-config
+
+48. **The port targets the tenant's schema, not the monorepo's.** Go's
+    `lib/config` writes a base `configuration_object` row plus per-type
+    subtype tables through a `Binder`, with temporal history kept by a
+    `SECURITY DEFINER` trigger. The tenant template (rendered by the
+    scaffolder before this crate existed) has `basable_config.
+    configuration_object` with the spec as JSONB, a `version`, and a plain
+    history table. The crate serves that: a type's objects live in `spec`
+    (`register::<Msg>`), a `TypedBinder` is the opt-in for a type that also
+    writes its own tables, and history is written by the loader's and the
+    repository's own transaction — one row per superseded version, one for
+    a deleted object's last — with the version as the optimistic guard. An
+    unchanged write is a no-op: zero history rows on a re-run, as Go's
+    `ignore_unchanged` trigger argument gave.
+49. **The seed envelope is the scaffolder's, `kind` names the type.** Go
+    read `{configSetName, items: [{"@type": <type URL>, "@operation",
+    header: {namespace: "#{NamespaceConfiguration:x}", name}, …}]}`; the
+    tenant's files are `{apiVersion, kind, items: [{metadata: {namespace,
+    name, labels}, spec, operation}]}`, one type per file, the namespace a
+    bare name in `metadata` (it is containment, not a field of the spec).
+    `kind` matches the registered type name ignoring case and separators
+    (`PricingRule` ⇔ `pricing_rule`), the type name is a registry name
+    (lowercase snake_case, the first token of a reference), and the
+    namespace type is `namespace` / `Namespace` rather than
+    `NamespaceConfiguration`. Wire field names are camelCase (the seed
+    template's convention), so a config message carries
+    `#[serde(rename_all = "camelCase")]`.
+50. **A namespace's row carries `namespace_id IS NULL`, not its own id.**
+    Go's namespace objects self-referenced (`namespace_id = id`) under a
+    NOT NULL column; the tenant's column is nullable and its framework
+    migration seeds `default` with NULL, so a namespace lookup matches on
+    `(type, name)` with a NULL namespace. Everything else still requires a
+    namespace id: a namespaced lookup without one is an error, never an
+    arbitrary row.
+51. **Concurrent seed loads serialise on a table lock, not an advisory
+    lock.** Go held `pg_advisory_lock` on a dedicated session around the
+    load, with the unlock's own failure modes (a session lock survives the
+    connection's return to the pool). The load is one transaction, so it
+    takes `LOCK TABLE … IN SHARE ROW EXCLUSIVE MODE` inside it: released
+    with the transaction, conflicts only with other loaders and writers,
+    never with readers.
+52. **The type registry is a boot-time builder.** Go's `configtype` list
+    and per-type `init()` binder registration become
+    `ConfigTypesBuilder::register` / `register_binder` and `build()`, which
+    refuses a duplicate id, name or prefix (Go could not: two `init`s
+    registering one name silently overwrote). The namespace type is
+    registered by the builder itself; the type rows in
+    `configuration_type` are the scaffolder's per-type migration's, since
+    the `app` login may not insert them.
+53. **Spec canonicalisation replaces `protojson.Unmarshal`'s validation.**
+    The loader decodes the resolved spec as the type's message and stores
+    the re-encoded value, so the row holds exactly what the type reads back
+    (unknown keys dropped, defaults applied) and a malformed spec fails the
+    load with the item named. References are found and replaced by walking
+    the JSON string values (`#{…}` anywhere inside a string), where Go ran
+    a regex over the raw bytes; distinct references come out in the
+    object's key order, which `serde_json` keeps sorted.
+54. **What Go's package carried beyond the framework stays out.** The
+    composed repository of eighteen platform types, the organisation slug
+    allocation, the contact flows, the pricing cache and the
+    database-free `SeedView` are the platform's, not a tenant's; the port
+    is the framework: registry, loader, repository over any registered
+    type (`Object<M>`).

@@ -14,6 +14,7 @@ members = [
     "crates/basable-processingobject-testkit",
     "crates/basable-externaleffect",
     "crates/basable-effecttest",
+    "crates/basable-config",
 ]
 
 [workspace.package]
@@ -38,6 +39,7 @@ basable-processingobject = { version = "=0.1.0", path = "crates/basable-processi
 basable-processingobject-testkit = { version = "=0.1.0", path = "crates/basable-processingobject-testkit" }
 basable-externaleffect = { version = "=0.1.0", path = "crates/basable-externaleffect" }
 basable-effecttest = { version = "=0.1.0", path = "crates/basable-effecttest" }
+basable-config = { version = "=0.1.0", path = "crates/basable-config" }
 
 uuid = { version = "1", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
