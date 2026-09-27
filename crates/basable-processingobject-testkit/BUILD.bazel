@@ -10,6 +10,7 @@ rust_library(
     deps = [
         "//crates/basable-core:basable_core",
         "//crates/basable-db:basable_db",
+        "//crates/basable-externaleffect:basable_externaleffect",
         "//crates/basable-processingobject:basable_processingobject",
         "//crates/basable-testkit:basable_testkit",
     ] + all_crate_deps(normal = True),
@@ -36,6 +37,7 @@ rust_test(
             ":basable_processingobject_testkit",
             "//crates/basable-core:basable_core",
             "//crates/basable-db:basable_db",
+            "//crates/basable-externaleffect:basable_externaleffect",
             "//crates/basable-processingobject:basable_processingobject",
             "//crates/basable-publicid:basable_publicid",
             "//crates/basable-testkit:basable_testkit",

@@ -1,0 +1,20 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "basable_externaleffect",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "basable_externaleffect",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//crates/basable-core:basable_core",
+    ] + all_crate_deps(normal = True),
+)
+
+# The crate's own #[cfg(test)] modules: the ports of adapter_test.go and
+# call_test.go. The per-adapter audits live in basable-effecttest.
+rust_test(
+    name = "basable_externaleffect_test",
+    crate = ":basable_externaleffect",
+    deps = all_crate_deps(normal_dev = True),
+)

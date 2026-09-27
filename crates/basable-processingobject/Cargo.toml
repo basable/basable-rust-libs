@@ -12,6 +12,7 @@ authors.workspace = true
 [dependencies]
 basable-core = { workspace = true }
 basable-db = { workspace = true }
+basable-externaleffect = { workspace = true }
 basable-publicid = { workspace = true }
 sqlx = { workspace = true }
 futures-core = { workspace = true }

@@ -1,5 +1,5 @@
 {
-  "checksum": "d7535f3aacab961aa380d37a8d37123d429304128d585d27071889c2f20cc9eb",
+  "checksum": "b80a71a70de7e57564b3fd5992d5a221cbfe31ad516046555f802eb9c3fb5a0f",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -753,6 +753,74 @@
         {
           "Library": {
             "crate_name": "basable_db",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.1.0"
+    },
+    "basable-effecttest 0.1.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "chrono 0.4.45",
+            "target": "chrono"
+          },
+          {
+            "id": "tokio 1.53.1",
+            "target": "tokio"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "basable_effecttest",
+      "license": "MIT",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "basable-effecttest",
+      "package_url": "https://github.com/basable/basable-rust-libs",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "basable_effecttest",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.1.0"
+    },
+    "basable-externaleffect 0.1.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "chrono 0.4.45",
+            "target": "chrono"
+          },
+          {
+            "id": "tokio 1.53.1",
+            "target": "tokio"
+          },
+          {
+            "id": "tracing 0.1.44",
+            "target": "tracing"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "basable_externaleffect",
+      "license": "MIT",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "basable-externaleffect",
+      "package_url": "https://github.com/basable/basable-rust-libs",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "basable_externaleffect",
             "crate_root": "src/lib.rs"
           }
         }
@@ -14254,6 +14322,8 @@
   "workspace_members": {
     "basable-core 0.1.0": "crates/basable-core",
     "basable-db 0.1.0": "crates/basable-db",
+    "basable-effecttest 0.1.0": "crates/basable-effecttest",
+    "basable-externaleffect 0.1.0": "crates/basable-externaleffect",
     "basable-processingobject 0.1.0": "crates/basable-processingobject",
     "basable-processingobject-testkit 0.1.0": "crates/basable-processingobject-testkit",
     "basable-publicid 0.1.0": "crates/basable-publicid",

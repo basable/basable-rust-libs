@@ -29,4 +29,4 @@ pub use harness::{
     fast_config, reconciled,
 };
 pub use runtime::{ExampleReconciler, Gate, Hook, HookFuture, Replica, hook, run_worker};
-pub use widgetsim::{WidgetSim, canonical_key};
+pub use widgetsim::{Order, WidgetClient, WidgetSim, canonical_key};

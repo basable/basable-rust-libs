@@ -129,11 +129,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "basable-effecttest"
+version = "0.1.0"
+dependencies = [
+ "basable-core",
+ "basable-externaleffect",
+ "basable-processingobject-testkit",
+ "chrono",
+ "tokio",
+]
+
+[[package]]
+name = "basable-externaleffect"
+version = "0.1.0"
+dependencies = [
+ "basable-core",
+ "chrono",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "basable-processingobject"
 version = "0.1.0"
 dependencies = [
  "basable-core",
  "basable-db",
+ "basable-externaleffect",
  "basable-publicid",
  "chrono",
  "futures-core",
@@ -151,6 +173,7 @@ dependencies = [
  "axum",
  "basable-core",
  "basable-db",
+ "basable-externaleffect",
  "basable-processingobject",
  "basable-publicid",
  "basable-testkit",

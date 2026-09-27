@@ -8,6 +8,7 @@
 use std::collections::HashSet;
 
 use basable_core::labels::Labels;
+use basable_externaleffect::{OwnershipLost, check_ownership};
 use basable_processingobject::{CreateOptions, Error, Outcome, WorkerConfig};
 use basable_processingobject_testkit::{Harness, Spec, Status};
 use uuid::Uuid;
@@ -310,5 +311,39 @@ async fn status_sighted_cas_vs_in_flight_attempt() {
         "the object is immediately claimable for the new spec"
     );
     assert_eq!(claims[0].object.spec.widgets, 7);
+    h.finish().await;
+}
+
+/// A claim is an effect owner: its proof admits a dispatch while the
+/// attempt runs, and the closed claim (here through its lease handle, which
+/// outlives `complete`) is fenced.
+#[tokio::test]
+async fn a_claim_is_an_effect_owner() {
+    let Some(h) = Harness::from_env().await else {
+        return;
+    };
+    h.create(Spec {
+        widgets: 1,
+        content: String::new(),
+    })
+    .await
+    .unwrap();
+    let claim = h.claim_batch().await.unwrap().remove(0);
+    let handle = claim.lease_handle();
+    assert!(
+        check_ownership(&claim).is_ok(),
+        "a live claim admits a dispatch"
+    );
+    assert!(check_ownership(&handle).is_ok());
+
+    claim
+        .complete(Ok(Outcome::converged(Some(Status::default()))))
+        .await
+        .unwrap();
+    assert_eq!(
+        check_ownership(&handle),
+        Err(OwnershipLost),
+        "a completed claim proves nothing any more"
+    );
     h.finish().await;
 }

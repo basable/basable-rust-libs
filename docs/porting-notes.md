@@ -217,3 +217,98 @@ here.
     inside the closure to prove the write was discarded; here the closure
     sees `&Status` (note 16), so the port's `status_sighted_cas` asserts
     the rejection and the acceptance only.
+
+## basable-externaleffect and basable-effecttest
+
+35. **The strategy sum is an enum, and every "required unless" is a
+    variant.** Go's sealed interface with four struct types and nil-checked
+    function fields becomes `Strategy::{Idempotent, LookBeforeAct {
+    lookup }, KeyedReplay { window, intent_age, provider_id, resolve },
+    Declared { slot_identity, resolution: Resolve(f) | Hold }}`. A missing
+    send, strategy, late-call policy, lookup, intent age, provider id,
+    resolver or slot identity, and a resolver beside `Hold`, cannot be
+    written; `Call::new` still checks the operation name, the timeout, the
+    key rules, the window, `classify: None` iff `Hold`, and the
+    irreversible restriction. The validation matrix test shrank by exactly
+    those rows.
+36. **Callbacks are boxed `Fn`s built by `*_fn` helpers.** `send`,
+    `lookup`, `resolve`, `resolve_keyed` take the context and the args by
+    value and return a boxed sendable future; `key`, `intent_age` and
+    `provider_id` are boxed sync closures. The helpers (`send_fn(|ctx,
+    args| async move { … })`) exist so closure signatures infer; the
+    literal still reads like Go's struct.
+37. **`Owner::ownership_deadline` returns `Option<Deadline>`, and a
+    reference cannot be nil.** Go checked for a nil `Owner` and returned a
+    loud wiring error; here `None` is "fenced" (a claim past its proof
+    answers it), `Unfenced` is a unit struct passed as `&Unfenced`, and
+    `check_ownership` returns the live `Deadline` the bound is computed
+    from.
+38. **The dispatch verdict is an enum.** `DispatchError::{OwnershipLost,
+    ReplayWindowElapsed { age, window }, Ambiguous(e), Definitive(e)}`
+    forces the match Go left to `IsAmbiguous` discipline; `Display` of the
+    last two is the provider's text verbatim and `source()` keeps the
+    provider error, as Go's `Error()`/`Unwrap` did. Observations
+    (`lookup`, `resolve`, `resolve_keyed`) fail with `ResolveError::{
+    OwnershipLost, Failed(e)}`.
+39. **The transport floor is a marker, not a trait the transport
+    implements.** Go's `ClassifyTransport` recognised `net.Error` and
+    context errors; Rust has neither, so a provider client wraps its
+    transport-shaped failures with `TransportError::wrap` at its boundary
+    (the widget client: reqwest errors without a status), and
+    `classify_transport` holds those, the `TimedOut` and `Cancelled`
+    markers the bounded step produces, and any `io::Error` in the chain.
+    The classifier signature loses the context argument: the bound
+    produces the markers, so a cancelled dispatch is judged by the error
+    it returns, not by a side channel.
+40. **The step is bounded by dropping its future.** Go handed the send a
+    context with a deadline and trusted the provider to honour it; here
+    `dispatch` races the send against `tokio::time::timeout(min(
+    call_timeout, remaining))` and the context's cancellation, drops it
+    when either fires, and reports `Ambiguous(TimedOut | Cancelled)`. The
+    context the send receives still carries the bound as its deadline.
+41. **`declare` takes a `DateTime<Utc>`, which has no zero.** Go panicked
+    on a zero clock; the type has no such value. The obligation that it be
+    the DATABASE clock remains the caller's.
+42. **`Resolution<R>` is an enum.** Go's struct carried a `Result` field
+    meaningful only under `AttemptSucceeded`; here `Succeeded(R)` is the
+    only variant holding one, and the other three carry their detail.
+    `AttemptState` stays as the stored vocabulary (with `FromStr` for the
+    status column).
+43. **Metrics are tracing events.** Go's three labelled counters on the
+    controller's `/metrics` become `tracing::debug!` events on the target
+    `basable_externaleffect::metrics` with `operation` and the verdict as
+    fields, one per dispatch, resolution and lookup; a metrics subscriber
+    counts them. The libs have no metrics registry to increment.
+44. **The audit is one test per adapter with a report, not one subtest
+    per probe.** Go's `effecttest.Run` used `t.Run` per probe; Rust tests
+    have no subtests, so `run` executes every applicable probe against a
+    fresh harness, collects pass / loud skip / failure text per probe, and
+    panics once with the whole report. `try_run` returns the report, which
+    is how `tests/reference.rs` pins that a misclassified irreversible
+    adapter fails exactly the classifier floor. The harness's shape checks
+    (a missing `advance_intent`, `past_window`, `inject_ambiguity` for an
+    irreversible adapter, `resolve_args` when `A != RA`) still panic
+    immediately: a fixture bug is not a finding.
+45. **Ack loss is injected on the wire.** Go wrapped the provider client's
+    `http.RoundTripper`; reqwest has no such seam, so `AckLossProxy` is an
+    HTTP/1.1 reverse proxy on a loopback port that forwards the next
+    matching request with `Connection: close`, lets the upstream execute
+    it, discards the answer, closes the client's connection, and refuses
+    the next N requests unsent. The client sees a request error (a
+    transport failure once the provider wraps it), never a timeout, for
+    the same reason as Go's non-timeout `net.Error`: a timeout would be
+    retried by clients that retry timeouts.
+46. **The harness is built, not filled.** Go's `Harness` was a struct of
+    optional func fields validated by `requireHarness`; here
+    `Harness::new` takes the four required inputs and the optional ones
+    are setters, and `landed_count`, `inject_ambiguity`,
+    `inject_definitive` and `compensation_probe` are async, since a
+    fixture that reads a database must await. `resolve_args` defaults to
+    the identity when `A` and `RA` are one type (a `TypeId` comparison,
+    as Go's `reflect.TypeFor` equality).
+47. **`Claim` and `LeaseHandle` implement `Owner` explicitly.** Go's
+    `*Claim` satisfied the `Owner` interface structurally with no import
+    in either direction; Rust needs the impl written somewhere, so
+    `basable-processingobject` depends on `basable-externaleffect` (still
+    downward: the effect crate depends on core only) and implements the
+    trait for both. A claim past its proof, or completed, answers `None`.

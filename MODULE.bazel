@@ -48,6 +48,8 @@ crate.from_cargo(
         "//crates/basable-testkit:Cargo.toml",
         "//crates/basable-processingobject:Cargo.toml",
         "//crates/basable-processingobject-testkit:Cargo.toml",
+        "//crates/basable-externaleffect:Cargo.toml",
+        "//crates/basable-effecttest:Cargo.toml",
     ],
 )
 use_repo(crate, "crates")

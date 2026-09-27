@@ -35,6 +35,7 @@ use std::time::Duration;
 
 use basable_core::Deadline;
 use basable_core::labels::Labels;
+use basable_externaleffect::Owner;
 use sqlx::{PgConnection, PgPool, Row as _};
 use uuid::Uuid;
 
@@ -179,6 +180,27 @@ impl LeaseHandle {
             return None;
         }
         self.lease.proof()
+    }
+}
+
+/// A claim is the effect owner (`basable-externaleffect`'s `Owner`): its
+/// local ownership proof fences every remote effect the reconciler
+/// dispatches through it, and a fenced claim answers `None`.
+impl<S, T, A> Owner for Claim<S, T, A>
+where
+    S: Send + Sync + 'static,
+    T: Send + Sync + 'static,
+    A: Adapter<S, T>,
+{
+    fn ownership_deadline(&self) -> Option<Deadline> {
+        Claim::ownership_deadline(self)
+    }
+}
+
+/// The heartbeat handle proves ownership exactly as its claim does.
+impl Owner for LeaseHandle {
+    fn ownership_deadline(&self) -> Option<Deadline> {
+        LeaseHandle::ownership_deadline(self)
     }
 }
 

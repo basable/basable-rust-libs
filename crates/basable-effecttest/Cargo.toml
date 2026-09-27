@@ -1,0 +1,23 @@
+[package]
+name = "basable-effecttest"
+description = "The per-adapter audit for basable-externaleffect: a component's test builds a Harness over its own simulator and runs the probe suite that proves the admission evidence its adapter declares, plus AckLossProxy, an HTTP proxy that lands a request and drops its answer."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+basable-core = { workspace = true }
+basable-externaleffect = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util"] }
+
+[dev-dependencies]
+basable-processingobject-testkit = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
