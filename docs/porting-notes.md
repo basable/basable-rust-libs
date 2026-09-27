@@ -88,3 +88,49 @@ here.
     testkit wrap the connection's dial function; sqlx has no such seam, so
     the proxy sits on a loopback port in front of Postgres. The two modes
     and the ReadyForQuery-bounded ack drop are the Go ones byte for byte.
+
+## basable-processingobject (store half)
+
+13. **Every framework statement targets the type's partition.** Go queries
+    the envelope parent with `WHERE processing_object_type_key = $1`; the
+    port queries `processing_object_<type>` in the nanoservice's schema
+    (unqualified, through the pool whose `search_path` is pinned there), so
+    the nanoservice role needs nothing on the parent and a cross-nanoservice
+    write is a permission error. The registry read stays on
+    `basable.processing_object_type`, which every role may `SELECT`.
+14. **The adapter is a trait, the transaction a newtype.** Go's five
+    function fields checked for nil at bind become trait methods
+    (`-> impl Future + Send`, no boxing); `finalize_delete` keeps its
+    default. `Tx` wraps the connection and implements only sqlx's
+    `Executor`, so commit, rollback and savepoint are unreachable by type.
+    Adapter methods return `sqlx::Error`, so completion can still classify
+    a class-23 status violation.
+15. **`Outcome` is an enum; the scheduling modifiers live on `Converged`.**
+    Go's zero `Outcome{}` and a modifier chained onto the wrong decision
+    were runtime contract violations completion turned into a loud retry.
+    Here there is no zero value and `Schedule` is a field of `Converged`
+    only, so both are unrepresentable; `retry` and `blocked` require a
+    cause, so `last_error` is never empty.
+16. **`update_spec`'s closure is synchronous and sees `&T`.** Go passed the
+    status by value so writes to the copy were discarded; a shared
+    reference says the same thing at the type level, and a synchronous
+    `FnOnce` cannot do I/O under the envelope lock. Its error is
+    `Error::Mutate`, nothing written.
+17. **One `Error` enum, no sentinels.** `NotFound`, `Deleting`, `NameTaken`,
+    `Invariant`, `Fenced`, `InvalidConfig`, `Mutate`, `Sql { op }` and
+    `CommitUnknown { op }` replace `errors.Is` on wrapped sentinels; the
+    commit-ambiguity Go reported as message text ("commit outcome
+    unknown") is a variant a caller can match.
+18. **`WorkerConfig` fields are unsigned and a zero means "default".** Go
+    admitted negatives and rejected them in `validated`; here they do not
+    exist. `Backoff::delay` reproduces Go's `int64` shift (`wrapping_shl`)
+    and float arithmetic; 405 Go-generated tuples pin it.
+19. **The conformance type is a nanoservice with migrations, not ad-hoc
+    DDL.** Go's `ApplySchema` ran `CREATE TABLE IF NOT EXISTS` as the test
+    login; under the ownership model the type needs its role, its schema
+    and the partition hand-over, so the testkit ships two dbmate-format
+    migrations applied through the ledger by the migrator.
+20. **`WidgetSim` is an axum server behind a reqwest client.** The Go
+    simulator was an `httptest.Server`; the HTTP shape is kept (rather than
+    an in-process fake) so the effect-admission suites can put the ack-loss
+    proxy between the caller and it.

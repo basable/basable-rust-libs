@@ -51,6 +51,8 @@ and every such deviation is listed in `docs/porting-notes.md`.
 | `crates/basable-publicid` | `encode`/`decode`, the boot-time `Registry` (a port of `golang/lib/publicid`) |
 | `crates/basable-db` | `Nanoservice`/`Stateful` markers, `NanoPool<N>` (the `app` login switched to `nano_<name>`, `search_path` pinned), `MigratorPool`, the dbmate-format runner and ledger `verify`, SQLSTATE helpers, `begin_snapshot`, `release_listen_conn` |
 | `crates/basable-testkit` | `TestDb` (a database per test from `TEST_DATABASE_URL`, migrations applied as `app`), `nano_pool::<N>()`, `CommitFaultProxy` (drops one COMMIT ack, applied or rolled back) |
+| `crates/basable-processingobject` | The declarative reconciliation framework, store half: `ProcessingObjectType` + the `Adapter` trait, `Tx`, the read model (`Meta`, `Object`), `Outcome`, `WorkerConfig`/`Backoff` (bit-identical to Go), `TypedStore` bind/create/update_spec/mark_deleted/nudge/read/read_many over the type's PARTITION through a `NanoPool` |
+| `crates/basable-processingobject-testkit` | The conformance nanoservice (key 32000, prefix `ek`: role, schema, migrations, adapter), `WidgetSim` (an HTTP provider simulator), the `Harness`; `tests/` are the ported conformance suites |
 | `docs/decisions/` | The spikes, one file each, with what was measured |
 | `docs/porting-notes.md` | Every deviation from the Go originals |
 | `.github/workflows/ci.yaml` | `bazel test //...` with the two-cache hygiene |

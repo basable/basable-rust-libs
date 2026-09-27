@@ -18,6 +18,14 @@ rust_test(
     deps = all_crate_deps(normal_dev = True),
 )
 
+# The tenant fixture (the scaffolder's templates rendered for two
+# nanoservices), shared with the conformance suites of the framework crates.
+filegroup(
+    name = "fixture_migrations",
+    srcs = glob(["tests/fixtures/**"]),
+    visibility = ["//visibility:public"],
+)
+
 # The database-backed suites: one target per file under tests/, against the
 # Postgres TEST_DATABASE_URL names (skipped, loudly, without it). They pin
 # the ownership model (plan B3) and the commit-fault proxy for basable-db as

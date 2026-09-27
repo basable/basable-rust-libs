@@ -46,6 +46,8 @@ crate.from_cargo(
         "//crates/basable-publicid:Cargo.toml",
         "//crates/basable-db:Cargo.toml",
         "//crates/basable-testkit:Cargo.toml",
+        "//crates/basable-processingobject:Cargo.toml",
+        "//crates/basable-processingobject-testkit:Cargo.toml",
     ],
 )
 use_repo(crate, "crates")
