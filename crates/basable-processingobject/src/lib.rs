@@ -85,4 +85,6 @@ pub use model::{
 pub use outcome::{Outcome, Schedule};
 pub use store::{CreateOptions, TypedStore, WAKE_CHANNEL};
 pub use tx::Tx;
-pub use worker::{AfterComplete, COMPLETION_TIMEOUT, NoAfterComplete, Reconciler, Worker};
+pub use worker::{
+    AfterComplete, COMPLETION_TIMEOUT, NoAfterComplete, Reconciler, WakeSubscription, Worker,
+};

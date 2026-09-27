@@ -54,6 +54,8 @@ crate.from_cargo(
         "//crates/basable-messenger:Cargo.toml",
         "//crates/basable-messenger-codegen:Cargo.toml",
         "//crates/basable-messenger-gen:Cargo.toml",
+        "//crates/basable-pubsub:Cargo.toml",
+        "//crates/basable-app:Cargo.toml",
     ],
 )
 use_repo(crate, "crates")

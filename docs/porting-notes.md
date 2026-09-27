@@ -448,3 +448,58 @@ here.
     template derives it). A void fan-out with no handler consumes the
     message and returns.
 
+## basable-pubsub and basable-app
+
+63. **The bus is the Go bus, with `String` payloads and a listening
+    signal.** `lib/pubsub`'s Bus, instance-id origin prefix, own-message
+    dedup, `IncludeSelf` through the nil origin, the `MaxDataBytes` bound
+    (8000 − 36 − 64) and the fixed reconnect delay are ported one to one.
+    A `NOTIFY` payload is text, so `publish` takes `&str` and a `Message`
+    carries a `String`. The nil-pool "stub mode" is gone: a bus needs a
+    pool, and a test that wants no database does not build one. Added:
+    `is_listening` / `listening()`, because a publish before the `LISTEN`
+    is in place is silently lost and Go's tests worked around that with
+    sleeps; and `subscribe` after `run` is a `SubscribeError`, not a
+    panic. Reconnection is sqlx's `PgListener` (which re-issues the
+    `LISTEN`s and returns its connection with `UNLISTEN *`), so the Go
+    `db.ReleaseListenConn` dance has no counterpart; the `try_recv() ==
+    None` signal is what fires the reconnect hooks.
+64. **One wake listener per process (B8 deviation 5).** Go pins one
+    `LISTEN` connection per worker. The library `Worker` still does that
+    on its own, but a worker registered with the app takes a
+    `WakeSubscription` from the app's `WakeBus` instead
+    (`Worker::with_wake`), which holds the one listen connection on
+    `processing_object_wake` and fans each payload to the workers of the
+    type it names; a lost-and-restored connection wakes every worker once.
+    A replica with N types holds one listener, not N.
+65. **Boot is a bounded wait, then a verdict.** Go's `main` panics on the
+    first failed connect and never checks the ledger. Here
+    `App::new(cfg).expect_migrations(v).connect()` retries every second
+    within `DATABASE_BOOT_WAIT_SECS` (the database may be starting, the
+    dbmate Job may still be running), each attempt bounded by the
+    remaining wait (sqlx would otherwise retry a refused connection for
+    its whole acquire timeout), and past the wait the last error is the
+    boot error: `Error::Connect` or `Error::Migrations(Missing(..))`
+    naming the versions, the template's exit 3.
+66. **The connection budget is checked at boot, per pool.** Every
+    `App::pool::<N>()` adds `DATABASE_POOL_MAX_CONNECTIONS` to a running
+    total that starts at the framework pool's four; the pool that would
+    pass `DATABASE_CONNECTION_BUDGET` (default 100, the template's
+    `max_connections`) is `Error::ConnectionBudget` before it opens. Go
+    sized pools by convention.
+67. **Workers and tickers are joined by name.** `Serve::worker` and
+    `Serve::ticker` register loops under `<nanoservice>/<type or ticker>`;
+    shutdown flips readiness off, cancels the root `Ctx`, joins every loop
+    within `SHUTDOWN_GRACE_SECS`, and returns `Error::Stuck(names)` for
+    what did not drain (abandoned to lease expiry). An in-flight attempt
+    completes as a retry with `last_error = "attempt cancelled"`, which
+    `tests/app.rs` pins over the conformance type. A ticker is the
+    `gitoperator/worker.go` shape (immediate first tick, then per
+    interval, a failing or panicking tick logged and retried) and its
+    tick borrows a child context cancelled with the app.
+68. **Readiness is three checks, not a flag.** `/readyz` answers 200 once
+    wiring is done, the framework pool answers `SELECT 1` within two
+    seconds, and every registered loop is still running; the body says
+    which check failed. `/healthz` answers while the process lives. The
+    template's Deployment probes both.
+

@@ -116,9 +116,31 @@ where
     }
 }
 
+/// A wake source outside the worker: the app-level `WakeBus` (one LISTEN
+/// connection per process) hands one to every worker it registers, so the
+/// worker runs no listener of its own. Cloning shares the subscription.
+#[derive(Clone, Default)]
+pub struct WakeSubscription {
+    notify: Arc<Notify>,
+}
+
+impl WakeSubscription {
+    /// A subscription nobody has woken yet.
+    pub fn new() -> WakeSubscription {
+        WakeSubscription::default()
+    }
+
+    /// Wakes the worker: it rescans at once. Wakes coalesce (a stored
+    /// permit), as with the worker's own listener.
+    pub fn wake(&self) {
+        self.notify.notify_one();
+    }
+}
+
 /// Drives one processing object type on this replica.
 pub struct Worker<S, T, A: Adapter<S, T>, R, F> {
     inner: Arc<Inner<S, T, A, R, F>>,
+    wake: Option<WakeSubscription>,
 }
 
 struct Inner<S, T, A: Adapter<S, T>, R, F> {
@@ -152,14 +174,27 @@ where
                 rec,
                 after,
             }),
+            wake: None,
         })
+    }
+
+    /// The processing object type this worker drives.
+    pub fn type_name(&self) -> &'static str {
+        self.inner.store.name()
+    }
+
+    /// Takes wakes from `subscription` instead of a listener of its own.
+    /// The poll remains the correctness path either way.
+    pub fn with_wake(mut self, subscription: WakeSubscription) -> Self {
+        self.wake = Some(subscription);
+        self
     }
 
     /// Runs the loop, scanning for due work every `poll_interval` (or sooner
     /// on a wake), until `ctx` is cancelled — then drains in-flight attempts
     /// and returns.
     pub async fn run(self, ctx: Ctx) {
-        let inner = self.inner;
+        let Worker { inner, wake } = self;
         let name = inner.store.name();
         tracing::info!(
             processing_object_type = name,
@@ -174,14 +209,22 @@ where
 
         // The wake: a stored permit, so wakes coalesce like Go's one-slot
         // channel — many notifications while a scan runs mean one more scan.
-        let wake = Arc::new(Notify::new());
+        // With an external subscription the app's bus feeds it and this
+        // worker runs no listener of its own.
         let listen_ctx = ctx.child();
-        let listener = tokio::spawn(listen_wakes(
-            inner.store.inner.pool.clone(),
-            name,
-            listen_ctx.clone(),
-            Arc::clone(&wake),
-        ));
+        let (wake, listener) = match wake {
+            Some(subscription) => (subscription.notify, None),
+            None => {
+                let wake = Arc::new(Notify::new());
+                let listener = tokio::spawn(listen_wakes(
+                    inner.store.inner.pool.clone(),
+                    name,
+                    listen_ctx.clone(),
+                    Arc::clone(&wake),
+                ));
+                (wake, Some(listener))
+            }
+        };
 
         let mut tasks: JoinSet<()> = JoinSet::new();
         let mut ticker = tokio::time::interval(inner.cfg.poll_interval);
@@ -200,7 +243,9 @@ where
             log_join(name, joined);
         }
         listen_ctx.cancel();
-        let _ = listener.await;
+        if let Some(listener) = listener {
+            let _ = listener.await;
+        }
         tracing::info!(
             processing_object_type = name,
             "processing object worker drained"
