@@ -64,7 +64,9 @@ rsync -a --delete \
 "$here/tools/sync-orderly-crates.sh"
 
 # Repin: a render that changes a dependency (or a crates change the copy
-# brings in) must land in the committed lockfiles, which the CI builds
-# against exactly as a tenant's does, without repinning.
+# brings in) must land in the committed Cargo.lock and MODULE.bazel.lock.
+# Cargo.Bazel.lock is git-ignored and the CI repins it: crate_universe
+# records the patched path dependencies by absolute path, so it is not
+# portable until the release publishes the crates and the patch goes.
 (cd "$out" && CARGO_BAZEL_REPIN=1 bazel fetch //...)
 echo "rendered examples/orderly with the local-crates patch"

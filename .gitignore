@@ -26,3 +26,7 @@ target
 # The copy of the workspace crates the example builds against
 # (tools/sync-orderly-crates.sh); refreshed by every render.
 /examples/orderly/tools/basable-crates/
+# The example's crate_universe lockfile records the patched path
+# dependencies by absolute path (not portable); the render creates it, the
+# CI repins. Committed again once the release publishes the crates.
+/examples/orderly/Cargo.Bazel.lock

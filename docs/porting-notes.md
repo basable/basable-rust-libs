@@ -602,7 +602,12 @@ of it changed, in the crates and in the templates:
     resolver adds its fake proc-macro root package even `exclude` does not
     stop it), so every crate's `[package]` names its root explicitly:
     `workspace = "../.."`. Harmless in this repository, decisive in the
-    copy.
+    copy. One more consequence: crate_universe records a patched path
+    dependency by ABSOLUTE path in `Cargo.Bazel.lock`, so the example's
+    Bazel lockfile is not portable and is not committed — the CI's
+    `orderly` job repins (`CARGO_BAZEL_REPIN=1`), the one way it differs
+    from a tenant's CI until the release publishes the crates and the
+    patch block goes.
 76. **A bin-only crate cannot be a dependency.** cargo drops a dependency
     on a crate without a library target ("ignoring invalid dependency …
     missing a lib target"), so the lock never carried

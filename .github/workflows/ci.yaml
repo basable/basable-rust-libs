@@ -152,8 +152,15 @@ jobs:
         run: ../../tools/sync-orderly-crates.sh
 
       - name: Test
+        # A tenant's CI never repins; the example must, until the release:
+        # crate_universe records a patched path dependency by ABSOLUTE
+        # path in Cargo.Bazel.lock, so that lockfile is not portable and is
+        # not committed (a committed one made the runner write under the
+        # rendering machine's home). Cargo.lock and MODULE.bazel.lock are
+        # committed and portable.
         env:
           TEST_DATABASE_URL: postgres://test:test@localhost:5432/test?sslmode=disable
+          CARGO_BAZEL_REPIN: "1"
         run: bazelisk test --config=ci //...
 
       - name: Prune the disk cache to this build
