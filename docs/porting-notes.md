@@ -134,3 +134,37 @@ here.
     simulator was an `httptest.Server`; the HTTP shape is kept (rather than
     an in-process fake) so the effect-admission suites can put the ack-loss
     proxy between the caller and it.
+
+## basable-processingobject (claims and completion)
+
+21. **`complete(self, …)` consumes the claim.** Go closed the claim with a
+    sticky flag and let a later `WriteStatus` or `Complete` return
+    `ErrFenced`; here the claim is moved into `complete`, so a write after
+    completion does not compile. The heartbeat half is a cloneable
+    `LeaseHandle` sharing the token, proof and closed flag, which is what a
+    worker keeps while the reconciler holds the claim — and what still
+    fences (`Error::Fenced`) after completion, as Go's late call did.
+22. **The verdict is `Result<Outcome<T>, BoxError>`, not an outcome and an
+    error side by side.** Go's `Complete(out, attemptErr)` kept `out`'s
+    status as the observation when `attemptErr` was set; an `Err` here
+    carries no outcome, so it resolves to `Retry` with no status. The
+    contract violations Go resolved at completion (a zero outcome, a
+    modifier on the wrong decision) cannot be built (note 15); `Delete` on
+    a non-deleting claim and `Blocked` on a deleting one still resolve to a
+    loud `Retry`.
+23. **`Completion` is an enum: `Committed { outcome, superseded, woken }`
+    or `Unknown`.** Go's struct carried a zero `Outcome` next to an
+    `OutcomeUnknown` flag; the ambiguity adoption has no outcome to
+    misread.
+24. **The ownership proof is a `Deadline`.** `require_proof` is
+    `Deadline::is_live` (note 3): measured before the claim is sent,
+    extended from the pre-send reading by heartbeat and `write_status`,
+    never past the database lease.
+25. **Savepoints are the framework's own statements.** `SAVEPOINT` /
+    `RELEASE` / `ROLLBACK TO` run as simple queries on the transaction, as
+    in Go, rather than sqlx's nested `begin()`; the adapter's `Tx` still
+    cannot issue them (note 14).
+26. **The completion retry shares its cause.** A retried completion reuses
+    the reconciler's verdict, whose cause is an `Arc<dyn Error>` internally
+    and a `BoxError` again on the way out; `T: Clone` is required of a
+    status type for the same reason (Go copied values freely).

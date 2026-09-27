@@ -33,19 +33,34 @@ use crate::tx::Tx;
 pub const WAKE_CHANNEL: &str = "processing_object_wake";
 
 /// The handle for one processing-object type, bound at boot by the owning
-/// nanoservice over its [`NanoPool`].
+/// nanoservice over its [`NanoPool`]. Cheap to clone: every clone shares
+/// the pool and the declaration, which is how a [`crate::Claim`] carries
+/// its store into a spawned attempt.
 pub struct TypedStore<S, T, A: Adapter<S, T>> {
+    pub(crate) inner: std::sync::Arc<StoreInner<S, T, A>>,
+}
+
+/// What every clone of a store shares.
+pub(crate) struct StoreInner<S, T, A: Adapter<S, T>> {
     pub(crate) pool: PgPool,
     pub(crate) decl: ProcessingObjectType<S, T, A>,
     /// `processing_object_<name>`, the partition every statement targets.
     pub(crate) partition: String,
 }
 
+impl<S, T, A: Adapter<S, T>> Clone for TypedStore<S, T, A> {
+    fn clone(&self) -> Self {
+        TypedStore {
+            inner: std::sync::Arc::clone(&self.inner),
+        }
+    }
+}
+
 impl<S, T, A: Adapter<S, T>> std::fmt::Debug for TypedStore<S, T, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TypedStore")
-            .field("type", &self.decl.name)
-            .field("key", &self.decl.type_key)
+            .field("type", &self.inner.decl.name)
+            .field("key", &self.inner.decl.type_key)
             .finish()
     }
 }
@@ -75,40 +90,42 @@ where
         )
         .await?;
         Ok(TypedStore {
-            pool: pool.pool().clone(),
-            decl,
-            partition,
+            inner: std::sync::Arc::new(StoreInner {
+                pool: pool.pool().clone(),
+                decl,
+                partition,
+            }),
         })
     }
 
     /// The registry name of the handle's type.
     pub fn name(&self) -> &'static str {
-        self.decl.name
+        self.inner.decl.name
     }
 
     /// The registry key of the handle's type.
     pub fn type_key(&self) -> i16 {
-        self.decl.type_key
+        self.inner.decl.type_key
     }
 
     /// A reference to an object of the handle's type.
     pub fn r#ref(&self, id: Uuid) -> Ref {
-        Ref::new(self.decl.name, id)
+        Ref::new(self.inner.decl.name, id)
     }
 
     /// The public id an object of this type carries as its `external_id`:
     /// deterministic, usable before, during and after the object's lifetime.
     pub fn public_id(&self, id: Uuid) -> String {
-        basable_publicid::encode(self.decl.public_id_prefix, id)
+        basable_publicid::encode(self.inner.decl.public_id_prefix, id)
     }
 
     /// Validates a caller-supplied ref against the handle's type.
     pub(crate) fn check_ref(&self, r: &Ref) -> Result<(), Error> {
         r.validate()?;
-        if r.processing_object_type != self.decl.name {
+        if r.processing_object_type != self.inner.decl.name {
             return Err(Error::invalid(format!(
                 "ref {r} used with the {:?} typed store",
-                self.decl.name
+                self.inner.decl.name
             )));
         }
         Ok(())
@@ -151,6 +168,7 @@ where
         let op = |what: &str| format!("create {r}: {what}");
 
         let mut tx = self
+            .inner
             .pool
             .begin()
             .await
@@ -166,9 +184,9 @@ where
             "INSERT INTO {} (processing_object_type_key, id, external_id, name, namespace, labels)
              VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (processing_object_type_key, id) DO NOTHING",
-            self.partition
+            self.inner.partition
         ))
-        .bind(self.decl.type_key)
+        .bind(self.inner.decl.type_key)
         .bind(id)
         .bind(self.public_id(id))
         .bind(&name.name)
@@ -195,7 +213,7 @@ where
             // already being torn down or was born under a different identity.
             let row = sqlx::query(&format!(
                 "SELECT deleted_at, name, namespace, labels FROM {} WHERE id = $1",
-                self.partition
+                self.inner.partition
             ))
             .bind(id)
             .fetch_one(&mut *tx)
@@ -236,18 +254,20 @@ where
         {
             let conn: &mut PgConnection = &mut tx;
             let mut rtx = Tx::new(conn);
-            self.decl
+            self.inner
+                .decl
                 .adapter
                 .insert_spec(&mut rtx, &r, spec)
                 .await
                 .map_err(|e| Error::sql(op("insert typed spec"), e))?;
-            self.decl
+            self.inner
+                .decl
                 .adapter
                 .insert_status(&mut rtx, &r, status)
                 .await
                 .map_err(|e| Error::sql(op("insert typed status"), e))?;
         }
-        publish_wake(&mut tx, self.decl.name).await?;
+        publish_wake(&mut tx, self.inner.decl.name).await?;
         tx.commit().await.map_err(|e| {
             Error::commit(format!("create {r} (retry with the same id to adopt)"), e)
         })?;

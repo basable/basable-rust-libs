@@ -22,5 +22,8 @@ pub use conformance::{
     Conformance, ConformanceAdapter, PUBLIC_ID_PREFIX, Spec, Status, TYPE_KEY, TYPE_NAME,
     apply_schema, conformance_type, identity_name,
 };
-pub use harness::{Harness, fast_config, reconciled};
+pub use harness::{
+    ConformanceClaim, ConformanceStore, DriveError, DriveFn, EnvelopeSnapshot, Harness,
+    fast_config, reconciled,
+};
 pub use widgetsim::{WidgetSim, canonical_key};

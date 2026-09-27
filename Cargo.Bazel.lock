@@ -1,5 +1,5 @@
 {
-  "checksum": "9146c266c88c82fa0c67f948d6d2fb887d5414ce6232ed785ae54efbb900e61f",
+  "checksum": "ee0beaa007ed0db03decb31b08cf97298946b286283ac97c7d6515f47eec3751",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -815,6 +815,10 @@
             "target": "axum"
           },
           {
+            "id": "chrono 0.4.45",
+            "target": "chrono"
+          },
+          {
             "id": "reqwest 0.13.5",
             "target": "reqwest"
           },
@@ -841,12 +845,6 @@
           {
             "id": "uuid 1.26.1",
             "target": "uuid"
-          }
-        ],
-        "deps_dev": [
-          {
-            "id": "chrono 0.4.45",
-            "target": "chrono"
           }
         ],
         "edition": "2024"

@@ -92,13 +92,13 @@ where
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let op = format!("read {} batch", self.decl.name);
-        let mut tx = begin_snapshot(&self.pool)
+        let op = format!("read {} batch", self.inner.decl.name);
+        let mut tx = begin_snapshot(&self.inner.pool)
             .await
             .map_err(|e| Error::sql(format!("{op}: begin"), e))?;
         let rows = sqlx::query(&format!(
             "SELECT {META_COLUMNS} FROM {} WHERE id = ANY($1)",
-            self.partition
+            self.inner.partition
         ))
         .bind(ids)
         .fetch_all(&mut *tx)
@@ -118,7 +118,8 @@ where
         let typed = {
             let conn: &mut PgConnection = &mut tx;
             let mut rtx = Tx::new(conn);
-            self.decl
+            self.inner
+                .decl
                 .adapter
                 .read_rows(&mut rtx, &found)
                 .await

@@ -6,10 +6,12 @@
 //! doc and the eight invariants below, and each module names the invariant
 //! it implements.
 //!
-//! **This release is the store half**: the declaration ([`decl`]), the read
-//! model ([`Meta`], [`Object`]), the reconciler's verdict ([`Outcome`]), and
-//! [`TypedStore`]'s create, mutate and read paths. Claims, completion and the
-//! worker follow in the next releases.
+//! **This release is the store and the attempt**: the declaration
+//! ([`decl`]), the read model ([`Meta`], [`Object`]), the reconciler's
+//! verdict ([`Outcome`]), [`TypedStore`]'s create, mutate and read paths,
+//! and the claimed attempt — [`TypedStore::claim_batch`], [`Claim`] with its
+//! heartbeat, `write_status` and `complete`. The worker runtime follows in
+//! the next release.
 //!
 //! # Invariants
 //!
@@ -59,6 +61,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod claim;
+mod complete;
 pub mod decl;
 mod error;
 mod model;
@@ -67,7 +71,10 @@ mod store;
 mod store_mutate;
 mod store_read;
 mod tx;
+mod writestatus;
 
+pub use claim::{Claim, LEASE_SLACK, LeaseHandle};
+pub use complete::Completion;
 pub use decl::{Adapter, Backoff, ProcessingObjectType, WorkerConfig};
 pub use error::Error;
 pub use model::{

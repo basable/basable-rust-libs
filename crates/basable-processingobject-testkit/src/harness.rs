@@ -1,15 +1,25 @@
 //! The harness: a conformance-typed store over a per-test database, a
-//! provider simulator, and the default policy. The store half of the Go
-//! harness; the drive, worker, crash and gate helpers arrive with the
-//! claim and worker phases.
+//! provider simulator, the default policy, and the helpers the suites build
+//! scenarios from — create, a manual one-shot drive (`drive_once`), the
+//! crash seam (`claim_batch` + `force_expire_claim`: drop a claim without
+//! completing it and collapse its lease so a successor adopts at once),
+//! and the envelope readers the assertions need. The running worker
+//! (`Replica`) arrives with the worker phase.
 
+use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
+use basable_core::BoxError;
 use basable_db::NanoPool;
 use basable_processingobject::{
-    Backoff, CreateOptions, Error, Meta, NamespacedName, Object, Ref, TypedStore, WorkerConfig,
+    Adapter, Backoff, Claim, Completion, CreateOptions, Error, Meta, NamespacedName, Object,
+    Outcome, Ref, TypedStore, WorkerConfig,
 };
 use basable_testkit::TestDb;
+use chrono::{DateTime, Utc};
+use sqlx::Row as _;
 use uuid::Uuid;
 
 use crate::conformance::{
@@ -39,6 +49,65 @@ pub fn fast_config() -> WorkerConfig {
 
 /// The conformance store type.
 pub type ConformanceStore = TypedStore<Spec, Status, ConformanceAdapter>;
+/// A claim on a conformance object.
+pub type ConformanceClaim = Claim<Spec, Status, ConformanceAdapter>;
+/// The inline reconciler `drive_once` runs against the claim: it may write
+/// status mid-attempt and returns the attempt's verdict.
+pub type DriveFn = Box<
+    dyn for<'a> FnOnce(
+            &'a mut ConformanceClaim,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<Outcome<Status>, BoxError>> + Send + 'a>,
+        > + Send,
+>;
+
+/// Why a drive did not complete an attempt.
+#[derive(Debug)]
+pub enum DriveError {
+    /// No object was due to claim.
+    NothingDue,
+    /// The claim or the completion failed.
+    Store(Error),
+}
+
+impl fmt::Display for DriveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DriveError::NothingDue => f.write_str("no due object to drive"),
+            DriveError::Store(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for DriveError {}
+
+impl From<Error> for DriveError {
+    fn from(e: Error) -> DriveError {
+        DriveError::Store(e)
+    }
+}
+
+/// The envelope bookkeeping a mid-attempt write must leave alone: everything
+/// a completion settles, plus the fences.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvelopeSnapshot {
+    /// `generation`.
+    pub generation: i64,
+    /// `observed_generation`.
+    pub observed_generation: i64,
+    /// `wake_seq`.
+    pub wake_seq: i64,
+    /// `attempts`.
+    pub attempts: i32,
+    /// `phase`.
+    pub phase: String,
+    /// `last_error`, empty for NULL.
+    pub last_error: String,
+    /// `next_reconcile_at`.
+    pub next_reconcile_at: DateTime<Utc>,
+    /// `claim_token`.
+    pub claim_token: Option<Uuid>,
+}
 
 /// A conformance-typed store over a test database, a simulator, and the
 /// default policy.
@@ -158,6 +227,123 @@ impl Harness {
                 return Err(Error::InvalidConfig(format!("waiting for {r}: timed out")));
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Claims up to the harness batch size of due objects and returns their
+    /// live claims. It is the crash seam: DROP a returned claim without
+    /// completing it to simulate process death — its lease then expires and
+    /// a successor adopts. Pair with [`Harness::force_expire_claim`] to make
+    /// adoption immediate instead of waiting out the lease.
+    pub async fn claim_batch(&self) -> Result<Vec<ConformanceClaim>, Error> {
+        self.store.claim_batch(self.cfg.clone()).await
+    }
+
+    /// Claims the single most-due object, runs `f` as an inline reconciler
+    /// against the claim, and completes the attempt in one fenced
+    /// transaction. Returns the claim-time snapshot (as `f` left it, so a
+    /// mid-attempt write shows) and the committed completion. A completion
+    /// error is returned as is; [`DriveError::NothingDue`] means no object
+    /// was due.
+    pub async fn drive_once(
+        &self,
+        f: impl for<'a> FnOnce(
+            &'a mut ConformanceClaim,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<Outcome<Status>, BoxError>> + Send + 'a>,
+        > + Send,
+    ) -> Result<(Object<Spec, Status>, Completion<Status>), DriveError> {
+        Harness::drive_once_with(&self.store, self.cfg.clone(), f).await
+    }
+
+    /// [`Harness::drive_once`] against an arbitrary store and policy: the
+    /// seam for driving a store built over a variant declaration (a failing
+    /// finalizer), or with a small `max_attempts`. The batch size is forced
+    /// to 1.
+    pub async fn drive_once_with<A: Adapter<Spec, Status>>(
+        store: &TypedStore<Spec, Status, A>,
+        mut cfg: WorkerConfig,
+        f: impl for<'a> FnOnce(
+            &'a mut Claim<Spec, Status, A>,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<Outcome<Status>, BoxError>> + Send + 'a>,
+        > + Send,
+    ) -> Result<(Object<Spec, Status>, Completion<Status>), DriveError> {
+        cfg.batch_size = 1;
+        let mut claims = store.claim_batch(cfg).await?;
+        if claims.is_empty() {
+            return Err(DriveError::NothingDue);
+        }
+        let mut claim = claims.remove(0);
+        let out = f(&mut claim).await;
+        let snapshot = claim.object.clone();
+        let done = claim.complete(out).await?;
+        Ok((snapshot, done))
+    }
+
+    /// Expires the live lease on `r` directly in the database so a successor
+    /// can adopt it on the next claim scan without waiting out the lease. It
+    /// keeps the claim token (adoption replaces it) and moves `claimed_at`
+    /// back too, preserving the lease-coherence CHECK. It affects only a
+    /// currently-claimed row.
+    pub async fn force_expire_claim(&self, r: &Ref) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE processing_object_conformance
+             SET claimed_at = clock_timestamp() - make_interval(hours => 2),
+                 lease_expires_at = clock_timestamp() - make_interval(hours => 1)
+             WHERE id = $1 AND claim_token IS NOT NULL",
+        )
+        .bind(r.id)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+    }
+
+    /// The live claim's lease horizon, `None` when unclaimed.
+    pub async fn lease_expires_at(&self, r: &Ref) -> Option<DateTime<Utc>> {
+        let (at,): (Option<DateTime<Utc>>,) = sqlx::query_as(
+            "SELECT lease_expires_at FROM processing_object_conformance WHERE id = $1",
+        )
+        .bind(r.id)
+        .fetch_one(&self.pool)
+        .await
+        .expect("the row exists");
+        at
+    }
+
+    /// `generation_changed_at`: the intent clock, which only create,
+    /// update_spec and mark_deleted advance.
+    pub async fn gen_changed_at(&self, r: &Ref) -> DateTime<Utc> {
+        let (at,): (DateTime<Utc>,) = sqlx::query_as(
+            "SELECT generation_changed_at FROM processing_object_conformance WHERE id = $1",
+        )
+        .bind(r.id)
+        .fetch_one(&self.pool)
+        .await
+        .expect("the row exists");
+        at
+    }
+
+    /// The envelope bookkeeping of `r`.
+    pub async fn envelope(&self, r: &Ref) -> EnvelopeSnapshot {
+        let row = sqlx::query(
+            "SELECT generation, observed_generation, wake_seq, attempts, phase,
+                    COALESCE(last_error, '') AS last_error, next_reconcile_at, claim_token
+             FROM processing_object_conformance WHERE id = $1",
+        )
+        .bind(r.id)
+        .fetch_one(&self.pool)
+        .await
+        .expect("the row exists");
+        EnvelopeSnapshot {
+            generation: row.get("generation"),
+            observed_generation: row.get("observed_generation"),
+            wake_seq: row.get("wake_seq"),
+            attempts: row.get("attempts"),
+            phase: row.get("phase"),
+            last_error: row.get("last_error"),
+            next_reconcile_at: row.get("next_reconcile_at"),
+            claim_token: row.get("claim_token"),
         }
     }
 

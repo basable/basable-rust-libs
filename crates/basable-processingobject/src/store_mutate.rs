@@ -45,7 +45,7 @@ where
     ) -> Result<Option<DateTime<Utc>>, Error> {
         let row: Option<(Option<DateTime<Utc>>,)> = sqlx::query_as(&format!(
             "SELECT deleted_at FROM {} WHERE id = $1 FOR UPDATE",
-            self.partition
+            self.inner.partition
         ))
         .bind(r.id)
         .fetch_optional(&mut *conn)
@@ -66,6 +66,7 @@ where
     ) -> Result<Row<S, T>, Error> {
         let mut rtx = Tx::new(conn);
         let mut rows = self
+            .inner
             .decl
             .adapter
             .read_rows(&mut rtx, std::slice::from_ref(&r.id))
@@ -102,6 +103,7 @@ where
         self.check_ref(r)?;
         let op = "update spec";
         let mut tx = self
+            .inner
             .pool
             .begin()
             .await
@@ -114,7 +116,8 @@ where
         {
             let conn: &mut PgConnection = &mut tx;
             let mut rtx = Tx::new(conn);
-            self.decl
+            self.inner
+                .decl
                 .adapter
                 .write_spec(&mut rtx, r, &row.spec)
                 .await
@@ -127,13 +130,13 @@ where
                  wake_seq = wake_seq + 1,
                  attempts = 0
              WHERE id = $1",
-            self.partition
+            self.inner.partition
         ))
         .bind(r.id)
         .execute(&mut *tx)
         .await
         .map_err(|e| Error::sql(format!("{op} {r}: advance envelope"), e))?;
-        publish_wake(&mut tx, self.decl.name).await?;
+        publish_wake(&mut tx, self.inner.decl.name).await?;
         tx.commit()
             .await
             .map_err(|e| Error::commit(format!("{op} {r}"), e))?;
@@ -150,6 +153,7 @@ where
         self.check_ref(r)?;
         let op = "mark deleted";
         let mut tx = self
+            .inner
             .pool
             .begin()
             .await
@@ -165,13 +169,13 @@ where
                  wake_seq = wake_seq + 1,
                  attempts = 0
              WHERE id = $1",
-            self.partition
+            self.inner.partition
         ))
         .bind(r.id)
         .execute(&mut *tx)
         .await
         .map_err(|e| Error::sql(format!("{op} {r}: stamp deletion"), e))?;
-        publish_wake(&mut tx, self.decl.name).await?;
+        publish_wake(&mut tx, self.inner.decl.name).await?;
         tx.commit()
             .await
             .map_err(|e| Error::commit(format!("{op} {r}"), e))?;
@@ -187,6 +191,7 @@ where
         self.check_ref(r)?;
         let op = "nudge";
         let mut tx = self
+            .inner
             .pool
             .begin()
             .await
@@ -197,13 +202,13 @@ where
              SET wake_seq = wake_seq + 1,
                  next_reconcile_at = LEAST(next_reconcile_at, clock_timestamp())
              WHERE id = $1",
-            self.partition
+            self.inner.partition
         ))
         .bind(r.id)
         .execute(&mut *tx)
         .await
         .map_err(|e| Error::sql(format!("{op} {r}: advance wake"), e))?;
-        publish_wake(&mut tx, self.decl.name).await?;
+        publish_wake(&mut tx, self.inner.decl.name).await?;
         tx.commit()
             .await
             .map_err(|e| Error::commit(format!("{op} {r}"), e))?;
