@@ -1,0 +1,12 @@
+# Never edited by hand: sources are globbed and dependencies come from
+# Cargo.toml through all_crate_deps() (tools/rust.bzl).
+load("//tools:rust.bzl", "nanoservice_crate")
+
+nanoservice_crate(
+    name = "order",
+    deps = [
+        "//crates/messages",
+        "//crates/interfaces",
+    ],
+    data = ["//db/app:migrations"],
+)

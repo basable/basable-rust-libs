@@ -1,5 +1,6 @@
 [package]
 name = "basable-externaleffect"
+workspace = "../.."
 description = "Typed building blocks for the external-API effect calls a basable reconciler makes: one validated Adapter per call names what makes a retry of it safe (the sealed strategy sum), and Call is the only road to the wire. No runtime, no registry, no state."
 version.workspace = true
 edition.workspace = true

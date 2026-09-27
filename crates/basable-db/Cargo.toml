@@ -1,5 +1,6 @@
 [package]
 name = "basable-db"
+workspace = "../.."
 description = "Postgres for basable nanoservices: the Nanoservice and Stateful markers, one NanoPool per stateful nanoservice (SET ROLE and search_path pinned per connection), the MigratorPool, the dbmate-format migration runner and ledger check, SQLSTATE helpers."
 version.workspace = true
 edition.workspace = true

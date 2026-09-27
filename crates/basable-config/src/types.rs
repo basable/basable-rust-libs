@@ -68,12 +68,14 @@ pub struct ConfigHeader {
 }
 
 /// A config message: the proto message a seed item decodes into (protobuf
-/// JSON, through serde) and the binder writes and reads. A buffa-generated
-/// type qualifies with a two-line `header` impl mapping its `ConfigHeader`.
-pub trait ConfigMessage: Serialize + DeserializeOwned + Send + Sync + 'static {
-    /// The message's header.
-    fn header(&self) -> ConfigHeader;
-}
+/// JSON, through serde) and the binder writes and reads. Every serde type
+/// qualifies; its header is read by its binder ([`TypedBinder::header`]),
+/// not by a method on the message, because a buffa-generated message lives
+/// in the tenant's proto crate, where a nanoservice cannot implement a
+/// trait for it (the orphan rule).
+pub trait ConfigMessage: Serialize + DeserializeOwned + Send + Sync + 'static {}
+
+impl<M: Serialize + DeserializeOwned + Send + Sync + 'static> ConfigMessage for M {}
 
 /// `NamespaceConfiguration`: the root scope object.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,12 +89,6 @@ pub struct NamespaceConfiguration {
     pub display_name: String,
 }
 
-impl ConfigMessage for NamespaceConfiguration {
-    fn header(&self) -> ConfigHeader {
-        self.header.clone()
-    }
-}
-
 /// Maps a config message onto its subtype table. One binder is registered
 /// per config type; its methods run inside the loader's (or the
 /// repository's) transaction, after the base row, with every reference
@@ -103,6 +99,10 @@ pub trait TypedBinder: Send + Sync + 'static {
 
     /// The type this binder writes.
     fn type_info(&self) -> TypeInfo;
+
+    /// The message's header: its namespace, name and labels as written. A
+    /// buffa message carries it as a message field, absent when unset.
+    fn header(&self, msg: &Self::Msg) -> ConfigHeader;
 
     /// Writes (insert-or-update, `ON CONFLICT (id) DO UPDATE`) the subtype
     /// row(s) for `id` from `msg`, reconciling any nested rows.
@@ -171,7 +171,7 @@ impl<B: TypedBinder> Binder for Typed<B> {
 
     fn decode_header(&self, body: &Value) -> Result<ConfigHeader, BoxError> {
         let msg: B::Msg = serde_json::from_value(body.clone())?;
-        Ok(msg.header())
+        Ok(self.0.header(&msg))
     }
 
     fn apply<'a>(
@@ -217,6 +217,10 @@ impl TypedBinder for NamespaceBinder {
 
     fn type_info(&self) -> TypeInfo {
         NAMESPACE_TYPE
+    }
+
+    fn header(&self, msg: &NamespaceConfiguration) -> ConfigHeader {
+        msg.header.clone()
     }
 
     async fn upsert(
@@ -404,6 +408,10 @@ mod tests {
 
         fn type_info(&self) -> TypeInfo {
             self.0
+        }
+
+        fn header(&self, msg: &NamespaceConfiguration) -> ConfigHeader {
+            msg.header.clone()
         }
 
         async fn upsert(

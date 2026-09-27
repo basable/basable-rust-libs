@@ -1,5 +1,6 @@
 [package]
 name = "basable-testkit"
+workspace = "../.."
 description = "Test harness for basable nanoservices: a database per test from TEST_DATABASE_URL with the tenant's migrations applied as the app login, a NanoPool per nanoservice, and the CommitFaultProxy that drops one COMMIT acknowledgement."
 version.workspace = true
 edition.workspace = true

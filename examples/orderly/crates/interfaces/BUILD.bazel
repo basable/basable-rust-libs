@@ -1,0 +1,24 @@
+# GENERATED at build from //:routing.yaml: per nanoservice a handler trait
+# (`handle_<snake_message>`) generic over the router, and a sender exposing
+# exactly its declared `send_<snake_message>` calls. Depends on messages only.
+# There is no hand-written source in this crate.
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//tools:messenger.bzl", "messenger_generated")
+
+messenger_generated(
+    name = "generate",
+    crate = "interfaces",
+)
+
+rust_library(
+    name = "interfaces",
+    srcs = [":generate"],
+    aliases = aliases(),
+    crate_name = "interfaces",
+    crate_root = "src/lib.rs",
+    # prettyplease output, not rustfmt output: the rustfmt aspect skips it.
+    tags = ["norustfmt"],
+    deps = all_crate_deps(normal = True) + ["//crates/messages"],
+    visibility = ["//visibility:public"],
+)

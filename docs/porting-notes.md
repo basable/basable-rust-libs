@@ -337,9 +337,12 @@ here.
     as `Object<M>`. The namespace binder is built in.
 50. **The message is the proto message, through serde.** buffa's `json`
     feature gives the generated types protobuf-JSON `Serialize` /
-    `Deserialize`, so `ConfigMessage` is `Serialize + DeserializeOwned +
-    header()`, and a generated type qualifies with a two-line `header` impl
-    the scaffolder renders. `ConfigHeader` here is the crate's own struct
+    `Deserialize`, so `ConfigMessage` is a blanket marker over `Serialize +
+    DeserializeOwned`, and the header is read by the binder
+    (`TypedBinder::header`, the two lines the scaffolder renders) — a
+    generated message lives in the tenant's proto crate, where a
+    nanoservice cannot implement a trait for it (the orphan rule; found by
+    the Phase 10 example build). `ConfigHeader` here is the crate's own struct
     (a copy of the proto's four fields), so the crate carries no proto
     toolchain; `NamespaceConfiguration` is hand-written to the same wire
     shape. `protojson.Unmarshal` on the resolved bytes is
@@ -565,4 +568,76 @@ here.
     a handler answering `ServiceResult<Out>` with `Response::new(msg)` is
     the refinement `refining_impl_trait` names, allowed on the impl. A
     server stream is `Response::stream_ok(futures::stream::iter(..))`.
+
+## examples/orderly (Phase 10)
+
+The example is not a port: it is the monorepo scaffolder's output for the
+reference manifest, committed so that the crates as built and the templates
+as written are checked against each other by a build. What the first build
+of it changed, in the crates and in the templates:
+
+74. **The example is rendered, not maintained.** The plan's Phase 10 had
+    the example as the template SOURCE the scaffolder would vendor; it is
+    the other way round: the templates live in `lib/scaffold` and the
+    example is `tools/render-orderly.sh`'s output (a fresh render, rsync
+    with delete so a file the templates stop producing goes, then the
+    local-crates patch and a repin). A clean `git status` after the render
+    is the contract; the CI's `orderly` job builds the committed tree
+    exactly as a tenant's CI would (`--config=ci`, no repin, its own
+    caches). Templates are never fixed in the rendered tree.
+75. **The crates come in through a copy under `tools/`, with an explicit
+    workspace root.** Until the release publishes them, the example's
+    `[patch.crates-io]` names the crates by path. Three things about
+    crate_universe and cargo decide the shape: the splicer copies the root
+    manifest into a temp dir and links the module root's entries beside
+    it, so the path must lie inside the module; the splicer skips a
+    top-level name `.bazelignore` lists, so the copy is nested
+    (`tools/basable-crates`, ignored by that nested path, which Bazel
+    honours and the splicer does not see); and crate_universe writes its
+    generated `BUILD.bazel` into every path dependency's directory, which
+    through a link would clobber the crates' hand-written BUILD files —
+    hence a git-ignored copy (`tools/sync-orderly-crates.sh`), not a link.
+    Cargo then resolves a path dependency under an already-loaded
+    workspace root to THAT workspace (the example's, once the tree
+    resolver adds its fake proc-macro root package even `exclude` does not
+    stop it), so every crate's `[package]` names its root explicitly:
+    `workspace = "../.."`. Harmless in this repository, decisive in the
+    copy.
+76. **A bin-only crate cannot be a dependency.** cargo drops a dependency
+    on a crate without a library target ("ignoring invalid dependency …
+    missing a lib target"), so the lock never carried
+    `basable-messenger-gen` and crate_universe could not build it as a
+    `gen_binaries` tool for a tenant. The crate now has a library target
+    (a re-export of the codegen crate) beside the binary, and a tenant's
+    `crates/messenger` names it as a dev-dependency — the same shape
+    `basable-protoc-gen-buffa` and `connectrpc-codegen` already had
+    through `crates/proto`.
+77. **The header is the binder's, not the message's.** `ConfigMessage`
+    asked the message for its header; a buffa-generated message lives in
+    the tenant's `proto` crate, where a nanoservice cannot implement a
+    foreign trait for a foreign type (E0117, the orphan rule). The trait
+    is now a blanket marker over `Serialize + DeserializeOwned`, and
+    `TypedBinder::header(&self, msg)` reads the header (the repository
+    reaches it through the erased binder's `decode_header`). buffa's
+    embedded message field is `MessageField<T, Inline<T>>`, read with
+    `as_option()`.
+78. **An RPC's messages carry buf's standard names.** The tenant's
+    `//proto:lint` gate is buf's STANDARD set, whose
+    `RPC_RESPONSE_STANDARD_NAME` refused the reference manifest's
+    `UpsertProduct → Product`. The manifest validator now requires
+    `<Method>Request` / `<Method>Response` (or the service-prefixed form),
+    and the api crate's messenger send takes its response from the
+    nanoservice that `handles` the request message rather than from the
+    proto response, which is the wire shape only. `buf.yaml` moved into
+    `proto/` (a v2 module config; the root form with `modules: [proto]`
+    made the lint plugin look for a module at `.`).
+79. **Small template facts the build taught.** `sqlx`'s `FromRow` derive
+    needs the `macros` feature (the template's baseline lists it; the
+    crates never derive it); a message may share its name with the
+    nanoservice that handles it (`order` answering `Order`), so a handler
+    impl names messages `messages::X` instead of glob-importing them;
+    `.bind(..)` takes a `Copy` column by value (clippy's
+    `needless_borrows_for_generic_args`), which the templates decide by
+    field type; a variable nothing reads is not declared (the Kratos admin
+    URL left the config until an identity lookup needs it).
 

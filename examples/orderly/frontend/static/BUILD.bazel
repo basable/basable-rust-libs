@@ -1,0 +1,59 @@
+# The frontend image: nginx-unprivileged (UID 101, port 8080) serving the
+# plain HTML/CSS/JS in this directory. Add pages here; no build step.
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
+load("@rules_pkg//pkg:mappings.bzl", "pkg_files")
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+load("@rules_multirun//:defs.bzl", "multirun")
+load("//k8s/infra:image.bzl", "build_sha265_tag")
+
+pkg_tar(
+    name = "site",
+    srcs = glob(
+        ["**"],
+        exclude = ["BUILD.bazel", "nginx.conf"],
+    ),
+    package_dir = "/usr/share/nginx/html",
+)
+
+# Replaces the base image's default.conf: a second file beside it would
+# leave that server block answering port 8080 first.
+pkg_files(
+    name = "nginx_conf_files",
+    srcs = ["nginx.conf"],
+    prefix = "etc/nginx/conf.d",
+    renames = {"nginx.conf": "default.conf"},
+)
+
+pkg_tar(
+    name = "nginx_conf",
+    srcs = [":nginx_conf_files"],
+)
+
+oci_image(
+    name = "frontend_image",
+    base = "@nginx_unprivileged_linux_amd64",
+    tars = [":site", ":nginx_conf"],
+    exposed_ports = ["8080"],
+    user = "101",
+    visibility = ["//visibility:public"],
+)
+
+build_sha265_tag(
+    name = "frontend_remote_tag",
+    image = ":frontend_image",
+    input = ":frontend_image.json.sha256",
+    output = "frontend_tag.txt",
+)
+
+oci_push(
+    name = "frontend_push_sha256_tag",
+    image = ":frontend_image",
+    remote_tags = ":frontend_remote_tag",
+    repository = "registry.test.local/abandon-above-tilt/shop-frontend",
+)
+
+multirun(
+    name = "frontend_push",
+    commands = [":frontend_push_sha256_tag"],
+    visibility = ["//visibility:public"],
+)

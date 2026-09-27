@@ -1,0 +1,12 @@
+# The Connect boundary: implements the generated service traits, converts
+# proto <-> messages, sends through the messenger. Sends-only.
+load("//tools:rust.bzl", "nanoservice_crate")
+
+nanoservice_crate(
+    name = "api",
+    deps = [
+        "//crates/proto",
+        "//crates/messages",
+        "//crates/interfaces",
+    ],
+)

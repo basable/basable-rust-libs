@@ -2,7 +2,7 @@
   "binary_crates": [
     "connectrpc-codegen 0.9.0"
   ],
-  "checksum": "da27207ab5fe9cf3be1558a27bf906b668ae861549364a9b070c722e32bfc216",
+  "checksum": "685db96cb8dbf0f72a7ff17b8d54a2f2e18c794a0f3f9ffb23c812154799fe41",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -1399,6 +1399,7 @@
       "common_attrs": {
         "edition": "2024"
       },
+      "library_target_name": "basable_messenger_gen",
       "license": "MIT",
       "license_ids": [
         "MIT"
@@ -1407,6 +1408,12 @@
       "package_url": "https://github.com/basable/basable-rust-libs",
       "repository": null,
       "targets": [
+        {
+          "Library": {
+            "crate_name": "basable_messenger_gen",
+            "crate_root": "src/lib.rs"
+          }
+        },
         {
           "Binary": {
             "crate_name": "basable-messenger-gen",

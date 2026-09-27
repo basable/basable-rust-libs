@@ -1,5 +1,6 @@
 [package]
 name = "basable-app"
+workspace = "../.."
 description = "The runtime a basable nanoservice binary is assembled on: typed configuration from the environment, the boot sequence (the app pool with a bounded wait, the migration-ledger gate, one NanoPool per stateful nanoservice under a connection budget), the WakeBus (one LISTEN connection per process fanning processing-object wakes to every worker), the pubsub Bus, the worker and ticker registry joined on SIGTERM, one axum server with /healthz and /readyz, and JSON tracing."
 version.workspace = true
 edition.workspace = true

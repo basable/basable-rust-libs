@@ -1,0 +1,16 @@
+# The migration image: dbmate plus every file under migrations/, run as a
+# Job in apply wave 0 (k8s/dbmate/job.yaml). The app verifies at boot that
+# the ledger holds every version it embeds.
+load("//k8s/infra:dbmate.bzl", "dbmate_image")
+
+filegroup(
+    name = "migrations",
+    srcs = glob(["migrations/*.sql"]),
+    visibility = ["//visibility:public"],
+)
+
+dbmate_image(
+    name = "dbmate",
+    migrations = [":migrations"],
+    repositories = ["registry.test.local/abandon-above-tilt/shop"],
+)

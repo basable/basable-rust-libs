@@ -1,5 +1,6 @@
 [package]
 name = "basable-processingobject-testkit"
+workspace = "../.."
 description = "Conformance substrate for basable-processingobject: the reserved conformance type (key 32000, prefix ek) with its nanoservice, migrations and adapter, the WidgetSim provider simulator, and the harness the conformance suites build scenarios from."
 version.workspace = true
 edition.workspace = true

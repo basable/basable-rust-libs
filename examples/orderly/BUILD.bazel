@@ -1,0 +1,25 @@
+# Root package: the routing topology every generated crate reads and the one
+# push target the CI runs (the buf lint gate is //proto:lint).
+load("@rules_multirun//:defs.bzl", "multirun")
+
+exports_files(
+    [
+        "routing.yaml",
+        "Cargo.toml",
+        "Cargo.lock",
+        "Cargo.Bazel.lock",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# `bazel run //:push -- --tag <sha>` pushes every image the deployment
+# references: the app, the frontend and the migration image.
+multirun(
+    name = "push",
+    commands = [
+        "//app:app_push",
+        "//frontend/static:frontend_push",
+        "//db/app:dbmate_push",
+    ],
+    visibility = ["//visibility:public"],
+)

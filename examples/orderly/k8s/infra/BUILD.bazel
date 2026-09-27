@@ -1,0 +1,2 @@
+# Bazel macros for images (vendored from the basable platform's k8s/infra).
+exports_files(glob(["*.bzl"]))

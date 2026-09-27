@@ -1,0 +1,49 @@
+# Wave 0: the migrations, from the dbmate image //db/app builds. A plain name:
+# a deploy whose dbmate image changed re-runs it (the platform replaces a Job
+# whose template changed); an unchanged image leaves the completed Job be.
+# DATABASE_URL is CNPG's own `uri` — safe to reference: the wave gate holds
+# wave -2 until the Cluster's Ready condition is True, and CNPG writes the
+# app-postgres-app Secret during bootstrap, before that.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dbmate
+  annotations:
+    basable.com/apply-wave: "0"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dbmate
+          image: registry.test.local/abandon-above-tilt/shop-dbmate
+          args: ["--wait", "--wait-timeout", "300s", "up"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: app-postgres-app
+                  key: uri
+            - name: DBMATE_MIGRATIONS_DIR
+              value: /migrations
+            - name: DBMATE_NO_DUMP_SCHEMA
+              value: "true"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 64Mi

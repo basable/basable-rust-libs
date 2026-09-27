@@ -1,0 +1,29 @@
+[package]
+name = "notifier"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+basable-core = { workspace = true }
+basable-publicid = { workspace = true }
+basable-db = { workspace = true }
+basable-messenger = { workspace = true }
+basable-externaleffect = { workspace = true }
+basable-app = { workspace = true }
+tokio = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+messages = { path = "../../crates/messages" }
+interfaces = { path = "../../crates/interfaces" }
+
+[dev-dependencies]
+basable-testkit = { workspace = true }
+basable-effecttest = { workspace = true }

@@ -1,5 +1,6 @@
 [package]
 name = "basable-pubsub"
+workspace = "../.."
 description = "Cross-replica publish/subscribe over Postgres LISTEN/NOTIFY for basable nanoservices: one Bus per process multiplexes every logical channel over one listen connection, stamps each payload with its origin for own-message dedup, and bounds payloads under the NOTIFY limit. Distinct from the processing-object wake channel."
 version.workspace = true
 edition.workspace = true

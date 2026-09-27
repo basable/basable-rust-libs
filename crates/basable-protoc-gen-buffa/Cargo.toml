@@ -1,5 +1,6 @@
 [package]
 name = "basable-protoc-gen-buffa"
+workspace = "../.."
 description = "The protoc plugin a basable nanoservice project's build runs for its message types: buffa-codegen with the platform's fixed output shape (owned types, zero-copy views, JSON, one file per package). A workspace crate with a library target so crate_universe can build it as a gen_binaries tool; upstream's protoc-gen-buffa is binary-only and cannot be a dependency."
 version.workspace = true
 edition.workspace = true

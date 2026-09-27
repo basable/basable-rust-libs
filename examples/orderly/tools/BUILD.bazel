@@ -1,0 +1,10 @@
+# Build tooling: the codegen macros the crates load (proto.bzl,
+# messenger.bzl, rust.bzl) and protoc as a target for the codegen actions.
+load(":protoc.bzl", "resolved_protoc")
+
+exports_files(glob(["*.bzl"]))
+
+resolved_protoc(
+    name = "protoc",
+    visibility = ["//visibility:public"],
+)

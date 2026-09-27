@@ -9,9 +9,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use basable_config::{
-    BinderError, ConfigError, ConfigHeader, ConfigMessage, ConfigTypes, ConfigTypesBuilder,
-    Environment, LoadResult, Loader, MANAGED_BY_CONFIG, MANAGED_BY_LABEL, MANAGED_BY_RUNTIME,
-    NAMESPACE_TYPE, NamespaceConfiguration, Repository, TypeInfo, TypedBinder, load_seed,
+    BinderError, ConfigError, ConfigHeader, ConfigTypes, ConfigTypesBuilder, Environment,
+    LoadResult, Loader, MANAGED_BY_CONFIG, MANAGED_BY_LABEL, MANAGED_BY_RUNTIME, NAMESPACE_TYPE,
+    NamespaceConfiguration, Repository, TypeInfo, TypedBinder, load_seed,
 };
 use basable_db::{MigratorPool, PoolConfig};
 use basable_testkit::{TestDb, runfile};
@@ -38,12 +38,6 @@ struct PricingRuleConfiguration {
     supersedes: String,
 }
 
-impl ConfigMessage for PricingRuleConfiguration {
-    fn header(&self) -> ConfigHeader {
-        self.header.clone()
-    }
-}
-
 const PRICING_RULE: TypeInfo = TypeInfo {
     id: 100,
     name: "PricingRuleConfiguration",
@@ -59,6 +53,10 @@ impl TypedBinder for PricingRuleBinder {
 
     fn type_info(&self) -> TypeInfo {
         PRICING_RULE
+    }
+
+    fn header(&self, msg: &PricingRuleConfiguration) -> ConfigHeader {
+        msg.header.clone()
     }
 
     async fn upsert(

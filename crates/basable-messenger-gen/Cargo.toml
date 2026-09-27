@@ -1,5 +1,6 @@
 [package]
 name = "basable-messenger-gen"
+workspace = "../.."
 description = "The basable messenger code generator: generates the interfaces and messenger crates of a nanoservice project from routing.yaml, validates the file with line-numbered diagnostics, renders the topology page and prints the JSON Schema. Run by the messenger_generated genrule (tools/messenger.bzl) at build."
 version.workspace = true
 edition.workspace = true

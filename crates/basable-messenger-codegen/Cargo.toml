@@ -1,5 +1,6 @@
 [package]
 name = "basable-messenger-codegen"
+workspace = "../.."
 description = "The basable messenger code generator as a library: parses and validates routing.yaml (JSON Schema plus the coded semantic rules, every diagnostic with its YAML line), analyses the route graph (boxing a feedback set of the routes that close a cycle), and emits the two generated crates (interfaces, messenger) and the topology documentation. basable-messenger-gen is its command line."
 version.workspace = true
 edition.workspace = true

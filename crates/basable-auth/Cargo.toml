@@ -1,5 +1,6 @@
 [package]
 name = "basable-auth"
+workspace = "../.."
 description = "Ory Kratos session validation for a basable nanoservice project: a Validator that checks the request's cookie against /sessions/whoami, public-path allow-lists, a session hook for first-touch provisioning, the Identity in the request extensions and on Ctx, and Connect-shaped 401/503 answers. The test bypass is a feature the testkit enables."
 version.workspace = true
 edition.workspace = true

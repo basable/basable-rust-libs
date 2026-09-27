@@ -1,5 +1,6 @@
 [package]
 name = "basable-effecttest"
+workspace = "../.."
 description = "The per-adapter audit for basable-externaleffect: a component's test builds a Harness over its own simulator and runs the probe suite that proves the admission evidence its adapter declares, plus AckLossProxy, an HTTP proxy that lands a request and drops its answer."
 version.workspace = true
 edition.workspace = true

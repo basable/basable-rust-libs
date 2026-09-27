@@ -9,6 +9,7 @@ buffa_connect_library(
     name = "echo_gen",
     buffa_plugin = "//crates/basable-protoc-gen-buffa:protoc-gen-buffa",
     package = "basable.connecttest.v1",
+    proto_root = "tests/connect/proto",
     protos = glob(["proto/**/*.proto"]),
 )
 

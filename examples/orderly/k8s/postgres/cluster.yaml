@@ -1,0 +1,32 @@
+# The application's Postgres: one CNPG Cluster, 1 instance(s).
+# CNPG creates the `app` database owned by the `app` login and mints the
+# `app-postgres-app` Secret (username, password, uri) the migration Job and
+# the app read — nobody generates a password. Raise `instances` within a
+# paid quota for HA; nothing else changes.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: app-postgres
+  annotations:
+    basable.com/apply-wave: "-2"
+spec:
+  instances: 1
+  storage:
+    size: 5Gi
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+      # The app login creates the nanoservice roles in its own migrations.
+      postInitApplicationSQL:
+        - ALTER ROLE app CREATEROLE;
+  postgresql:
+    parameters:
+      max_connections: "100"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi

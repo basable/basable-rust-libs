@@ -1,0 +1,14 @@
+# The plain Rust messages nanoservices exchange through the messenger.
+# Protobuf exists only at the API boundary (the api crate converts).
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+rust_library(
+    name = "messages",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "messages",
+    deps = all_crate_deps(normal = True),
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+)

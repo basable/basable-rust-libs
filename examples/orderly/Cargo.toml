@@ -1,0 +1,96 @@
+# Workspace metadata for crate_universe and `cargo check`. Bazel is the build;
+# nobody runs cargo here except the CI's smoke check. [workspace.dependencies]
+# is the ONLY dependency list: crates name what they use with
+# `{ workspace = true }` and never pin a version themselves.
+[workspace]
+resolver = "2"
+exclude = ["tools/basable-crates"]
+members = [
+    "crates/proto",
+    "crates/messages",
+    "crates/interfaces",
+    "crates/messenger",
+    "api",
+    "app",
+    # basable:members-begin — one line per nanoservice crate
+    "nanoservices/catalog",
+    "nanoservices/order",
+    "nanoservices/notifier",
+    # basable:members-end
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98.1"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+# The basable frameworks, released in lockstep and pinned exactly.
+basable-core = "=0.1.0"
+basable-publicid = "=0.1.0"
+basable-db = "=0.1.0"
+basable-processingobject = "=0.1.0"
+basable-processingobject-testkit = "=0.1.0"
+basable-externaleffect = "=0.1.0"
+basable-effecttest = "=0.1.0"
+basable-config = "=0.1.0"
+basable-messenger = "=0.1.0"
+basable-messenger-gen = "=0.1.0"
+basable-connect = "=0.1.0"
+basable-auth = "=0.1.0"
+basable-pubsub = "=0.1.0"
+basable-app = "=0.1.0"
+basable-testkit = "=0.1.0"
+
+# Protobuf and Connect (pre-1.0: pinned to the minor). The two protoc plugins
+# are build-time binaries (crate_universe gen_binaries in MODULE.bazel):
+# connectrpc-codegen's, and the platform's basable-protoc-gen-buffa.
+buffa = { version = "0.9", features = ["json"] }
+buffa-types = "0.9"
+connectrpc = { version = "0.9", features = ["axum", "json"] }
+connectrpc-codegen = "0.9"
+basable-protoc-gen-buffa = "=0.1.0"
+
+# The curated baseline. Never openssl, never a crate that needs a system
+# library (docs/adding-a-dependency.md).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+axum = "0.8"
+tower = "0.5"
+# macros: the FromRow derive on row structs (model.rs); query! is never used.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+rust_decimal = { version = "1", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2"] }
+http = "1"
+futures = "0.3"
+dashmap = "6"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
+# basable:local-crates-begin — the workspace crates through the tools/basable-crates copy, until the release publishes them
+[patch.crates-io]
+basable-core = { path = "tools/basable-crates/crates/basable-core" }
+basable-publicid = { path = "tools/basable-crates/crates/basable-publicid" }
+basable-db = { path = "tools/basable-crates/crates/basable-db" }
+basable-testkit = { path = "tools/basable-crates/crates/basable-testkit" }
+basable-processingobject = { path = "tools/basable-crates/crates/basable-processingobject" }
+basable-processingobject-testkit = { path = "tools/basable-crates/crates/basable-processingobject-testkit" }
+basable-externaleffect = { path = "tools/basable-crates/crates/basable-externaleffect" }
+basable-effecttest = { path = "tools/basable-crates/crates/basable-effecttest" }
+basable-config = { path = "tools/basable-crates/crates/basable-config" }
+basable-messenger = { path = "tools/basable-crates/crates/basable-messenger" }
+basable-messenger-gen = { path = "tools/basable-crates/crates/basable-messenger-gen" }
+basable-connect = { path = "tools/basable-crates/crates/basable-connect" }
+basable-auth = { path = "tools/basable-crates/crates/basable-auth" }
+basable-pubsub = { path = "tools/basable-crates/crates/basable-pubsub" }
+basable-app = { path = "tools/basable-crates/crates/basable-app" }
+basable-protoc-gen-buffa = { path = "tools/basable-crates/crates/basable-protoc-gen-buffa" }
+# basable:local-crates-end

@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package health.v1;
+
+// HealthService answers the platform's readiness probe through Connect as
+// well as the plain /readyz route, so a Connect client can check the API
+// the same way.
+service HealthService {
+  rpc Check(CheckRequest) returns (CheckResponse);
+}
+
+message CheckRequest {}
+
+message CheckResponse {
+  // ready is true once every pool is reachable and the migration ledger
+  // holds every embedded version.
+  bool ready = 1;
+}

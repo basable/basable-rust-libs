@@ -129,7 +129,13 @@ impl Repository {
             item: at.clone(),
             source: Box::new(e),
         })?;
-        let labels = store::stamped(&msg.header().labels, MANAGED_BY_RUNTIME);
+        let header = binder
+            .decode_header(&body)
+            .map_err(|e| ConfigError::Decode {
+                item: at.clone(),
+                source: e,
+            })?;
+        let labels = store::stamped(&header.labels, MANAGED_BY_RUNTIME);
 
         let mut tx = self
             .pool

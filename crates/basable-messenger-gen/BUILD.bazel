@@ -1,9 +1,20 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# The library target exists so cargo keeps a dependency on this crate in a
+# tenant's lock (a bin-only crate is dropped as a dependency); the binary is
+# the tool the messenger_generated genrule runs.
+rust_library(
+    name = "basable_messenger_gen",
+    srcs = ["src/lib.rs"],
+    crate_name = "basable_messenger_gen",
+    visibility = ["//visibility:public"],
+    deps = ["//crates/basable-messenger-codegen:basable_messenger_codegen"],
+)
 
 rust_binary(
     name = "basable-messenger-gen",
-    srcs = glob(["src/**/*.rs"]),
-    crate_name = "basable_messenger_gen",
+    srcs = ["src/main.rs"],
+    crate_name = "basable_messenger_gen_bin",
     visibility = ["//visibility:public"],
     deps = ["//crates/basable-messenger-codegen:basable_messenger_codegen"],
 )

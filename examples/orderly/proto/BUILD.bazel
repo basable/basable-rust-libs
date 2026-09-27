@@ -1,0 +1,27 @@
+# The proto sources: one package per nanoservice that exposes an API or
+# declares config types, plus health and the config header. buf lint runs
+# as a test; codegen is //crates/proto's build step, which names the files
+# of each package (exported here) and imports through :protos.
+load("@rules_buf//buf:defs.bzl", "buf_lint_test")
+load("@protobuf//bazel:proto_library.bzl", "proto_library")
+
+exports_files(glob(["**/*.proto"]))
+
+filegroup(
+    name = "protos",
+    srcs = glob(["**/*.proto"]),
+    visibility = ["//visibility:public"],
+)
+
+proto_library(
+    name = "all_proto",
+    srcs = glob(["**/*.proto"]),
+    strip_import_prefix = "/proto",
+    visibility = ["//visibility:public"],
+)
+
+buf_lint_test(
+    name = "lint",
+    config = ":buf.yaml",
+    targets = [":all_proto"],
+)

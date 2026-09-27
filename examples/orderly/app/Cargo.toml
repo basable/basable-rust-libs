@@ -1,0 +1,32 @@
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "app"
+path = "src/main.rs"
+
+[dependencies]
+basable-core = { workspace = true }
+basable-app = { workspace = true }
+basable-db = { workspace = true }
+basable-auth = { workspace = true }
+basable-connect = { workspace = true }
+basable-pubsub = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+messages = { path = "../crates/messages" }
+interfaces = { path = "../crates/interfaces" }
+messenger = { path = "../crates/messenger" }
+api = { path = "../api" }
+# basable:nanoservice-deps-begin — one line per nanoservice crate
+catalog = { path = "../nanoservices/catalog" }
+order = { path = "../nanoservices/order" }
+notifier = { path = "../nanoservices/notifier" }
+# basable:nanoservice-deps-end

@@ -1,5 +1,6 @@
 [package]
 name = "basable-connect"
+workspace = "../.."
 description = "The glue between a basable nanoservice project and connectrpc: a ConnectRouter that mounts generated services into the app's axum router, the AppError to ConnectError mapping (the sixteen codes one to one), the request-id layer, and the Ctx a handler derives from a RequestContext (request id, deadline, the validated Identity)."
 version.workspace = true
 edition.workspace = true

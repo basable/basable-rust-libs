@@ -1,5 +1,6 @@
 [package]
 name = "basable-config"
+workspace = "../.."
 description = "The declarative configuration framework for basable nanoservices: temporal config objects with one binder per type, seed JSON under config/base/ loaded in one transaction with cross-references resolved in dependency order and undeclared objects pruned, and a repository for runtime reads and the rare programmatic write."
 version.workspace = true
 edition.workspace = true

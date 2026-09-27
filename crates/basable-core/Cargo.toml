@@ -1,5 +1,6 @@
 [package]
 name = "basable-core"
+workspace = "../.."
 description = "Leaf types every basable framework crate shares: naming rules, labels, the two-clock Deadline, BoxError, AppError with the Connect codes, and the request Ctx."
 version.workspace = true
 edition.workspace = true

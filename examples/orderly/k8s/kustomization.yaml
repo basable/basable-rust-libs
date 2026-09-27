@@ -1,0 +1,22 @@
+# The root the workflow renders with `kustomize build --enable-helm`. There
+# is no `images:` block to maintain: the Render step pins each built image by
+# NAME to the digest the run pushed; upstream images (CNPG, Kratos, Postgres)
+# pass through pinned by their own tags.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - cnpg/
+  - postgres/cluster.yaml
+  - postgres/kratos-db.yaml
+  - dbmate/job.yaml
+  - kratos/secret-job.yaml
+  - kratos/migrate-job.yaml
+  - kratos/configmap.yaml
+  - kratos/deployment.yaml
+  - kratos/service.yaml
+  - app/deployment.yaml
+  - app/service.yaml
+  - frontend/deployment.yaml
+  - frontend/service.yaml
+  - httproute.yaml

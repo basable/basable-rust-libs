@@ -22,3 +22,7 @@ target
 
 # Bazel output symlinks
 /bazel-*
+
+# The copy of the workspace crates the example builds against
+# (tools/sync-orderly-crates.sh); refreshed by every render.
+/examples/orderly/tools/basable-crates/

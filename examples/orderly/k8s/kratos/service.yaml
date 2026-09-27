@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: kratos-public
+  annotations:
+    basable.com/apply-wave: "1"
+spec:
+  selector:
+    app: kratos
+  ports:
+    - name: public
+      port: 4433
+      targetPort: public
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kratos-admin
+  annotations:
+    basable.com/apply-wave: "1"
+spec:
+  selector:
+    app: kratos
+  ports:
+    - name: admin
+      port: 4434
+      targetPort: admin

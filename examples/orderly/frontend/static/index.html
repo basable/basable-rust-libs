@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shop</title>
+  <link rel="stylesheet" href="/site.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">Shop</a>
+    <nav>
+      <a href="/.ory/self-service/login/browser" data-when="anonymous">Sign in</a>
+      <a href="/.ory/self-service/logout/browser" data-when="signed-in">Sign out</a>
+    </nav>
+  </header>
+  <main class="panel">
+    <h1>Shop</h1>
+    <p>The application is running. This page is plain HTML served by nginx;
+    the API answers under <code>/api/</code> and sessions come from Kratos
+    under <code>/.ory/</code>.</p>
+    <p id="status">Checking the API…</p>
+  </main>
+  <script src="/site.js"></script>
+</body>
+</html>

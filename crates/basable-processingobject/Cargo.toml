@@ -1,5 +1,6 @@
 [package]
 name = "basable-processingobject"
+workspace = "../.."
 description = "The declarative reconciliation framework for basable nanoservices: typed spec and status rows under a generic envelope, reconciled by claimed, fenced attempts. This release ships the store, the claim and completion path, and the worker runtime."
 version.workspace = true
 edition.workspace = true
