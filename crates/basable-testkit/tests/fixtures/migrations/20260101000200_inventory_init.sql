@@ -1,17 +1,31 @@
 -- migrate:up
 
 -- The role is cluster-global and two databases may run this migration at
--- once (a test database per test); the existence check is not atomic, so
--- the concurrent loser's CREATE ROLE is caught rather than failed.
+-- once (a test database per test). The existence check is not atomic, so
+-- the concurrent loser's CREATE ROLE is caught and the check repeated: the
+-- repeat is what makes the winner's committed role visible to the rest of
+-- this transaction (its scan of pg_roles accepts the catalog invalidation
+-- the winner's commit sent, which the failed CREATE ROLE left a stale
+-- negative cache entry behind for).
 DO $$
+DECLARE
+    attempts int := 0;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nano_inventory') THEN
+    LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nano_inventory') THEN
+            EXIT;
+        END IF;
         BEGIN
             CREATE ROLE nano_inventory NOLOGIN NOINHERIT;
+            EXIT;
         EXCEPTION WHEN duplicate_object OR unique_violation THEN
-            NULL; -- created concurrently
+            attempts := attempts + 1;
+            IF attempts > 50 THEN
+                RAISE;
+            END IF;
+            PERFORM pg_sleep(0.05);
         END;
-    END IF;
+    END LOOP;
 END $$;
 
 GRANT nano_inventory TO app WITH SET TRUE, INHERIT FALSE;
