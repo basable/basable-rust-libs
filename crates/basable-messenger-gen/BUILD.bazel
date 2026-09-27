@@ -1,0 +1,14 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+
+rust_binary(
+    name = "basable-messenger-gen",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "basable_messenger_gen",
+    visibility = ["//visibility:public"],
+    deps = ["//crates/basable-messenger-codegen:basable_messenger_codegen"],
+)
+
+rust_test(
+    name = "basable_messenger_gen_test",
+    crate = ":basable-messenger-gen",
+)

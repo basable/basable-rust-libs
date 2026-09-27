@@ -371,3 +371,80 @@ here.
     database-free `SeedView` are the platform's, not a tenant's; the port
     is the framework: registry, loader, repository over any registered
     type.
+
+## basable-messenger, basable-messenger-codegen and basable-messenger-gen
+
+55. **Two Go generators, one Rust generator, two output crates.** Go's
+    `interface-gen-v2` and `messenger-gen-v2` read one `routing.yaml`
+    with the same templates duplicated; here `basable-messenger-codegen`
+    parses once and emits `interfaces` (per nanoservice a router-generic
+    `XHandler<R: XRoutes>` trait, `XSender<'a, R>` and the `XRoutes`
+    bound) and `messenger` (the concrete router). The routing semantics
+    are Go's untouched: typed response = strict 1:1, `response: error` =
+    sequential fail-fast fan-out in declaration order, no response = void
+    fan-out to 0..N handlers.
+56. **Traits and static dispatch instead of interfaces and a struct of
+    interfaces.** Go's messenger holds `geninterfaces.XInterface` fields
+    and hands each sender a `Sendable` interface at construction
+    (`SetSendable`). Here the router is one concrete type passed by shared
+    reference into every handler (`s: XSender<'_, R>`), the handler is
+    generic over `R: XRoutes`, and `XRoutes` is a bound made of one
+    `Route<M, Resp, source::X, Ctx>` per declared send. A nanoservice
+    sending an undeclared message has no `send_` method; who may send
+    what is a trait bound, not a convention, and every call is a direct
+    monomorphised call.
+57. **Cycles are boxed, mechanically.** With static dispatch a route's
+    future is part of its caller's future type, so a cycle in
+    `routing.yaml` is an infinitely sized future — E0733, which Go's
+    interface indirection never met. The generator computes a feedback
+    vertex set of the route graph (depth-first in declaration order,
+    boxing the route a back-edge points at unless the cycle already
+    passes through a boxed route) and emits `boxed(async move { .. })` on
+    exactly those routes, reported as `W_ROUTE_CYCLE` with the cycle
+    named. To make the boxed hidden type nameable, `Route::route` ties the
+    router and context borrows to one lifetime (`fn route<'a>(&'a self,
+    ctx: &'a Ctx, msg: M) -> impl Future + Send + 'a`); an unboxed route
+    is a plain `async fn`.
+58. **The `Send` bound is the anti-deadlock rule.** Every generated handler
+    method returns `impl Future + Send`, so a `std::sync::MutexGuard` held
+    across a `send_*` is a compile error (E0277), not the runtime hang the
+    design discussion feared; `tests/messenger/cyclic` pins it as a
+    `compile_fail` doctest. Handlers take `&self`; the router is `Sync`,
+    and the messenger crate asserts every component `Send + Sync` by name
+    so the error lands on the component, not inside a route's future.
+59. **Every nanoservice is a router field, sends-only ones included.** Go
+    included only components that handle something (the api handler was
+    wired through `SetSendable`). Here `AppMessenger::new` takes every
+    nanoservice in `routing.yaml` order and exposes one accessor per
+    component for the composition root (`main` leaks the router and hands
+    `router.api()` to the Connect server; workers get their component the
+    same way). Nanoservice crates depend on `interfaces` only, so they
+    cannot name the router or reach another component; the accessors are
+    the app's.
+60. **Diagnostics carry a code and the YAML line; structure is a JSON
+    Schema.** Go's `Validate` returned one `fmt.Errorf` at a time with an
+    index (`component 2, sends[1]`). Here the file is read through
+    yaml-rust2's event API into a line-aware tree, the structure is
+    checked by a draft 2020-12 schema (`additionalProperties: false`,
+    `version: 1`, the name pattern; `basable-messenger-gen schema` prints
+    it for editors), and the semantic rules have stable codes
+    (`E_DUP_COMPONENT`, `E_RESPONSE_MISMATCH`, …), every one at its line,
+    all of them reported in one run. Two rules Go left to the compiler
+    are explicit: `E_DUP_MESSAGE_IN_LIST` and `E_NOT_A_TYPE` (syn parses
+    every type path; a message must be a plain path because its last
+    segment names the methods). `E_RESPONSE_MISMATCH` subsumes Go's
+    error-fan-out check: any two declarations of one message must agree.
+    The corpus under `spec/routing/fixtures` is the contract with the
+    monorepo's Go validator (still to be vendored there).
+61. **Method names are the scaffolder's, not the Go generator's.** Go
+    stripped the `Proto` suffix (`Send{{baseName}}`); the scaffold writes
+    `handle_<snake message>` with its own `snake`, so `names.rs` is that
+    function byte for byte: `GetProductRequest` →
+    `handle_get_product_request`, `send_get_product_request`. The plan's
+    examples (`handle_get_product`) were shorthand.
+62. **A fan-out clones the message.** Go passed pointers to every handler;
+    a Rust fan-out moves the message into its last handler and clones it
+    for the others, so a fanned-out message must be `Clone` (the messages
+    template derives it). A void fan-out with no handler consumes the
+    message and returns.
+

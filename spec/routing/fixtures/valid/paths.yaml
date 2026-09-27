@@ -1,0 +1,14 @@
+# Messages named by path and responses with generic arguments; no `uses`.
+version: 1
+messenger:
+  name: Router
+  rust:
+    error_type: basable_core::AppError
+    ctx_type: basable_core::Ctx
+nanoservices:
+  - name: api
+    sends:
+      - { message: messages::ListItemsRequest, response: "Vec<messages::Item>" }
+  - name: items
+    handles:
+      - { message: messages::ListItemsRequest, response: "Vec<messages::Item>" }

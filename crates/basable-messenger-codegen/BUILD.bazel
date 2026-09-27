@@ -1,0 +1,34 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "basable_messenger_codegen",
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = ["src/schema.json"],
+    crate_name = "basable_messenger_codegen",
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+# The crate's own #[cfg(test)] modules: the YAML tree, the names, the
+# semantic rules, the cycle analysis and the emitted-text assertions (the
+# port of error_fanout_test.go).
+rust_test(
+    name = "basable_messenger_codegen_test",
+    crate = ":basable_messenger_codegen",
+    deps = all_crate_deps(normal_dev = True),
+)
+
+# The fixture corpus under //spec/routing: every valid fixture parses,
+# analyses and emits both crates as parseable Rust; every invalid fixture
+# yields the code its first line names; the orderly goldens are pinned.
+rust_test(
+    name = "corpus",
+    srcs = ["tests/corpus.rs"],
+    crate_root = "tests/corpus.rs",
+    data = ["//spec/routing:fixtures"],
+    deps = [":basable_messenger_codegen"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

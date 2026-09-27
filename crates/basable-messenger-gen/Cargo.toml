@@ -1,0 +1,20 @@
+[package]
+name = "basable-messenger-gen"
+description = "The basable messenger code generator: generates the interfaces and messenger crates of a nanoservice project from routing.yaml, validates the file with line-numbered diagnostics, renders the topology page and prints the JSON Schema. Run by the messenger_generated genrule (tools/messenger.bzl) at build."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "basable-messenger-gen"
+path = "src/main.rs"
+
+[dependencies]
+basable-messenger-codegen = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

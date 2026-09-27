@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://basable.com/schemas/routing.yaml.json",
+  "title": "basable routing.yaml",
+  "description": "The message topology of a basable nanoservice project: which nanoservice handles and sends which message, and what each message answers with. Read by basable-messenger-gen at build.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "messenger", "nanoservices"],
+  "properties": {
+    "version": {
+      "description": "The schema version; only 1 exists.",
+      "const": 1
+    },
+    "messenger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "rust"],
+      "properties": {
+        "name": {
+          "description": "The generated router's type name.",
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]*$"
+        },
+        "rust": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["error_type", "ctx_type"],
+          "properties": {
+            "error_type": {
+              "description": "The error type every typed and error response carries (a Rust type path).",
+              "type": "string",
+              "minLength": 1
+            },
+            "ctx_type": {
+              "description": "The request context type every handler receives (a Rust type path).",
+              "type": "string",
+              "minLength": 1
+            },
+            "uses": {
+              "description": "`use` items emitted at the top of both generated crates, so message names resolve.",
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "nanoservices": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nanoservice" }
+    }
+  },
+  "$defs": {
+    "nanoservice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "description": "The nanoservice's name: its crate, its router field, and (in PascalCase) its component type.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "handles": {
+          "description": "The messages this nanoservice handles, in the order fan-outs call it.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/message" }
+        },
+        "sends": {
+          "description": "The messages this nanoservice may send; its sender exposes exactly these.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/message" }
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["message"],
+      "properties": {
+        "message": {
+          "description": "The message type (a Rust type path, resolved through `messenger.rust.uses`).",
+          "type": "string",
+          "minLength": 1
+        },
+        "response": {
+          "description": "Absent: a void fan-out (`()`, 0..N handlers). `error`: a sequential fail-fast fan-out (`Result<(), Error>`). Any other value: the typed response of a strict 1:1 request (`Result<T, Error>`, exactly one handler).",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+# expect: E_SCHEMA
+version: 1
+messenger:
+  name: AppMessenger
+  rust:
+    error_type: basable_core::AppError
+    ctx_type: basable_core::Ctx
+    uses: ["messages::*"]
+nanoservices:
+  - name: a
+    handles:
+      - { response: R }

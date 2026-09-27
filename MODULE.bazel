@@ -51,6 +51,9 @@ crate.from_cargo(
         "//crates/basable-externaleffect:Cargo.toml",
         "//crates/basable-effecttest:Cargo.toml",
         "//crates/basable-config:Cargo.toml",
+        "//crates/basable-messenger:Cargo.toml",
+        "//crates/basable-messenger-codegen:Cargo.toml",
+        "//crates/basable-messenger-gen:Cargo.toml",
     ],
 )
 use_repo(crate, "crates")

@@ -1,0 +1,2 @@
+# The Starlark macros consumers load: tools/messenger.bzl.
+exports_files(["messenger.bzl"])

@@ -15,6 +15,9 @@ members = [
     "crates/basable-externaleffect",
     "crates/basable-effecttest",
     "crates/basable-config",
+    "crates/basable-messenger",
+    "crates/basable-messenger-codegen",
+    "crates/basable-messenger-gen",
 ]
 
 [workspace.package]
@@ -40,6 +43,9 @@ basable-processingobject-testkit = { version = "=0.1.0", path = "crates/basable-
 basable-externaleffect = { version = "=0.1.0", path = "crates/basable-externaleffect" }
 basable-effecttest = { version = "=0.1.0", path = "crates/basable-effecttest" }
 basable-config = { version = "=0.1.0", path = "crates/basable-config" }
+basable-messenger = { version = "=0.1.0", path = "crates/basable-messenger" }
+basable-messenger-codegen = { version = "=0.1.0", path = "crates/basable-messenger-codegen" }
+basable-messenger-gen = { version = "=0.1.0", path = "crates/basable-messenger-gen" }
 
 uuid = { version = "1", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
@@ -54,3 +60,10 @@ tracing = "0.1"
 # HTTP, for the simulators and later the Connect glue and Kratos client.
 axum = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2"] }
+# The messenger code generator (build-time only in a tenant project).
+yaml-rust2 = "0.13"
+jsonschema = { version = "0.58", default-features = false }
+syn = { version = "3", features = ["full", "parsing", "printing"] }
+quote = "1"
+proc-macro2 = "1"
+prettyplease = "0.3"

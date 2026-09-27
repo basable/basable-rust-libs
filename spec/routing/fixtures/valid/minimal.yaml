@@ -1,0 +1,11 @@
+# One nanoservice that neither sends nor handles: a component with
+# tickers only. Valid; the router holds it and no route names it.
+version: 1
+messenger:
+  name: AppMessenger
+  rust:
+    error_type: basable_core::AppError
+    ctx_type: basable_core::Ctx
+    uses: ["messages::*"]
+nanoservices:
+  - name: clock

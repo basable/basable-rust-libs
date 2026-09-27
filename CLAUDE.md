@@ -31,8 +31,9 @@ and every such deviation is listed in `docs/porting-notes.md`.
 - **Dependency direction is strictly downward**: core → publicid → db →
   {processingobject, config} → app; externaleffect depends on core only
   (and processingobject on it, for the `Owner` impl on `Claim`); config
-  depends on core, publicid and db; a testkit depends on what it tests,
-  never the reverse.
+  depends on core, publicid and db; messenger has no dependencies and the
+  generator crates depend on nothing in the workspace (they run at build
+  time); a testkit depends on what it tests, never the reverse.
 - **Errors are typed enums, or `BoxError`; both hand-written.** An error a
   consumer decides on is an enum with its `Display` and `Error` impls spelled
   out; one nobody inspects is `basable_core::BoxError`. No `anyhow`, no
@@ -58,6 +59,12 @@ and every such deviation is listed in `docs/porting-notes.md`.
 | `crates/basable-externaleffect` | The effect admission contract as types: the closed `Strategy` enum (`Idempotent`, `LookBeforeAct`, `KeyedReplay`, `Declared { Resolve \| Hold }`), `Adapter` validated into `Call` (`dispatch`, `declare`, `resolve`, `lookup`, `resolve_keyed`), `DispatchError`/`ResolveError`, classifiers with the `TransportError`/`definitive` markers, `Owner`/`Unfenced`, `EffectSlot`/`AttemptState`/`Resolution`. No runtime, no SQL; core only. Has its own `CLAUDE.md` |
 | `crates/basable-effecttest` | The per-adapter audit: `Harness` + `run`/`try_run`/`audit!` over the universal, per-strategy and late-call probes, `AckLossProxy` (an HTTP proxy that lands a request and drops its answer); `tests/reference.rs` audits three adapters over `WidgetSim` |
 | `crates/basable-config` | The declarative configuration framework, the monorepo's `lib/config` over the tenant's `basable_config` schema: temporal class-table inheritance (base `configuration_object` + one subtype table pair per type, history by the `versioning()` trigger), `TypeInfo` + `ConfigTypesBuilder::register(binder)` (a `TypedBinder` per type: upsert / delete / read; refused on a duplicate id, name or prefix), the platform's seed format (`{configSetName, items[{"@type", header{namespace: "#{NamespaceConfiguration:x}", name, labels}, …}]}`, `<name>.<env>.json` scoping, `#{Type:ns:name}` references), `Loader::load` (validate deps → topo sort → ONE transaction under a table lock → prune what the files no longer declare), `load_seed`, `Repository` (`get`/`list`/`lookup_id`/`namespace_id`, `upsert`/`delete` stamped `managed-by=runtime`); `tests/` over the fixture's `PricingRuleConfiguration` and the seed directories under `tests/seed/` |
+| `crates/basable-messenger` | The messenger runtime: the `Route<M, Resp, Source, Ctx>` trait the generated router implements (one lifetime ties router and context so a boxed route is nameable) and `boxed`, the one place a route's future is boxed. No dependencies |
+| `crates/basable-messenger-codegen` | The generator as a library: `routing.yaml` through a line-aware YAML tree, the JSON Schema (`schema.json`), the coded rules (`E_*`/`W_*` with lines), the message table and the cycle analysis (a feedback vertex set, `W_ROUTE_CYCLE`), the `quote` + `prettyplease` emitters for the `interfaces` and `messenger` crates, the Markdown topology. Has its own `CLAUDE.md` |
+| `crates/basable-messenger-gen` | The command line the `messenger_generated` genrule runs: `generate --crate interfaces\|messenger`, `validate`, `docs`, `schema`; diagnostics as `routing.yaml:LINE: CODE: …` on stderr, exit 1 on an `E_*` |
+| `tools/messenger.bzl` | `messenger_generated(name, crate, spec, tool, out)`: the genrule a tenant's `crates/interfaces` and `crates/messenger` BUILD files use (the scaffolder renders a copy) |
+| `spec/routing/` | The `routing.yaml` fixture corpus (`fixtures/valid`, `fixtures/invalid` with `# expect: CODE`), the orderly goldens, `VERSION` (the monorepo's Go validator vendors the corpus at that version) |
+| `tests/messenger/` | The generated crates compiled against stub components: `orderly` (the reference topology, routes driven under tokio) and `cyclic` (the boxed back-edge, re-entrancy `a → b → a`, the `compile_fail` doctests for the unboxed cycle and a `MutexGuard` across a send) |
 | `docs/decisions/` | The spikes, one file each, with what was measured |
 | `docs/porting-notes.md` | Every deviation from the Go originals |
 | `.github/workflows/ci.yaml` | `bazel test //...` with the two-cache hygiene |

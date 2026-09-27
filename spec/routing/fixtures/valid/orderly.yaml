@@ -1,0 +1,32 @@
+# The reference topology (plan B4): a catalog, an order service that
+# asks it and notifies, a notifier, and the sends-only api boundary.
+version: 1
+messenger:
+  name: AppMessenger
+  rust:
+    error_type: basable_core::AppError
+    ctx_type: basable_core::Ctx
+    uses: ["messages::*"]
+nanoservices:
+  - name: catalog
+    handles:
+      - { message: UpsertProductRequest, response: Product }
+      - { message: GetProductRequest, response: Product }
+      - { message: OrderEvent }
+  - name: order
+    sends:
+      - { message: GetProductRequest, response: Product }
+      - { message: SendNotificationRequest, response: NotificationReceipt }
+      - { message: OrderEvent }
+    handles:
+      - { message: EnsureOrderRequest, response: Order }
+      - { message: CancelOrderRequest, response: Order }
+  - name: notifier
+    handles:
+      - { message: SendNotificationRequest, response: NotificationReceipt }
+      - { message: OrderEvent }
+  - name: api
+    sends:
+      - { message: UpsertProductRequest, response: Product }
+      - { message: EnsureOrderRequest, response: Order }
+      - { message: CancelOrderRequest, response: Order }

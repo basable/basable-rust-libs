@@ -1,0 +1,15 @@
+# The routing.yaml fixture corpus: the contract between basable-messenger-gen
+# and the monorepo's Go validator (vendored there at a pinned tag). A valid
+# fixture must parse, analyse and emit; an invalid one names on its first
+# line (`# expect: CODE`) the code it must fail with. The goldens pin the
+# emitted text for the orderly fixture.
+filegroup(
+    name = "fixtures",
+    srcs = glob([
+        "fixtures/**/*.yaml",
+        "golden/**",
+    ]),
+    visibility = ["//visibility:public"],
+)
+
+exports_files(["VERSION"] + glob(["fixtures/**/*.yaml"]))
