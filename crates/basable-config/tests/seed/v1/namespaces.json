@@ -1,0 +1,19 @@
+{
+  "configSetName": "namespaces",
+  "items": [
+    {
+      "@type": "basable.config.v1.NamespaceConfiguration",
+      "header": {
+        "name": "default"
+      },
+      "display_name": "Default"
+    },
+    {
+      "@type": "basable.config.v1.NamespaceConfiguration",
+      "header": {
+        "name": "eu"
+      },
+      "display_name": "Europe"
+    }
+  ]
+}

@@ -22,6 +22,7 @@ GRANT USAGE ON SCHEMA basable TO nano_inventory;
 GRANT SELECT ON basable.processing_object_type TO nano_inventory;
 GRANT USAGE ON SCHEMA basable_config TO nano_inventory;
 GRANT SELECT ON ALL TABLES IN SCHEMA basable_config TO nano_inventory;
+ALTER DEFAULT PRIVILEGES IN SCHEMA basable_config GRANT SELECT ON TABLES TO nano_inventory;
 
 -- migrate:down
 DROP SCHEMA IF EXISTS nano_inventory CASCADE;

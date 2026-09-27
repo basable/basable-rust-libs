@@ -1,6 +1,6 @@
 [package]
 name = "basable-config"
-description = "The declarative configuration framework for basable nanoservices: config types registered at boot, seed JSON under config/base/ loaded in one transaction with cross-references resolved in dependency order, and a repository for runtime reads and the rare programmatic write."
+description = "The declarative configuration framework for basable nanoservices: temporal config objects with one binder per type, seed JSON under config/base/ loaded in one transaction with cross-references resolved in dependency order and undeclared objects pruned, and a repository for runtime reads and the rare programmatic write."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,7 @@ authors.workspace = true
 basable-core = { workspace = true }
 basable-db = { workspace = true }
 basable-publicid = { workspace = true }
+chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }

@@ -1,6 +1,8 @@
-//! The config-type registry: every type's identity, its message type, and
-//! the binder that writes it, collected at boot and refused on collision.
+//! The config-type registry: every type's identity, its message, and the
+//! binder that writes its subtype table, collected at boot and refused on
+//! collision.
 
+use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
@@ -8,25 +10,27 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use basable_core::BoxError;
-use basable_core::names::{validate_public_id_prefix, validate_type_name};
-use serde::Serialize;
+use basable_core::labels::Labels;
+use basable_core::names::validate_public_id_prefix;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::error::RegistryError;
+use crate::error::{BinderError, RegistryError};
 
-/// One configuration-object type: the `SMALLINT` its `configuration_type`
-/// row carries, the name seed files and references use, and the prefix its
-/// public ids carry. Declared as a `const` next to the message type it
-/// describes.
+/// One configuration-object type: the `SMALLINT` its
+/// `configuration_object_type` row carries, the proto message name seed
+/// files and references use, and the prefix its public ids carry. Declared
+/// as a `const` next to the binder that writes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeInfo {
-    /// The registered id (`configuration_type.id`); 1 is the namespace.
+    /// The registered id (`configuration_object_type.id`); 1 is the
+    /// namespace.
     pub id: i16,
-    /// The type name: lowercase `snake_case`, the `kind` of its seed files
-    /// (compared ignoring case and separators) and the first token of a
+    /// The type name: the proto message name (`PricingRuleConfiguration`),
+    /// the last segment of a seed item's `@type`, the first token of a
     /// reference.
     pub name: &'static str,
     /// The public-id prefix.
@@ -34,36 +38,65 @@ pub struct TypeInfo {
 }
 
 /// The namespace type — the root scope every other object is filed under.
-/// Registered by the builder itself; a seed declares namespaces with
-/// `kind: Namespace` and no `metadata.namespace`.
+/// Registered by the builder itself.
 pub const NAMESPACE_TYPE: TypeInfo = TypeInfo {
     id: 1,
-    name: "namespace",
+    name: "NamespaceConfiguration",
     prefix: "ns",
 };
 
-/// The namespace message. Config messages spell their fields in camelCase
-/// on the wire (the protobuf JSON convention the seed files follow).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+/// The load-time header every config message carries (`ConfigHeader` in
+/// `basable/config/v1/config.proto`): where the object is filed, its name,
+/// its labels. In a seed file `namespace` is a `#{NamespaceConfiguration:
+/// <name>}` reference; the loader resolves it before the message decodes,
+/// so a decoded message's header holds the namespace's id.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Namespace {
-    /// A human-readable name, empty by default.
+pub struct ConfigHeader {
+    /// The namespace, as written.
     #[serde(default)]
+    pub namespace: String,
+    /// The object's name.
+    #[serde(default)]
+    pub name: String,
+    /// The public id, read back only.
+    #[serde(default, alias = "external_id")]
+    pub external_id: String,
+    /// The labels.
+    #[serde(default)]
+    pub labels: Labels,
+}
+
+/// A config message: the proto message a seed item decodes into (protobuf
+/// JSON, through serde) and the binder writes and reads. A buffa-generated
+/// type qualifies with a two-line `header` impl mapping its `ConfigHeader`.
+pub trait ConfigMessage: Serialize + DeserializeOwned + Send + Sync + 'static {
+    /// The message's header.
+    fn header(&self) -> ConfigHeader;
+}
+
+/// `NamespaceConfiguration`: the root scope object.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceConfiguration {
+    /// The header; `namespace` is empty for a namespace.
+    #[serde(default)]
+    pub header: ConfigHeader,
+    /// A human-readable name.
+    #[serde(default, alias = "display_name")]
     pub display_name: String,
 }
 
-/// A config message: the type a seed item's `spec` decodes into and the
-/// repository reads back. Any `Serialize + Deserialize` type qualifies.
-pub trait ConfigMessage: Serialize + DeserializeOwned + Send + Sync + 'static {}
+impl ConfigMessage for NamespaceConfiguration {
+    fn header(&self) -> ConfigHeader {
+        self.header.clone()
+    }
+}
 
-impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ConfigMessage for T {}
-
-/// A binder for a type whose objects also live in the nanoservice's own
-/// tables: `upsert` writes the subtype rows for the object id inside the
-/// loader's (or the repository's) transaction, after the base row and
-/// with every reference in `msg` already resolved to an id; `delete`
-/// removes them before the base row goes. A type that lives in the
-/// `spec` column alone needs no binder: [`ConfigTypesBuilder::register`].
+/// Maps a config message onto its subtype table. One binder is registered
+/// per config type; its methods run inside the loader's (or the
+/// repository's) transaction, after the base row, with every reference
+/// field in the message already resolved to an id.
 pub trait TypedBinder: Send + Sync + 'static {
     /// The message type.
     type Msg: ConfigMessage;
@@ -71,20 +104,33 @@ pub trait TypedBinder: Send + Sync + 'static {
     /// The type this binder writes.
     fn type_info(&self) -> TypeInfo;
 
-    /// Writes (insert-or-update) the subtype rows for `id` from `msg`.
+    /// Writes (insert-or-update, `ON CONFLICT (id) DO UPDATE`) the subtype
+    /// row(s) for `id` from `msg`, reconciling any nested rows.
     fn upsert(
         &self,
         tx: &mut PgConnection,
         id: Uuid,
         msg: &Self::Msg,
-    ) -> impl Future<Output = Result<(), BoxError>> + Send;
+    ) -> impl Future<Output = Result<(), BinderError>> + Send;
 
-    /// Removes the subtype rows for `id`.
+    /// Removes the subtype row(s) for `id`, nested rows first. The loader
+    /// deletes the base row afterwards. A binder may refuse with
+    /// [`BinderError::StillReferenced`] while another object still names
+    /// the row; a prune retries it once the referrers are gone.
     fn delete(
         &self,
         tx: &mut PgConnection,
         id: Uuid,
-    ) -> impl Future<Output = Result<(), BoxError>> + Send;
+    ) -> impl Future<Output = Result<(), BinderError>> + Send;
+
+    /// Reads the subtype row(s) for `id` back into a message, `None` when
+    /// absent. The header need not be filled: the repository carries the
+    /// base identity beside the message.
+    fn read(
+        &self,
+        conn: &mut PgConnection,
+        id: Uuid,
+    ) -> impl Future<Output = Result<Option<Self::Msg>, BinderError>> + Send;
 }
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -92,59 +138,27 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// The type-erased binder the loader and the repository drive.
 pub(crate) trait Binder: Send + Sync {
     fn type_info(&self) -> TypeInfo;
-    /// Decodes `spec` as the message and re-encodes it: the canonical form
-    /// the base row stores, and the proof the spec is well-formed.
-    fn canonicalize(&self, spec: Value) -> Result<Value, BoxError>;
-    /// Decodes `spec` and writes the subtype rows.
+    /// Decodes a resolved item body and returns its header.
+    fn decode_header(&self, body: &Value) -> Result<ConfigHeader, BoxError>;
+    /// Decodes a resolved item body and writes the subtype rows.
     fn apply<'a>(
         &'a self,
         tx: &'a mut PgConnection,
         id: Uuid,
-        spec: Value,
-    ) -> BoxFuture<'a, Result<(), BoxError>>;
+        body: Value,
+    ) -> BoxFuture<'a, Result<(), BinderError>>;
     /// Removes the subtype rows.
     fn remove<'a>(
         &'a self,
         tx: &'a mut PgConnection,
         id: Uuid,
-    ) -> BoxFuture<'a, Result<(), BoxError>>;
-}
-
-/// The binder of a type that lives in the `spec` column alone.
-struct SpecOnly<M> {
-    info: TypeInfo,
-    _msg: std::marker::PhantomData<fn() -> M>,
-}
-
-impl<M: ConfigMessage> Binder for SpecOnly<M> {
-    fn type_info(&self) -> TypeInfo {
-        self.info
-    }
-
-    fn canonicalize(&self, spec: Value) -> Result<Value, BoxError> {
-        let msg: M = serde_json::from_value(spec)?;
-        Ok(serde_json::to_value(&msg)?)
-    }
-
-    fn apply<'a>(
+    ) -> BoxFuture<'a, Result<(), BinderError>>;
+    /// Reads the subtype rows as the message, erased.
+    fn read<'a>(
         &'a self,
-        _tx: &'a mut PgConnection,
-        _id: Uuid,
-        spec: Value,
-    ) -> BoxFuture<'a, Result<(), BoxError>> {
-        let decoded = serde_json::from_value::<M>(spec)
-            .map(|_| ())
-            .map_err(BoxError::from);
-        Box::pin(async move { decoded })
-    }
-
-    fn remove<'a>(
-        &'a self,
-        _tx: &'a mut PgConnection,
-        _id: Uuid,
-    ) -> BoxFuture<'a, Result<(), BoxError>> {
-        Box::pin(async { Ok(()) })
-    }
+        conn: &'a mut PgConnection,
+        id: Uuid,
+    ) -> BoxFuture<'a, Result<Option<Box<dyn Any + Send>>, BinderError>>;
 }
 
 /// A [`TypedBinder`] behind the erased interface.
@@ -155,19 +169,19 @@ impl<B: TypedBinder> Binder for Typed<B> {
         self.0.type_info()
     }
 
-    fn canonicalize(&self, spec: Value) -> Result<Value, BoxError> {
-        let msg: B::Msg = serde_json::from_value(spec)?;
-        Ok(serde_json::to_value(&msg)?)
+    fn decode_header(&self, body: &Value) -> Result<ConfigHeader, BoxError> {
+        let msg: B::Msg = serde_json::from_value(body.clone())?;
+        Ok(msg.header())
     }
 
     fn apply<'a>(
         &'a self,
         tx: &'a mut PgConnection,
         id: Uuid,
-        spec: Value,
-    ) -> BoxFuture<'a, Result<(), BoxError>> {
+        body: Value,
+    ) -> BoxFuture<'a, Result<(), BinderError>> {
         Box::pin(async move {
-            let msg: B::Msg = serde_json::from_value(spec)?;
+            let msg: B::Msg = serde_json::from_value(body)?;
             self.0.upsert(tx, id, &msg).await
         })
     }
@@ -176,8 +190,75 @@ impl<B: TypedBinder> Binder for Typed<B> {
         &'a self,
         tx: &'a mut PgConnection,
         id: Uuid,
-    ) -> BoxFuture<'a, Result<(), BoxError>> {
+    ) -> BoxFuture<'a, Result<(), BinderError>> {
         Box::pin(self.0.delete(tx, id))
+    }
+
+    fn read<'a>(
+        &'a self,
+        conn: &'a mut PgConnection,
+        id: Uuid,
+    ) -> BoxFuture<'a, Result<Option<Box<dyn Any + Send>>, BinderError>> {
+        Box::pin(async move {
+            Ok(self
+                .0
+                .read(conn, id)
+                .await?
+                .map(|m| Box::new(m) as Box<dyn Any + Send>))
+        })
+    }
+}
+
+/// The namespace binder, over `basable_config.namespace_configuration`.
+struct NamespaceBinder;
+
+impl TypedBinder for NamespaceBinder {
+    type Msg = NamespaceConfiguration;
+
+    fn type_info(&self) -> TypeInfo {
+        NAMESPACE_TYPE
+    }
+
+    async fn upsert(
+        &self,
+        tx: &mut PgConnection,
+        id: Uuid,
+        msg: &NamespaceConfiguration,
+    ) -> Result<(), BinderError> {
+        sqlx::query(
+            "INSERT INTO basable_config.namespace_configuration (id, display_name) VALUES ($1, $2)
+             ON CONFLICT (id) DO UPDATE SET display_name = EXCLUDED.display_name",
+        )
+        .bind(id)
+        .bind(&msg.display_name)
+        .execute(tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete(&self, tx: &mut PgConnection, id: Uuid) -> Result<(), BinderError> {
+        sqlx::query("DELETE FROM basable_config.namespace_configuration WHERE id = $1")
+            .bind(id)
+            .execute(tx)
+            .await?;
+        Ok(())
+    }
+
+    async fn read(
+        &self,
+        conn: &mut PgConnection,
+        id: Uuid,
+    ) -> Result<Option<NamespaceConfiguration>, BinderError> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT display_name FROM basable_config.namespace_configuration WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(conn)
+        .await?;
+        Ok(row.map(|(display_name,)| NamespaceConfiguration {
+            header: ConfigHeader::default(),
+            display_name: display_name.unwrap_or_default(),
+        }))
     }
 }
 
@@ -199,41 +280,29 @@ impl ConfigTypesBuilder {
         let mut b = ConfigTypesBuilder {
             binders: Vec::new(),
         };
-        b.register::<Namespace>(NAMESPACE_TYPE);
+        b.register(NamespaceBinder);
         b
     }
 
-    /// Registers a type whose objects live in the `spec` column alone,
-    /// decoded as `M`.
-    pub fn register<M: ConfigMessage>(&mut self, info: TypeInfo) -> &mut Self {
-        self.binders.push(Box::new(SpecOnly::<M> {
-            info,
-            _msg: std::marker::PhantomData,
-        }));
-        self
-    }
-
-    /// Registers a type with a binder that also writes the nanoservice's
-    /// own tables.
-    pub fn register_binder<B: TypedBinder>(&mut self, binder: B) -> &mut Self {
+    /// Registers a type through its binder.
+    pub fn register<B: TypedBinder>(&mut self, binder: B) -> &mut Self {
         self.binders.push(Box::new(Typed(binder)));
         self
     }
 
-    /// Validates the collected types: names and prefixes by the registry
-    /// rules, and no two types sharing an id, a name or a prefix. The first
-    /// problem is the error.
+    /// Validates the collected types: message-shaped names, prefixes by the
+    /// public-id rule, and no two types sharing an id, a name or a prefix.
+    /// The first problem is the error.
     pub fn build(self) -> Result<ConfigTypes, RegistryError> {
         let mut by_id: HashMap<i16, usize> = HashMap::new();
         let mut by_name: HashMap<&'static str, usize> = HashMap::new();
         let mut by_prefix: HashMap<&'static str, usize> = HashMap::new();
-        let mut types: Vec<String> = Vec::with_capacity(self.binders.len());
+        let mut names: Vec<String> = Vec::with_capacity(self.binders.len());
         for (i, b) in self.binders.iter().enumerate() {
             let t = b.type_info();
-            if let Err(cause) = validate_type_name(t.name) {
+            if !is_message_name(t.name) {
                 return Err(RegistryError::InvalidTypeName {
                     name: t.name.to_owned(),
-                    cause,
                 });
             }
             if let Err(cause) = validate_public_id_prefix(t.prefix) {
@@ -245,7 +314,7 @@ impl ConfigTypesBuilder {
             if let Some(prior) = by_id.insert(t.id, i) {
                 return Err(RegistryError::DuplicateId {
                     id: t.id,
-                    names: (types[prior].clone(), t.name.to_owned()),
+                    names: (names[prior].clone(), t.name.to_owned()),
                 });
             }
             if let Some(prior) = by_name.insert(t.name, i) {
@@ -257,10 +326,10 @@ impl ConfigTypesBuilder {
             if let Some(prior) = by_prefix.insert(t.prefix, i) {
                 return Err(RegistryError::DuplicatePrefix {
                     prefix: t.prefix.to_owned(),
-                    names: (types[prior].clone(), t.name.to_owned()),
+                    names: (names[prior].clone(), t.name.to_owned()),
                 });
             }
-            types.push(t.name.to_owned());
+            names.push(t.name.to_owned());
         }
         Ok(ConfigTypes {
             binders: self.binders,
@@ -268,6 +337,15 @@ impl ConfigTypesBuilder {
             by_name,
         })
     }
+}
+
+/// A proto message name: an upper-case letter followed by letters and
+/// digits.
+fn is_message_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_uppercase())
+        && chars.all(|c| c.is_ascii_alphanumeric())
+        && name.len() <= 128
 }
 
 /// The validated registry, shared behind an [`Arc`] by the loader, the
@@ -287,17 +365,6 @@ impl ConfigTypes {
     /// The type with id `id`.
     pub fn type_by_id(&self, id: i16) -> Option<TypeInfo> {
         self.by_id.get(&id).map(|&i| self.binders[i].type_info())
-    }
-
-    /// The type a seed file's `kind` names: `kind` and the type name are
-    /// compared ignoring case and separators, so `PricingRule`,
-    /// `pricing_rule` and `pricing-rule` all name `pricing_rule`.
-    pub fn type_by_kind(&self, kind: &str) -> Option<TypeInfo> {
-        let wanted = normalize(kind);
-        self.binders
-            .iter()
-            .map(|b| b.type_info())
-            .find(|t| normalize(t.name) == wanted)
     }
 
     /// Every registered type, in registration order.
@@ -326,117 +393,128 @@ impl fmt::Debug for ConfigTypes {
     }
 }
 
-fn normalize(s: &str) -> String {
-    s.chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .map(|c| c.to_ascii_lowercase())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[derive(Serialize, serde::Deserialize)]
-    struct Rule {
-        rate: i64,
+    struct Rule(TypeInfo);
+
+    impl TypedBinder for Rule {
+        type Msg = NamespaceConfiguration;
+
+        fn type_info(&self) -> TypeInfo {
+            self.0
+        }
+
+        async fn upsert(
+            &self,
+            _tx: &mut PgConnection,
+            _id: Uuid,
+            _msg: &NamespaceConfiguration,
+        ) -> Result<(), BinderError> {
+            Ok(())
+        }
+
+        async fn delete(&self, _tx: &mut PgConnection, _id: Uuid) -> Result<(), BinderError> {
+            Ok(())
+        }
+
+        async fn read(
+            &self,
+            _conn: &mut PgConnection,
+            _id: Uuid,
+        ) -> Result<Option<NamespaceConfiguration>, BinderError> {
+            Ok(None)
+        }
     }
 
     const RULE: TypeInfo = TypeInfo {
         id: 100,
-        name: "pricing_rule",
+        name: "PricingRuleConfiguration",
         prefix: "prule",
     };
 
     #[test]
-    fn the_registry_resolves_by_name_id_and_kind() {
+    fn the_registry_resolves_by_name_and_id() {
         let mut b = ConfigTypesBuilder::new();
-        b.register::<Rule>(RULE);
+        b.register(Rule(RULE));
         let types = b.build().unwrap();
-        assert_eq!(types.type_by_name("pricing_rule"), Some(RULE));
+        assert_eq!(types.type_by_name("PricingRuleConfiguration"), Some(RULE));
         assert_eq!(types.type_by_id(100), Some(RULE));
-        assert_eq!(types.type_by_kind("PricingRule"), Some(RULE));
-        assert_eq!(types.type_by_kind("pricing-rule"), Some(RULE));
-        assert_eq!(types.type_by_kind("Namespace"), Some(NAMESPACE_TYPE));
-        assert_eq!(types.type_by_kind("Order"), None);
+        assert_eq!(
+            types.type_by_name("NamespaceConfiguration"),
+            Some(NAMESPACE_TYPE)
+        );
+        assert_eq!(types.type_by_name("pricing_rule"), None);
         assert_eq!(
             types.public_ids().collect::<Vec<_>>(),
-            vec![("namespace", "ns"), ("pricing_rule", "prule")]
+            vec![
+                ("NamespaceConfiguration", "ns"),
+                ("PricingRuleConfiguration", "prule")
+            ]
         );
-        let canonical = types
-            .binder(100)
+        let header = types
+            .binder(1)
             .unwrap()
-            .canonicalize(serde_json::json!({"rate": 3, "extra": true}))
+            .decode_header(&serde_json::json!({
+                "header": {"name": "billing", "labels": {"tier": "a"}},
+                "display_name": "Billing"
+            }))
             .unwrap();
-        assert_eq!(
-            canonical,
-            serde_json::json!({"rate": 3}),
-            "unknown keys drop"
-        );
-        assert!(
-            types
-                .binder(100)
-                .unwrap()
-                .canonicalize(serde_json::json!({"rate": "x"}))
-                .is_err()
-        );
+        assert_eq!(header.name, "billing");
+        assert_eq!(header.labels.get("tier").map(String::as_str), Some("a"));
     }
 
     #[test]
     fn the_registry_refuses_collisions_and_bad_names() {
-        let mut b = ConfigTypesBuilder::new();
-        b.register::<Rule>(TypeInfo {
-            id: 1,
-            name: "other",
-            prefix: "oth",
-        });
-        assert!(matches!(
-            b.build(),
-            Err(RegistryError::DuplicateId { id: 1, .. })
-        ));
-
-        let mut b = ConfigTypesBuilder::new();
-        b.register::<Rule>(RULE).register::<Rule>(TypeInfo {
-            id: 101,
-            name: "pricing_rule",
-            prefix: "other",
-        });
-        assert!(matches!(
-            b.build(),
-            Err(RegistryError::DuplicateName { .. })
-        ));
-
-        let mut b = ConfigTypesBuilder::new();
-        b.register::<Rule>(TypeInfo {
-            id: 101,
-            name: "other",
-            prefix: "ns",
-        });
-        assert!(matches!(
-            b.build(),
-            Err(RegistryError::DuplicatePrefix { .. })
-        ));
-
-        let mut b = ConfigTypesBuilder::new();
-        b.register::<Rule>(TypeInfo {
-            id: 101,
-            name: "PricingRule",
-            prefix: "pr",
-        });
-        assert!(matches!(
-            b.build(),
-            Err(RegistryError::InvalidTypeName { .. })
-        ));
-
-        let mut b = ConfigTypesBuilder::new();
-        b.register::<Rule>(TypeInfo {
-            id: 101,
-            name: "pricing_rule",
-            prefix: "p_r",
-        });
-        assert!(matches!(
-            b.build(),
-            Err(RegistryError::InvalidPrefix { .. })
-        ));
+        type Is = fn(&RegistryError) -> bool;
+        let cases: Vec<(TypeInfo, Is)> = vec![
+            (
+                TypeInfo {
+                    id: 1,
+                    name: "Other",
+                    prefix: "oth",
+                },
+                |e| matches!(e, RegistryError::DuplicateId { id: 1, .. }),
+            ),
+            (
+                TypeInfo {
+                    id: 101,
+                    name: "NamespaceConfiguration",
+                    prefix: "oth",
+                },
+                |e| matches!(e, RegistryError::DuplicateName { .. }),
+            ),
+            (
+                TypeInfo {
+                    id: 101,
+                    name: "Other",
+                    prefix: "ns",
+                },
+                |e| matches!(e, RegistryError::DuplicatePrefix { .. }),
+            ),
+            (
+                TypeInfo {
+                    id: 101,
+                    name: "pricing_rule",
+                    prefix: "pr",
+                },
+                |e| matches!(e, RegistryError::InvalidTypeName { .. }),
+            ),
+            (
+                TypeInfo {
+                    id: 101,
+                    name: "PricingRule",
+                    prefix: "p_r",
+                },
+                |e| matches!(e, RegistryError::InvalidPrefix { .. }),
+            ),
+        ];
+        for (info, is) in cases {
+            let mut b = ConfigTypesBuilder::new();
+            b.register(Rule(info));
+            let err = b.build().unwrap_err();
+            assert!(is(&err), "{info:?}: {err}");
+        }
     }
 }

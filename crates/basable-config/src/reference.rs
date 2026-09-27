@@ -1,6 +1,7 @@
-//! Cross-object references — `#{type:namespace:name}` in a string value of a
-//! spec, `#{namespace:name}` for a namespace — their dependency graph, and
-//! the order that applies every dependency before its dependents.
+//! Cross-object references — `#{Type:namespace:name}` in a string value of
+//! an item, `#{NamespaceConfiguration:name}` for a namespace — their
+//! dependency graph, and the order that applies every dependency before its
+//! dependents.
 
 use std::collections::BTreeMap;
 
@@ -18,7 +19,7 @@ pub(crate) fn parse_ref(inner: &str) -> Result<ItemName, ConfigError> {
     let malformed = || ConfigError::Reference {
         item: String::new(),
         reason: format!(
-            "invalid reference {inner:?}: expected #{{type:namespace:name}} or #{{namespace:name}}"
+            "invalid reference {inner:?}: expected #{{Type:namespace:name}} or #{{NamespaceConfiguration:name}}"
         ),
     };
     match parts.as_slice() {
@@ -46,11 +47,11 @@ fn occurrences(s: &str) -> Vec<(usize, usize, &str)> {
     out
 }
 
-/// Every distinct reference in the string values of `spec`, in encounter
+/// Every distinct reference in the string values of `body`, in traversal
 /// order.
-pub(crate) fn find_refs(spec: &Value) -> Result<Vec<ItemName>, ConfigError> {
+pub(crate) fn find_refs(body: &Value) -> Result<Vec<ItemName>, ConfigError> {
     let mut refs = Vec::new();
-    walk_strings(spec, &mut |s| {
+    walk_strings(body, &mut |s| {
         for (_, _, inner) in occurrences(s) {
             let r = parse_ref(inner)?;
             if !refs.contains(&r) {
@@ -62,13 +63,13 @@ pub(crate) fn find_refs(spec: &Value) -> Result<Vec<ItemName>, ConfigError> {
     Ok(refs)
 }
 
-/// `spec` with every reference replaced by what `resolve` returns for it
+/// `body` with every reference replaced by what `resolve` returns for it
 /// (an id, as a string).
 pub(crate) fn resolve_refs(
-    spec: &Value,
+    body: &Value,
     resolve: &mut dyn FnMut(&ItemName) -> Result<String, ConfigError>,
 ) -> Result<Value, ConfigError> {
-    map_strings(spec, &mut |s| {
+    map_strings(body, &mut |s| {
         let found = occurrences(s);
         if found.is_empty() {
             return Ok(s.to_owned());
@@ -126,8 +127,12 @@ pub(crate) fn item_deps(item: &Item) -> Vec<ItemName> {
     if !item.name.namespace.is_empty() {
         deps.push(ItemName::namespace(item.name.namespace.clone()));
     }
-    if let Ok(refs) = find_refs(&item.spec) {
-        deps.extend(refs);
+    if let Ok(refs) = find_refs(&item.body) {
+        for r in refs {
+            if !deps.contains(&r) {
+                deps.push(r);
+            }
+        }
     }
     deps
 }
@@ -145,7 +150,7 @@ pub(crate) fn validate_deps(items: &BTreeMap<ItemName, Item>) -> Result<(), Conf
             item: format!("{name} ({})", item.source_file),
             reason,
         };
-        if let Err(ConfigError::Reference { reason, .. }) = find_refs(&item.spec) {
+        if let Err(ConfigError::Reference { reason, .. }) = find_refs(&item.body) {
             return Err(at(reason));
         }
         for dep in item_deps(item) {
@@ -212,22 +217,21 @@ pub(crate) fn topo_sort(items: &BTreeMap<ItemName, Item>) -> Result<Vec<&Item>, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::item::Operation;
     use crate::types::TypeInfo;
 
     const PRICING: TypeInfo = TypeInfo {
         id: 2,
-        name: "pricing_configuration",
+        name: "PricingConfiguration",
         prefix: "price",
     };
 
+    /// An in-memory item with the given natural key and body (which may
+    /// contain `#{Type:ns:name}` references).
     fn item(t: TypeInfo, ns: &str, name: &str, raw: &str) -> Item {
         Item {
             name: ItemName::new(t.name, ns, name),
             type_info: t,
-            operation: Operation::Store,
-            labels: Default::default(),
-            spec: serde_json::from_str(raw).unwrap(),
+            body: serde_json::from_str(raw).unwrap(),
             source_file: "test.json".into(),
         }
     }
@@ -255,7 +259,7 @@ mod tests {
             PRICING,
             "billing",
             "default-next",
-            r##"{"supersedes":"#{pricing_configuration:billing:default-initial}"}"##,
+            r##"{"supersedes":"#{PricingConfiguration:billing:default-initial}"}"##,
         );
         let (ns_n, base_n, next_n) = (ns.name.clone(), base.name.clone(), next.name.clone());
         let m = items(vec![ns, base, next]);
@@ -278,7 +282,7 @@ mod tests {
             PRICING,
             "billing",
             "default-next",
-            r##"{"supersedes":"#{pricing_configuration:billing:ghost}"}"##,
+            r##"{"supersedes":"#{PricingConfiguration:billing:ghost}"}"##,
         );
         let err = validate_deps(&items(vec![ns, next]))
             .unwrap_err()
@@ -312,7 +316,7 @@ mod tests {
             PRICING,
             "billing",
             "default-initial",
-            r##"{"homeNamespace":"#{namespace:billing}"}"##,
+            r##"{"homeNamespace":"#{NamespaceConfiguration:billing}"}"##,
         );
         let (ns_n, p_n) = (ns.name.clone(), pricing.name.clone());
         let m = items(vec![ns, pricing.clone()]);
@@ -330,13 +334,13 @@ mod tests {
             PRICING,
             "billing",
             "a",
-            r##"{"x":"#{pricing_configuration:billing:b}"}"##,
+            r##"{"x":"#{PricingConfiguration:billing:b}"}"##,
         );
         let b = item(
             PRICING,
             "billing",
             "b",
-            r##"{"x":"#{pricing_configuration:billing:a}"}"##,
+            r##"{"x":"#{PricingConfiguration:billing:a}"}"##,
         );
         let m = items(vec![ns, a, b]);
         validate_deps(&m).unwrap();
@@ -347,39 +351,45 @@ mod tests {
     #[test]
     fn references_parse_and_resolve_inside_strings() {
         assert_eq!(
-            parse_ref("namespace:billing").unwrap(),
+            parse_ref("NamespaceConfiguration:billing").unwrap(),
             ItemName::namespace("billing")
         );
         assert_eq!(
-            parse_ref("unit:billing:eur").unwrap(),
-            ItemName::new("unit", "billing", "eur")
+            parse_ref("UnitConfiguration:billing:eur").unwrap(),
+            ItemName::new("UnitConfiguration", "billing", "eur")
         );
         assert!(parse_ref("just-a-name").is_err());
+        assert!(
+            parse_ref("Namespace:billing").is_err(),
+            "two tokens name a namespace only"
+        );
         assert!(parse_ref("a:b:c:d").is_err());
         assert!(parse_ref("::").is_err());
 
-        let spec = serde_json::json!({
-            "unit": "#{unit:billing:eur}",
-            "nested": {"list": ["#{unit:billing:eur}", "#{namespace:billing}", "plain"]},
-            "label": "id=#{unit:billing:usd}/x",
+        let body = serde_json::json!({
+            "header": {"namespace": "#{NamespaceConfiguration:billing}", "name": "x"},
+            "unit": "#{UnitConfiguration:billing:eur}",
+            "nested": {"list": ["#{UnitConfiguration:billing:eur}", "plain"]},
+            "label": "id=#{UnitConfiguration:billing:usd}/x",
             "n": 3
         });
-        let refs = find_refs(&spec).unwrap();
+        let refs = find_refs(&body).unwrap();
         assert_eq!(
             refs,
             vec![
-                ItemName::new("unit", "billing", "usd"),
-                ItemName::new("unit", "billing", "eur"),
                 ItemName::namespace("billing"),
+                ItemName::new("UnitConfiguration", "billing", "usd"),
+                ItemName::new("UnitConfiguration", "billing", "eur"),
             ],
             "distinct, in traversal order (object keys sorted)"
         );
-        let resolved = resolve_refs(&spec, &mut |r| Ok(format!("<{}>", r.name))).unwrap();
+        let resolved = resolve_refs(&body, &mut |r| Ok(format!("<{}>", r.name))).unwrap();
         assert_eq!(
             resolved,
             serde_json::json!({
+                "header": {"namespace": "<billing>", "name": "x"},
                 "unit": "<eur>",
-                "nested": {"list": ["<eur>", "<billing>", "plain"]},
+                "nested": {"list": ["<eur>", "plain"]},
                 "label": "id=<usd>/x",
                 "n": 3
             })

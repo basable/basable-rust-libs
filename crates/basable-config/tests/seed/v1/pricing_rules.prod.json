@@ -1,0 +1,14 @@
+{
+  "configSetName": "pricing-rules-prod",
+  "items": [
+    {
+      "@type": "orders.v1.PricingRuleConfiguration",
+      "header": {
+        "namespace": "#{NamespaceConfiguration:default}",
+        "name": "prod-only"
+      },
+      "rate_cents": 999,
+      "currency": "EUR"
+    }
+  ]
+}

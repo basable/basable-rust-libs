@@ -1,8 +1,0 @@
-{
-  "apiVersion": "basable.com/v1",
-  "kind": "Namespace",
-  "items": [
-    { "metadata": { "name": "default" }, "spec": { "displayName": "Default" } },
-    { "metadata": { "name": "eu" }, "spec": { "displayName": "Europe" } }
-  ]
-}

@@ -25,6 +25,7 @@ GRANT USAGE ON SCHEMA basable TO nano_orders;
 GRANT SELECT ON basable.processing_object_type TO nano_orders;
 GRANT USAGE ON SCHEMA basable_config TO nano_orders;
 GRANT SELECT ON ALL TABLES IN SCHEMA basable_config TO nano_orders;
+ALTER DEFAULT PRIVILEGES IN SCHEMA basable_config GRANT SELECT ON TABLES TO nano_orders;
 
 -- migrate:down
 DROP SCHEMA IF EXISTS nano_orders CASCADE;

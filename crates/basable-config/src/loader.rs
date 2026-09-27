@@ -1,21 +1,24 @@
 //! The loader: a seed directory for one environment, applied in one
-//! transaction. Objects may also be created at runtime (managed-by
-//! `runtime`); the loader matches by natural key and adopts such an object
-//! — stamping `managed-by=config` — the first time it appears in the files,
-//! after which it is managed declaratively.
+//! transaction. The files are the complete declaration of what the loader
+//! manages: an object carrying `managed-by=config` that the files no longer
+//! declare is deleted in the same transaction (prune). Objects written by
+//! anything else — the repository, application code — carry no such label
+//! and are never touched; the loader matches by natural key and adopts such
+//! an object the first time it appears in the files, after which it is
+//! managed declaratively. Removing an item from the files is therefore how
+//! an object is deleted; there is no delete marker.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use serde_json::Value;
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use crate::error::ConfigError;
-use crate::item::{Environment, Item, ItemName, Operation, read_items};
+use crate::item::{Environment, Item, ItemName, read_items};
 use crate::reference::{resolve_refs, topo_sort, validate_deps};
-use crate::store::{self, MANAGED_BY_CONFIG};
+use crate::store::{self, BaseRow, MANAGED_BY_CONFIG};
 use crate::types::{ConfigTypes, NAMESPACE_TYPE};
 
 /// Applies declarative configuration from seed files into the
@@ -30,11 +33,10 @@ pub struct Loader {
 pub struct LoadResult {
     /// Objects that did not exist.
     pub created: usize,
-    /// Objects whose spec or labels changed (a history row each).
+    /// Existing objects re-applied (whether or not anything changed: the
+    /// trigger decides what history records).
     pub updated: usize,
-    /// Objects already exactly as declared: nothing written.
-    pub unchanged: usize,
-    /// Objects removed by an `operation: delete` item.
+    /// Loader-managed objects the files no longer declared.
     pub deleted: usize,
 }
 
@@ -49,10 +51,9 @@ impl Loader {
     /// checks that every dependency is declared in the same file set,
     /// orders the items so dependencies come first, and reconciles the
     /// desired state into the database in ONE transaction, under a table
-    /// lock that serialises concurrent loads (replicas booting together).
-    /// Objects present in the database but absent from the files are left
-    /// untouched (no prune); only items carrying `operation: delete` are
-    /// removed.
+    /// lock that serialises concurrent loads (replicas booting together):
+    /// apply every item, then prune every loader-managed object the run did
+    /// not apply.
     pub async fn load(&self, dir: &Path, env: Environment) -> Result<LoadResult, ConfigError> {
         let items = read_items(&self.types, dir, env)?;
         validate_deps(&items)?;
@@ -65,7 +66,7 @@ impl Loader {
             .map_err(|e| ConfigError::sql("begin load", e))?;
         // The lock conflicts with itself and with row writers, not with
         // readers: a second replica's load waits for this one and then
-        // finds everything unchanged.
+        // re-applies everything unchanged.
         sqlx::query("LOCK TABLE basable_config.configuration_object IN SHARE ROW EXCLUSIVE MODE")
             .execute(&mut *tx)
             .await
@@ -79,6 +80,7 @@ impl Loader {
         for item in ordered {
             run.apply(&mut tx, item).await?;
         }
+        run.prune(&mut tx).await?;
         tx.commit()
             .await
             .map_err(|e| ConfigError::sql("commit load", e))?;
@@ -87,7 +89,6 @@ impl Loader {
             env = %env,
             created = run.result.created,
             updated = run.result.updated,
-            unchanged = run.result.unchanged,
             deleted = run.result.deleted,
             "config seed loaded"
         );
@@ -109,71 +110,48 @@ impl Run<'_> {
             .binder(item.type_info.id)
             .ok_or_else(|| ConfigError::UnknownType(item.type_info.name.to_owned()))?;
 
-        // Namespace membership: a namespace is root-scoped; everything else
-        // lives in one declared earlier in this run.
+        // Namespace membership: a namespace is its own; everything else
+        // lives in one applied earlier this run.
         let namespace_id = if item.type_info.id == NAMESPACE_TYPE.id {
             None
         } else {
             Some(self.resolve(&ItemName::namespace(item.name.namespace.clone()))?)
         };
-
         let existing =
             store::lookup_id(&mut *tx, item.type_info.id, namespace_id, &item.name.name).await?;
 
-        if item.operation == Operation::Delete {
-            let Some(id) = existing else {
-                return Ok(());
-            };
-            let Some(row) = store::read_for_update(tx, id).await? else {
-                return Ok(());
-            };
-            binder
-                .remove(tx, id)
-                .await
-                .map_err(|source| ConfigError::Binder {
-                    item: at.clone(),
-                    source,
-                })?;
-            store::delete(tx, &row).await?;
-            self.result.deleted += 1;
-            return Ok(());
-        }
-
-        // Resolve #{…} references to ids, then canonicalise through the
-        // type's message so the stored spec is what the type decodes.
-        let resolved = resolve_refs(&item.spec, &mut |r| {
+        // Resolve #{…} references into id strings (header.namespace among
+        // them), then decode: the header's labels go on the base row.
+        let body = resolve_refs(&item.body, &mut |r| {
             self.resolve(r).map(|id| id.to_string())
         })?;
-        let spec = binder
-            .canonicalize(resolved)
+        let header = binder
+            .decode_header(&body)
             .map_err(|source| ConfigError::Decode {
                 item: at.clone(),
                 source,
             })?;
-        let labels = store::stamped(&item.labels, MANAGED_BY_CONFIG);
+        let labels = store::stamped(&header.labels, MANAGED_BY_CONFIG);
 
         let id = match existing {
             Some(id) => {
-                let row = store::read_for_update(tx, id)
-                    .await?
-                    .ok_or_else(|| ConfigError::Conflict(at.clone()))?;
-                if store::update(tx, &row, &labels, &spec).await? {
-                    self.result.updated += 1;
-                } else {
-                    self.result.unchanged += 1;
-                }
+                store::update_labels(tx, id, &labels).await?;
+                self.result.updated += 1;
                 id
             }
             None => {
                 let id = Uuid::new_v4();
                 store::insert(
                     tx,
-                    id,
-                    item.type_info.id,
-                    namespace_id,
-                    &item.name.name,
-                    &labels,
-                    &spec,
+                    &BaseRow {
+                        id,
+                        external_id: basable_publicid::encode(item.type_info.prefix, id),
+                        type_id: item.type_info.id,
+                        name: item.name.name.clone(),
+                        // A namespace object is its own namespace.
+                        namespace_id: namespace_id.unwrap_or(id),
+                        labels,
+                    },
                 )
                 .await?;
                 self.result.created += 1;
@@ -181,10 +159,71 @@ impl Run<'_> {
             }
         };
         binder
-            .apply(tx, id, spec)
+            .apply(tx, id, body)
             .await
             .map_err(|source| ConfigError::Binder { item: at, source })?;
         self.resolved.insert(item.name.clone(), id);
+        Ok(())
+    }
+
+    /// Deletes every loader-managed object this run did not apply: its item
+    /// left the files. Only `managed-by=config` rows are candidates, so
+    /// runtime-owned objects survive. Every foreign key into
+    /// `configuration_object` cascades or nulls, so the deletions need no
+    /// order; the subtype's delete runs first as it does for any removal,
+    /// and history keeps the final state.
+    async fn prune(&mut self, tx: &mut PgConnection) -> Result<(), ConfigError> {
+        let applied: HashSet<Uuid> = self.resolved.values().copied().collect();
+        let mut gone: Vec<(Uuid, i16, String)> = store::list_managed(tx)
+            .await?
+            .into_iter()
+            .filter(|(id, _, _)| !applied.contains(id))
+            .collect();
+        // Namespaces last: deleting one cascades to its members, which must
+        // go through their own binders first.
+        gone.sort_by_key(|(_, type_id, _)| *type_id == NAMESPACE_TYPE.id);
+
+        // A binder may refuse while another object still references the
+        // row (a contact an organisation names). The refusal is a read, not
+        // a failed statement, so the transaction stays usable: delete what
+        // can go, retry the refused ones, and fail only when a pass frees
+        // nothing — then something the files keep, or a runtime object,
+        // still points at it.
+        while !gone.is_empty() {
+            let mut refused = Vec::new();
+            let mut first_refusal: Option<ConfigError> = None;
+            let deleted_before = self.result.deleted;
+            for (id, type_id, name) in std::mem::take(&mut gone) {
+                let type_info = self.types.type_by_id(type_id).ok_or_else(|| {
+                    ConfigError::UnknownType(format!("id {type_id} (prune {name})"))
+                })?;
+                let binder = self
+                    .types
+                    .binder(type_id)
+                    .ok_or_else(|| ConfigError::UnknownType(type_info.name.to_owned()))?;
+                let at = format!("prune {}:{name}", type_info.name);
+                match binder.remove(tx, id).await {
+                    Ok(()) => {}
+                    Err(source) => {
+                        let err = ConfigError::Binder { item: at, source };
+                        if err.is_still_referenced() {
+                            refused.push((id, type_id, name));
+                            first_refusal.get_or_insert(err);
+                            continue;
+                        }
+                        return Err(err);
+                    }
+                }
+                store::delete(tx, id).await?;
+                self.result.deleted += 1;
+            }
+            if let Some(err) = first_refusal
+                && self.result.deleted == deleted_before
+            {
+                return Err(err);
+            }
+            gone = refused;
+        }
         Ok(())
     }
 
@@ -223,22 +262,4 @@ pub async fn load_seed(
         .load(dir, env)
         .await
         .map(Some)
-}
-
-/// The canonical spec of `value` under `types`' binder for the type, for a
-/// test or a tool that wants to compare against what the loader would store.
-pub fn canonical_spec(
-    types: &ConfigTypes,
-    type_id: i16,
-    value: Value,
-) -> Result<Value, ConfigError> {
-    let binder = types
-        .binder(type_id)
-        .ok_or_else(|| ConfigError::UnknownType(type_id.to_string()))?;
-    binder
-        .canonicalize(value)
-        .map_err(|source| ConfigError::Decode {
-            item: format!("type {type_id}"),
-            source,
-        })
 }

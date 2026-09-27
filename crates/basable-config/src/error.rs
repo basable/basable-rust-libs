@@ -1,5 +1,5 @@
-//! The crate's errors: a registry rejection at boot, and everything a load
-//! or a repository call can fail with.
+//! The crate's errors: a registry rejection at boot, a binder's refusal,
+//! and everything a load or a repository call can fail with.
 
 use std::error::Error;
 use std::fmt;
@@ -31,12 +31,10 @@ pub enum RegistryError {
         /// The two names.
         names: (String, String),
     },
-    /// A type's name is not a valid registry name.
+    /// A type's name is not a proto message name.
     InvalidTypeName {
         /// The name.
         name: String,
-        /// The rule it breaks.
-        cause: InvalidName,
     },
     /// A type's prefix is not a valid public-id prefix.
     InvalidPrefix {
@@ -50,28 +48,25 @@ pub enum RegistryError {
 impl fmt::Display for RegistryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RegistryError::DuplicateId { id, names } => {
-                write!(
-                    f,
-                    "config types {:?} and {:?} share id {id}",
-                    names.0, names.1
-                )
-            }
-            RegistryError::DuplicateName { name, ids } => {
-                write!(
-                    f,
-                    "config type {name:?} is registered twice (ids {} and {})",
-                    ids.0, ids.1
-                )
-            }
+            RegistryError::DuplicateId { id, names } => write!(
+                f,
+                "config types {:?} and {:?} share id {id}",
+                names.0, names.1
+            ),
+            RegistryError::DuplicateName { name, ids } => write!(
+                f,
+                "config type {name:?} is registered twice (ids {} and {})",
+                ids.0, ids.1
+            ),
             RegistryError::DuplicatePrefix { prefix, names } => write!(
                 f,
                 "config types {:?} and {:?} share prefix {prefix:?}",
                 names.0, names.1
             ),
-            RegistryError::InvalidTypeName { name, cause } => {
-                write!(f, "config type name {name:?}: {cause}")
-            }
+            RegistryError::InvalidTypeName { name } => write!(
+                f,
+                "config type name {name:?} must be a proto message name (PascalCase)"
+            ),
             RegistryError::InvalidPrefix { name, cause } => {
                 write!(f, "config type {name:?} prefix: {cause}")
             }
@@ -82,10 +77,69 @@ impl fmt::Display for RegistryError {
 impl Error for RegistryError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            RegistryError::InvalidTypeName { cause, .. }
-            | RegistryError::InvalidPrefix { cause, .. } => Some(cause),
+            RegistryError::InvalidPrefix { cause, .. } => Some(cause),
             _ => None,
         }
+    }
+}
+
+/// Why a binder did not do what it was asked.
+#[derive(Debug)]
+pub enum BinderError {
+    /// The row is still named by another object; a prune retries once the
+    /// referrers are gone, a repository delete reports it.
+    StillReferenced(String),
+    /// The message is not writable as given (a reference that is not a
+    /// UUID, a timestamp that does not parse): the caller's input.
+    Invalid(String),
+    /// A statement failed.
+    Sql(sqlx::Error),
+    /// Anything else.
+    Other(BoxError),
+}
+
+impl fmt::Display for BinderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BinderError::StillReferenced(what) => write!(f, "object is still referenced: {what}"),
+            BinderError::Invalid(what) => write!(f, "invalid: {what}"),
+            BinderError::Sql(e) => fmt::Display::fmt(e, f),
+            BinderError::Other(e) => fmt::Display::fmt(e, f),
+        }
+    }
+}
+
+impl Error for BinderError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            BinderError::Sql(e) => Some(e),
+            BinderError::Other(e) => Some(&**e),
+            _ => None,
+        }
+    }
+}
+
+impl From<sqlx::Error> for BinderError {
+    fn from(e: sqlx::Error) -> BinderError {
+        BinderError::Sql(e)
+    }
+}
+
+impl From<serde_json::Error> for BinderError {
+    fn from(e: serde_json::Error) -> BinderError {
+        BinderError::Invalid(format!("decode message: {e}"))
+    }
+}
+
+impl From<uuid::Error> for BinderError {
+    fn from(e: uuid::Error) -> BinderError {
+        BinderError::Invalid(format!("expected a UUID: {e}"))
+    }
+}
+
+impl From<BoxError> for BinderError {
+    fn from(e: BoxError) -> BinderError {
+        BinderError::Other(e)
     }
 }
 
@@ -114,19 +168,19 @@ pub enum ConfigError {
     Cycle(String),
     /// A type name no registered type carries.
     UnknownType(String),
-    /// An item's spec does not decode as its type's message.
+    /// An item's body does not decode as its type's message.
     Decode {
         /// The item.
         item: String,
         /// The decoder's error.
         source: BoxError,
     },
-    /// A typed binder failed.
+    /// A binder failed or refused.
     Binder {
         /// The item.
         item: String,
         /// The binder's error.
-        source: BoxError,
+        source: BinderError,
     },
     /// A statement failed.
     Sql {
@@ -135,9 +189,6 @@ pub enum ConfigError {
         /// The database's error.
         source: sqlx::Error,
     },
-    /// A concurrent writer changed the object between the read and the
-    /// write; the caller's retry sees the new state.
-    Conflict(String),
 }
 
 impl ConfigError {
@@ -146,6 +197,17 @@ impl ConfigError {
             op: op.into(),
             source,
         }
+    }
+
+    /// Whether this is a binder's [`BinderError::StillReferenced`].
+    pub fn is_still_referenced(&self) -> bool {
+        matches!(
+            self,
+            ConfigError::Binder {
+                source: BinderError::StillReferenced(_),
+                ..
+            }
+        )
     }
 }
 
@@ -159,12 +221,9 @@ impl fmt::Display for ConfigError {
             ConfigError::Reference { item, reason } => write!(f, "{item}: {reason}"),
             ConfigError::Cycle(path) => write!(f, "circular reference: {path}"),
             ConfigError::UnknownType(name) => write!(f, "unknown config type {name:?}"),
-            ConfigError::Decode { item, source } => write!(f, "{item}: decode spec: {source}"),
-            ConfigError::Binder { item, source } => write!(f, "{item}: binder: {source}"),
+            ConfigError::Decode { item, source } => write!(f, "{item}: decode: {source}"),
+            ConfigError::Binder { item, source } => write!(f, "{item}: {source}"),
             ConfigError::Sql { op, source } => write!(f, "{op}: {source}"),
-            ConfigError::Conflict(item) => {
-                write!(f, "{item}: changed concurrently; retry sees the new state")
-            }
         }
     }
 }
@@ -172,9 +231,8 @@ impl fmt::Display for ConfigError {
 impl Error for ConfigError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            ConfigError::Decode { source, .. } | ConfigError::Binder { source, .. } => {
-                Some(&**source)
-            }
+            ConfigError::Decode { source, .. } => Some(&**source),
+            ConfigError::Binder { source, .. } => Some(source),
             ConfigError::Sql { source, .. } => Some(source),
             _ => None,
         }

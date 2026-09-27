@@ -1,5 +1,5 @@
 {
-  "checksum": "c5fad280415eaa8e463454db9a2a190d1d34c37f1b54e5c50142166da5cc09cb",
+  "checksum": "04fc63e6bfc2d5198a6f4108b7ef79b3b397b45e9813c08f18e7d127462a68e0",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -700,6 +700,10 @@
     "basable-config 0.1.0": {
       "common_attrs": {
         "deps": [
+          {
+            "id": "chrono 0.4.45",
+            "target": "chrono"
+          },
           {
             "id": "serde 1.0.229",
             "target": "serde"

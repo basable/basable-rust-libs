@@ -1,20 +1,24 @@
 //! Seed files and the items in them: the on-disk envelope, the natural key,
-//! and the filename environment scope.
+//! and the filename environment scope. The format is the platform's:
+//! `{configSetName, items: [{"@type": "<package>.<Message>", header:
+//! {namespace: "#{NamespaceConfiguration:<name>}", name, labels}, …fields}]}`
+//! — each item is one config message in protobuf JSON plus the `@type`
+//! control key. There is no operation key: an item in the files is stored,
+//! and a loader-managed object absent from them is pruned.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
 
-use basable_core::labels::Labels;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::error::ConfigError;
+use crate::reference::parse_ref;
 use crate::types::{ConfigTypes, NAMESPACE_TYPE, TypeInfo};
 
-/// The `apiVersion` every seed file carries.
-pub const API_VERSION: &str = "basable.com/v1";
+const TYPE_KEY: &str = "@type";
 
 /// Which deployment environment a load serves. The closed vocabulary shared
 /// by the load parameter and filename scope tokens; a value outside it
@@ -84,17 +88,6 @@ pub fn file_applies_to(base: &str, env: Environment) -> Result<bool, ConfigError
     Ok(!scoped || applies)
 }
 
-/// The per-item declarative operation. `store` (the default) upserts;
-/// `delete` removes the object. There is no patch: declarative files restate
-/// the whole object.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Operation {
-    /// Create or update.
-    Store,
-    /// Remove.
-    Delete,
-}
-
 /// The natural key of a configuration object: its type name, the NAME of
 /// its namespace (empty for a namespace), and its own name.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -144,103 +137,137 @@ pub struct Item {
     pub name: ItemName,
     /// The type.
     pub type_info: TypeInfo,
-    /// Store or delete.
-    pub operation: Operation,
-    /// `metadata.labels`.
-    pub labels: Labels,
-    /// The spec, references still unresolved.
-    pub spec: Value,
+    /// The item with `@type` removed: the message in protobuf JSON,
+    /// references still unresolved.
+    pub body: Value,
     /// The file the item came from (its base name), for diagnostics.
     pub source_file: String,
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SeedFile {
-    api_version: String,
-    kind: String,
+#[serde(rename_all = "camelCase")]
+struct ConfigSet {
     #[serde(default)]
-    items: Vec<SeedItem>,
+    #[allow(dead_code)]
+    config_set_name: String,
+    #[serde(default)]
+    items: Vec<Value>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SeedItem {
-    metadata: Metadata,
-    #[serde(default = "empty_object")]
-    spec: Value,
-    #[serde(default)]
-    operation: Option<String>,
+/// The bare message name of an `@type` value: the last segment after `/`
+/// and `.` (`type.googleapis.com/orders.v1.PricingRuleConfiguration` and
+/// `orders.v1.PricingRuleConfiguration` both name
+/// `PricingRuleConfiguration`).
+fn type_name_from_url(url: &str) -> &str {
+    let after_slash = url.rsplit('/').next().unwrap_or(url);
+    after_slash.rsplit('.').next().unwrap_or(after_slash)
 }
 
-fn empty_object() -> Value {
-    Value::Object(Default::default())
+/// Parses one item: the `@type` control key names the type, `header.name`
+/// is the object's name, and `header.namespace` is a
+/// `#{NamespaceConfiguration:<name>}` reference — a bare name is rejected so
+/// the file says what it means. A namespace item must omit it; every other
+/// item must carry it.
+pub fn parse_item(
+    types: &ConfigTypes,
+    raw: &Value,
+    source_file: &str,
+) -> Result<Item, ConfigError> {
+    let fail = |reason: String| ConfigError::Seed {
+        file: source_file.to_owned(),
+        reason,
+    };
+    let Value::Object(fields) = raw else {
+        return Err(fail("item is not a JSON object".into()));
+    };
+    let type_url = fields
+        .get(TYPE_KEY)
+        .ok_or_else(|| fail(format!("item missing {TYPE_KEY:?}")))?
+        .as_str()
+        .ok_or_else(|| fail(format!("{TYPE_KEY:?} must be a string")))?;
+    let type_name = type_name_from_url(type_url);
+    let type_info = types.type_by_name(type_name).ok_or_else(|| {
+        fail(format!(
+            "unknown config type {type_name:?} (from {type_url:?})"
+        ))
+    })?;
+
+    let header = fields.get("header").and_then(Value::as_object);
+    let name = header
+        .and_then(|h| h.get("name"))
+        .and_then(Value::as_str)
+        .filter(|n| !n.is_empty())
+        .ok_or_else(|| fail("item missing header.name".into()))?
+        .to_owned();
+    let namespace = match header
+        .and_then(|h| h.get("namespace"))
+        .and_then(Value::as_str)
+    {
+        None | Some("") => String::new(),
+        Some(raw) => {
+            let inner = raw
+                .strip_prefix("#{")
+                .and_then(|r| r.strip_suffix('}'))
+                .filter(|inner| !inner.contains('}'))
+                .ok_or_else(|| {
+                    fail(format!(
+                        "header.namespace {raw:?} must be a #{{NamespaceConfiguration:<name>}} reference, not a bare name"
+                    ))
+                })?;
+            let r = parse_ref(inner).map_err(|e| fail(format!("header.namespace: {e}")))?;
+            if r.type_name != NAMESPACE_TYPE.name || !r.namespace.is_empty() {
+                return Err(fail(format!(
+                    "header.namespace {raw:?} must reference a NamespaceConfiguration (#{{NamespaceConfiguration:<name>}})"
+                )));
+            }
+            r.name
+        }
+    };
+    let is_namespace = type_info.id == NAMESPACE_TYPE.id;
+    if is_namespace && !namespace.is_empty() {
+        return Err(fail(format!(
+            "{name}: a namespace object must not declare a header.namespace"
+        )));
+    }
+    if !is_namespace && namespace.is_empty() {
+        return Err(fail(format!(
+            "{type_name}:{name}: missing header.namespace"
+        )));
+    }
+
+    let mut body: Map<String, Value> = fields.clone();
+    body.remove(TYPE_KEY);
+    Ok(Item {
+        name: ItemName::new(type_info.name, namespace, name),
+        type_info,
+        body: Value::Object(body),
+        source_file: source_file.to_owned(),
+    })
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Metadata {
-    #[serde(default)]
-    namespace: String,
-    name: String,
-    #[serde(default)]
-    labels: Labels,
-}
-
-/// Parses one seed file's text: `{apiVersion, kind, items: [{metadata:
-/// {namespace, name, labels}, spec, operation}]}`. `kind` names the type;
-/// a namespace item carries no `metadata.namespace`, every other item
-/// must.
+/// Parses one seed file's text: `{configSetName, items: […]}`.
 pub fn parse_seed(
     types: &ConfigTypes,
     text: &str,
     source_file: &str,
 ) -> Result<Vec<Item>, ConfigError> {
-    let fail = |reason: String| ConfigError::Seed {
+    let set: ConfigSet = serde_json::from_str(text).map_err(|e| ConfigError::Seed {
         file: source_file.to_owned(),
-        reason,
-    };
-    let file: SeedFile = serde_json::from_str(text).map_err(|e| fail(format!("parse: {e}")))?;
-    if file.api_version != API_VERSION {
-        return Err(fail(format!(
-            "apiVersion must be {API_VERSION:?}, got {:?}",
-            file.api_version
-        )));
-    }
-    let type_info = types
-        .type_by_kind(&file.kind)
-        .ok_or_else(|| fail(format!("unknown config type (kind) {:?}", file.kind)))?;
-    let mut items = Vec::with_capacity(file.items.len());
-    for (i, raw) in file.items.into_iter().enumerate() {
-        let at = |reason: String| fail(format!("item {i}: {reason}"));
-        if raw.metadata.name.is_empty() {
-            return Err(at("metadata.name is required".into()));
-        }
-        let is_namespace = type_info.id == NAMESPACE_TYPE.id;
-        if is_namespace && !raw.metadata.namespace.is_empty() {
-            return Err(at("a namespace must not declare metadata.namespace".into()));
-        }
-        if !is_namespace && raw.metadata.namespace.is_empty() {
-            return Err(at("metadata.namespace is required".into()));
-        }
-        let operation = match raw.operation.as_deref() {
-            None | Some("store") => Operation::Store,
-            Some("delete") => Operation::Delete,
-            Some(other) => return Err(at(format!("unknown operation {other:?}"))),
-        };
-        if !raw.spec.is_object() {
-            return Err(at("spec must be a JSON object".into()));
-        }
-        items.push(Item {
-            name: ItemName::new(type_info.name, raw.metadata.namespace, raw.metadata.name),
-            type_info,
-            operation,
-            labels: raw.metadata.labels,
-            spec: raw.spec,
-            source_file: source_file.to_owned(),
-        });
-    }
-    Ok(items)
+        reason: format!("parse: {e}"),
+    })?;
+    set.items
+        .iter()
+        .enumerate()
+        .map(|(i, raw)| {
+            parse_item(types, raw, source_file).map_err(|e| match e {
+                ConfigError::Seed { file, reason } => ConfigError::Seed {
+                    file,
+                    reason: format!("item {i}: {reason}"),
+                },
+                other => other,
+            })
+        })
+        .collect()
 }
 
 /// Reads every `*.json` under `dir` whose filename scope includes `env`,
@@ -309,89 +336,74 @@ mod tests {
         assert!(file_applies_to("types.dev.test.json", Environment::Test).unwrap());
         assert!(!file_applies_to("types.dev.test.json", Environment::Prod).unwrap());
         let err = file_applies_to("pricing.pord.json", Environment::Prod).unwrap_err();
-        assert!(err.to_string().contains("pord"), "{err}");
+        assert!(err.to_string().contains("\"pord\""), "{err}");
         assert_eq!("prod".parse::<Environment>().unwrap(), Environment::Prod);
         assert!("staging".parse::<Environment>().is_err());
     }
 
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct Rule {
-        rate: i64,
+    fn types() -> ConfigTypes {
+        ConfigTypesBuilder::new().build().unwrap()
     }
 
-    fn types() -> ConfigTypes {
-        let mut b = ConfigTypesBuilder::new();
-        b.register::<Rule>(TypeInfo {
-            id: 100,
-            name: "pricing_rule",
-            prefix: "prule",
-        });
-        b.build().unwrap()
+    #[test]
+    fn type_urls_reduce_to_the_message_name() {
+        assert_eq!(
+            type_name_from_url("type.googleapis.com/orders.v1.PricingRuleConfiguration"),
+            "PricingRuleConfiguration"
+        );
+        assert_eq!(
+            type_name_from_url("config.v1.NamespaceConfiguration"),
+            "NamespaceConfiguration"
+        );
+        assert_eq!(type_name_from_url("Bare"), "Bare");
     }
 
     #[test]
     fn a_seed_file_parses_into_items() {
-        let text = r#"{
-            "apiVersion": "basable.com/v1",
-            "kind": "PricingRule",
+        let text = r##"{
+            "configSetName": "base-namespaces",
             "items": [
-                {"metadata": {"namespace": "default", "name": "standard", "labels": {"tier": "a"}},
-                 "spec": {"rate": 3}},
-                {"metadata": {"namespace": "default", "name": "old"}, "operation": "delete"}
+                {"@type": "config.v1.NamespaceConfiguration",
+                 "header": {"name": "billing", "labels": {"tier": "a"}},
+                 "display_name": "Billing"}
             ]
-        }"#;
-        let items = parse_seed(&types(), text, "pricing_rule.json").unwrap();
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].name.to_string(), "pricing_rule:default:standard");
-        assert_eq!(items[0].operation, Operation::Store);
-        assert_eq!(items[0].labels.get("tier").map(String::as_str), Some("a"));
-        assert_eq!(items[0].spec, serde_json::json!({"rate": 3}));
-        assert_eq!(items[1].operation, Operation::Delete);
-        assert_eq!(items[1].spec, serde_json::json!({}));
-
-        let ns = parse_seed(
-            &types(),
-            r#"{"apiVersion":"basable.com/v1","kind":"Namespace","items":[{"metadata":{"name":"default"}}]}"#,
-            "namespace.json",
-        )
-        .unwrap();
-        assert_eq!(ns[0].name, ItemName::namespace("default"));
+        }"##;
+        let items = parse_seed(&types(), text, "namespaces.json").unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, ItemName::namespace("billing"));
+        assert_eq!(items[0].type_info, NAMESPACE_TYPE);
+        assert!(
+            items[0].body.get("@type").is_none(),
+            "the control key is stripped"
+        );
+        assert_eq!(items[0].body["display_name"], "Billing");
     }
 
     #[test]
-    fn malformed_seed_files_are_named() {
+    fn malformed_items_are_named() {
         let cases = [
+            (r##"{"header":{"name":"x"}}"##, "missing \"@type\""),
             (
-                r#"{"apiVersion":"v0","kind":"PricingRule","items":[]}"#,
-                "apiVersion",
-            ),
-            (
-                r#"{"apiVersion":"basable.com/v1","kind":"Order","items":[]}"#,
+                r##"{"@type":"config.v1.Widget","header":{"name":"x"}}"##,
                 "unknown config type",
             ),
             (
-                r#"{"apiVersion":"basable.com/v1","kind":"PricingRule","items":[{"metadata":{"name":"x"}}]}"#,
-                "metadata.namespace is required",
+                r##"{"@type":"config.v1.NamespaceConfiguration"}"##,
+                "missing header.name",
             ),
             (
-                r#"{"apiVersion":"basable.com/v1","kind":"Namespace","items":[{"metadata":{"namespace":"a","name":"x"}}]}"#,
+                r##"{"@type":"config.v1.NamespaceConfiguration","header":{"name":"x","namespace":"#{NamespaceConfiguration:y}"}}"##,
                 "must not declare",
             ),
             (
-                r#"{"apiVersion":"basable.com/v1","kind":"PricingRule","items":[{"metadata":{"namespace":"a","name":"x"},"operation":"patch"}]}"#,
-                "unknown operation",
+                r##"{"@type":"config.v1.NamespaceConfiguration","header":{"name":"x","namespace":"bare"}}"##,
+                "not a bare name",
             ),
-            (
-                r#"{"apiVersion":"basable.com/v1","kind":"PricingRule","items":[{"metadata":{"namespace":"a","name":"x"},"spec":[]}]}"#,
-                "spec must be a JSON object",
-            ),
-            (
-                r#"{"apiVersion":"basable.com/v1","kind":"PricingRule","items":[{"metadata":{"namespace":"a","name":"x"},"extra":1}]}"#,
-                "parse",
-            ),
+            (r##"[1]"##, "not a JSON object"),
         ];
         for (text, want) in cases {
-            let err = parse_seed(&types(), text, "f.json").unwrap_err();
+            let raw: Value = serde_json::from_str(text).unwrap();
+            let err = parse_item(&types(), &raw, "f.json").unwrap_err();
             assert!(err.to_string().contains(want), "{err} should name {want:?}");
         }
     }
