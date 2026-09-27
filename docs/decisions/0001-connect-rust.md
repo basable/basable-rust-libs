@@ -25,3 +25,16 @@ upgrades ride the pins bump. No in-house Connect shim and no tonic fallback.
   `protoc-gen-buffa`, `protoc-gen-buffa-packaging`, `protoc-gen-connect-rust`.
 - (c) prebuilt `toolchains_protoc` compatibility: buffa supports protoc
   v21.12+, editions 2024 needs v33; the platform pins protoc 36.2.
+
+**Residuals, closed by Phase 9 (2026-09-27):**
+
+- (a) unary and server-streaming round-trip over HTTP/1.1 and over h2c
+  with the generated client in both codecs (`tests/connect/tests/echo.rs`);
+  the gateway leg itself is Phase 10's cluster run.
+- (b) the plugin binaries are `protoc-gen-connect-rust` (crate
+  `connectrpc-codegen`, which has a library target) and `protoc-gen-buffa`
+  from `basable-protoc-gen-buffa`: upstream's `protoc-gen-buffa` is
+  binary-only and cannot be a `gen_binaries` tool (porting note 72).
+- (c) the protobuf module's prebuilt protoc 36.2 drives both plugins.
+- connectrpc resolved to 0.9.1, buffa to 0.9.2.
+

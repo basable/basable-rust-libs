@@ -10,6 +10,8 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
+basable-auth = { workspace = true }
+basable-connect = { workspace = true }
 basable-core = { workspace = true }
 basable-db = { workspace = true }
 basable-processingobject = { workspace = true }

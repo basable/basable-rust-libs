@@ -33,8 +33,9 @@ and every such deviation is listed in `docs/porting-notes.md`.
   (and processingobject on it, for the `Owner` impl on `Claim`); config
   depends on core, publicid and db; messenger has no dependencies and the
   generator crates depend on nothing in the workspace (they run at build
-  time); pubsub depends on core and db; app on everything below it; a
-  testkit depends on what it tests, never the reverse.
+  time); pubsub depends on core and db; auth on core; connect on core and
+  auth; app on everything below it; a testkit depends on what it tests,
+  never the reverse.
 - **Errors are typed enums, or `BoxError`; both hand-written.** An error a
   consumer decides on is an enum with its `Display` and `Error` impls spelled
   out; one nobody inspects is `basable_core::BoxError`. No `anyhow`, no
@@ -65,6 +66,11 @@ and every such deviation is listed in `docs/porting-notes.md`.
 | `crates/basable-messenger-gen` | The command line the `messenger_generated` genrule runs: `generate --crate interfaces\|messenger`, `validate`, `docs`, `schema`; diagnostics as `routing.yaml:LINE: CODE: …` on stderr, exit 1 on an `E_*` |
 | `crates/basable-pubsub` | The `lib/pubsub` port: `Bus` over one `LISTEN` connection per process (`subscribe` / `on_reconnect` before `run`, `publish` / `publish_tx` with `Delivery::{ExcludeSelf, IncludeSelf}`, own-message dedup by instance id, the 7900-byte payload bound, `listening()`); `tests/bus.rs` runs two buses over one database including a killed listen backend |
 | `crates/basable-app` | The runtime a binary is assembled on: `Config` from the environment (`var::*`), `App::new(cfg).expect_migrations(v).connect()` (the framework pool with a bounded wait, the ledger gate), `App::pool::<N>()` under the connection budget, `App::bus()`, `App::serve()` → `Serve::{raw, worker, ticker}` → `start()`/`run()` (one axum server with `/healthz` and `/readyz`, the `WakeBus` feeding every registered worker, tickers, SIGTERM drain naming stuck loops), `basable_app::tracing::init_json()`; `tests/app.rs` is the Phase 8 verification |
+| `crates/basable-auth` | Kratos session validation: `Validator::kratos(url)` with public paths and prefixes, a `session_hook`, `apply(router)` as the axum layer (401 `unauthenticated` / 503 `unavailable` in Connect's JSON shape, a bounded negative cache), `Identity` in the request extensions and on `Ctx` (`AuthCtx::user_id`), `bypassed_for_tests` behind the `test-bypass` feature |
+| `crates/basable-connect` | The connectrpc glue: `ConnectRouter` (`add_service`, `into_axum`), `into_connect_error` / `IntoConnect` (the sixteen codes one to one), `with_request_ids`, `request_ctx` (request id, deadline, identity); re-exports `connectrpc` |
+| `crates/basable-protoc-gen-buffa` | The `protoc-gen-buffa` binary `tools/proto.bzl` runs: `buffa-codegen` behind the plugin protocol with the platform's options (`views`, `json`, `file_per_package`), a workspace crate because upstream's plugin is binary-only |
+| `tools/proto.bzl` | `buffa_connect_library(name, protos, package, ...)`: the genrule over the prebuilt protoc and the two plugins, one `<package>.rs` per plugin; `tools/protoc.bzl` resolves the protobuf module's prebuilt protoc as `//tools:protoc` |
+| `tests/connect/` | The Phase 9 verification: an EchoService generated through the macro, mounted on the app behind the auth layer, driven by the generated client in both codecs over HTTP/1.1 and h2c, plain JSON, a server stream, and the auth cases against a Kratos simulator |
 | `tools/messenger.bzl` | `messenger_generated(name, crate, spec, tool, out)`: the genrule a tenant's `crates/interfaces` and `crates/messenger` BUILD files use (the scaffolder renders a copy) |
 | `spec/routing/` | The `routing.yaml` fixture corpus (`fixtures/valid`, `fixtures/invalid` with `# expect: CODE`), the orderly goldens, `VERSION` (the monorepo's Go validator vendors the corpus at that version) |
 | `tests/messenger/` | The generated crates compiled against stub components: `orderly` (the reference topology, routes driven under tokio) and `cyclic` (the boxed back-edge, re-entrancy `a → b → a`, the `compile_fail` doctests for the unboxed cycle and a `MutexGuard` across a send) |

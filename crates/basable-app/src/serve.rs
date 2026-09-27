@@ -15,6 +15,8 @@ use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::get;
+use basable_auth::Validator;
+use basable_connect::ConnectRouter;
 use basable_core::Ctx;
 use basable_processingobject::{Adapter, AfterComplete, Reconciler, Worker};
 use basable_pubsub::Bus;
@@ -40,6 +42,7 @@ struct Registered {
 pub struct Serve {
     app: App,
     router: Router,
+    auth: Option<Validator>,
     loops: Vec<Registered>,
 }
 
@@ -48,8 +51,23 @@ impl Serve {
         Serve {
             app,
             router: Router::new(),
+            auth: None,
             loops: Vec::new(),
         }
+    }
+
+    /// Mounts the Connect services: every registered procedure path,
+    /// beside the raw routes and the probes.
+    pub fn connect(self, router: ConnectRouter) -> Serve {
+        self.raw(router.into_axum())
+    }
+
+    /// Requires a validated session on every route but the validator's
+    /// public paths; the probes are always public. A validated request's
+    /// identity reaches the handler through `basable_connect::request_ctx`.
+    pub fn auth(mut self, validator: Validator) -> Serve {
+        self.auth = Some(validator.public_paths(["/healthz", "/readyz"]));
+        self
     }
 
     /// The app it wires.
@@ -98,7 +116,12 @@ impl Serve {
     /// Binds the listen address, starts the server, the buses and every
     /// loop, and returns once the readiness probe would answer 200.
     pub async fn start(self) -> Result<Running, Error> {
-        let Serve { app, router, loops } = self;
+        let Serve {
+            app,
+            router,
+            auth,
+            loops,
+        } = self;
         let (cfg, pool, wake, bus) = app.into_parts();
         let addr = cfg.listen_addr();
         let listener = tokio::net::TcpListener::bind(addr)
@@ -119,7 +142,14 @@ impl Serve {
             .route("/healthz", get(healthz))
             .route("/readyz", get(readyz))
             .with_state(health.clone());
-        let router = router.merge(probes);
+        // Layers wrap what is already there: the auth layer sees every
+        // route (probes included, public by construction), and the
+        // request-id layer is outermost so a 401 carries an id too.
+        let mut router = router.merge(probes);
+        if let Some(validator) = auth {
+            router = Arc::new(validator).apply(router);
+        }
+        let router = basable_connect::with_request_ids(router);
         let server_ctx = ctx.clone();
         let server = tokio::spawn(async move {
             axum::serve(listener, router)

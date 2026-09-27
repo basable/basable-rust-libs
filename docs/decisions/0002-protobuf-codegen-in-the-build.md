@@ -22,6 +22,9 @@ generator, so committed output goes stale on every `.proto` edit and a drift
 check would block deploys. `buf` is used only for `buf lint` (a `bazel test`
 target via `rules_buf`) and `buf breaking`; there is no `buf.gen.yaml`.
 
-**Open measurement:** the cold cost of building the three plugin binaries
-under crate_universe (expected 1–2 minutes), recorded here when Phase 9
-lands, together with the F.1 residuals.
+**As landed (Phase 9, 2026-09-27):** two plugins, not three — both run in
+`file_per_package` mode, which yields exactly one `<dotted.package>.rs` per
+plugin and makes the packaging plugin unnecessary; the buffa one is
+`basable-protoc-gen-buffa` (porting note 72). The module tree is a
+hand-written `src/lib.rs` with one `include!` pair per package. The cold
+cost of the plugin binaries on the CI runner is in `0003`'s Phase 9 row.

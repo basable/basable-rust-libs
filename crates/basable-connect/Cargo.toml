@@ -1,0 +1,35 @@
+[package]
+name = "basable-connect"
+description = "The glue between a basable nanoservice project and connectrpc: a ConnectRouter that mounts generated services into the app's axum router, the AppError to ConnectError mapping (the sixteen codes one to one), the request-id layer, and the Ctx a handler derives from a RequestContext (request id, deadline, the validated Identity)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+basable-auth = { workspace = true }
+basable-core = { workspace = true }
+axum = { workspace = true }
+connectrpc = { workspace = true }
+http = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+# The protoc plugins the build's genrules run (crate_universe gen_binaries):
+# dependencies so they are in the lock, never linked.
+basable-protoc-gen-buffa = { workspace = true }
+connectrpc-codegen = { workspace = true }
+buffa = { workspace = true }
+buffa-types = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

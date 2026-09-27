@@ -1,0 +1,31 @@
+[package]
+name = "basable-auth"
+description = "Ory Kratos session validation for a basable nanoservice project: a Validator that checks the request's cookie against /sessions/whoami, public-path allow-lists, a session hook for first-touch provisioning, the Identity in the request extensions and on Ctx, and Connect-shaped 401/503 answers. The test bypass is a feature the testkit enables."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[features]
+# A validator that authenticates every request as a fixed identity, for
+# tests. Enabled by basable-testkit, never by production wiring.
+test-bypass = []
+
+[dependencies]
+basable-core = { workspace = true }
+axum = { workspace = true }
+http = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

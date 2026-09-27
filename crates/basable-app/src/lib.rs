@@ -8,8 +8,9 @@
 //! let catalog = Catalog::new(&app, app.pool::<catalog::Schema>().await?).await;
 //! let router: &'static AppMessenger = Box::leak(Box::new(AppMessenger::new(api, catalog, ..)));
 //! app.serve()
-//!     .raw(api.connect_router(router))
+//!     .connect(api.connect_router(router))
 //!     .raw(api.raw_routes(router))
+//!     .auth(Validator::kratos(&cfg.kratos_public_url))
 //!     .worker("catalog", catalog::types::product::worker(router, router.catalog()))
 //!     .ticker("catalog", catalog::worker::tickers(router, router.catalog()))
 //!     .run()
@@ -51,4 +52,6 @@ pub use serve::{Running, Serve};
 pub use ticker::{TickFuture, Ticker};
 pub use wake::WakeBus;
 
+pub use basable_auth::{AuthCtx, Identity, Validator};
+pub use basable_connect::{ConnectRouter, request_ctx};
 pub use basable_pubsub::Bus;

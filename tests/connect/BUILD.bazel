@@ -1,0 +1,60 @@
+# The Phase 9 verification: a proto package generated through
+# tools/proto.bzl exactly as a tenant's crates/proto is, mounted on the app
+# runtime behind the auth layer, and driven by a Connect client (both codecs,
+# HTTP/1.1 and h2c) and plain HTTP against a Kratos simulator.
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("//tools:proto.bzl", "buffa_connect_library")
+
+buffa_connect_library(
+    name = "echo_gen",
+    buffa_plugin = "//crates/basable-protoc-gen-buffa:protoc-gen-buffa",
+    package = "basable.connecttest.v1",
+    protos = glob(["proto/**/*.proto"]),
+)
+
+rust_library(
+    name = "proto",
+    srcs = [
+        "src/lib.rs",
+        ":echo_gen",
+    ],
+    crate_name = "proto",
+    crate_root = "src/lib.rs",
+    tags = [
+        "noclippy",
+        "norustfmt",
+    ],
+    # serde: the JSON impls buffa generates derive from it, so the crate
+    # holding generated messages depends on serde (with derive) itself.
+    deps = [
+        "@crates//:buffa",
+        "@crates//:buffa-types",
+        "@crates//:connectrpc",
+        "@crates//:serde",
+    ],
+)
+
+rust_test(
+    name = "echo",
+    srcs = ["tests/echo.rs"],
+    crate_root = "tests/echo.rs",
+    data = ["//crates/basable-testkit:fixture_migrations"],
+    env_inherit = ["TEST_DATABASE_URL"],
+    tags = ["requires-network"],
+    deps = [
+        ":proto",
+        "//crates/basable-app:basable_app",
+        "//crates/basable-auth:basable_auth",
+        "//crates/basable-connect:basable_connect",
+        "//crates/basable-core:basable_core",
+        "//crates/basable-testkit:basable_testkit",
+        "@crates//:axum",
+        "@crates//:buffa",
+        "@crates//:connectrpc",
+        "@crates//:futures",
+        "@crates//:http",
+        "@crates//:reqwest",
+        "@crates//:serde_json",
+        "@crates//:tokio",
+    ],
+)

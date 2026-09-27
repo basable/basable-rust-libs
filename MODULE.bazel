@@ -18,6 +18,9 @@ module(name = "basable_rust_libs", version = "0.1.0")
 bazel_dep(name = "rules_rust", version = "0.74.0")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
+# protoc comes prebuilt from this module's own toolchains (.bazelrc sets
+# prefer_prebuilt_protoc): nothing compiles protobuf's C++.
+bazel_dep(name = "protobuf", version = "36.2")
 
 # --- Rust toolchain --------------------------------------------------------
 # One edition and one stable version for every crate. The MSRV published in
@@ -56,6 +59,15 @@ crate.from_cargo(
         "//crates/basable-messenger-gen:Cargo.toml",
         "//crates/basable-pubsub:Cargo.toml",
         "//crates/basable-app:Cargo.toml",
+        "//crates/basable-auth:Cargo.toml",
+        "//crates/basable-connect:Cargo.toml",
+        "//crates/basable-protoc-gen-buffa:Cargo.toml",
     ],
 )
+# The codegen binaries the genrules run: the messenger generator over
+# routing.yaml (tools/messenger.bzl) and the two protoc plugins
+# (tools/proto.bzl).
+crate.annotation(crate = "basable-messenger-gen", gen_binaries = ["basable-messenger-gen"])
+crate.annotation(crate = "basable-protoc-gen-buffa", gen_binaries = ["protoc-gen-buffa"])
+crate.annotation(crate = "connectrpc-codegen", gen_binaries = ["protoc-gen-connect-rust"])
 use_repo(crate, "crates")

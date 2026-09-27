@@ -7,6 +7,8 @@ rust_library(
     crate_name = "basable_app",
     visibility = ["//visibility:public"],
     deps = [
+        "//crates/basable-auth:basable_auth",
+        "//crates/basable-connect:basable_connect",
         "//crates/basable-core:basable_core",
         "//crates/basable-db:basable_db",
         "//crates/basable-processingobject:basable_processingobject",

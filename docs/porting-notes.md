@@ -503,3 +503,66 @@ here.
     which check failed. `/healthz` answers while the process lives. The
     template's Deployment probes both.
 
+## basable-connect, basable-auth and basable-protoc-gen-buffa
+
+69. **The Connect boundary is connectrpc's; the glue is thin.** Go's
+    `lib/server` framework (gRPC + grpc-gateway, middleware chain, public-id
+    decode) has no port: a tenant's API is the generated `connectrpc`
+    service traits, mounted through `ConnectRouter` (a mutating
+    `add_service` over `connectrpc::Router`, then `into_axum` as the app
+    router's fallback service). What `basable-connect` adds is the
+    `AppError` ↔ `ConnectError` mapping (the sixteen codes one to one,
+    `connect_code` / `app_code`; a code this crate does not know maps to
+    `Unknown`, as the Connect protocol says of an unlisted one), the
+    request-id layer (`x-request-id` in and out, a fresh UUID otherwise),
+    and `request_ctx`: the `Ctx` a handler derives from its
+    `RequestContext` — request id, the Connect deadline as the context's
+    timeout, the validated identity.
+70. **Auth is a layer on the axum router, answering in Connect's error
+    shape.** Go's `AuthMiddleware` had three shapes (gRPC unary and stream
+    interceptors and an HTTP middleware) reading the cookie from gRPC
+    metadata or the header. Here there is one path: `Validator::apply`
+    wraps the router; a request off the public paths and prefixes must
+    carry a `Cookie` Kratos accepts at `/sessions/whoami`, the identity is
+    put in the request extensions (from where `request_ctx` puts it on
+    `Ctx`, read through `AuthCtx::user_id`), and the hook fires. A refusal
+    is `401` with `{"code":"unauthenticated","message":"invalid session"}`
+    (no detail of Kratos's answer leaks); Kratos unreachable, timing out or
+    answering an unexpected status is `503 unavailable`, never a silent
+    allow. Added: a bounded negative cache (`NEGATIVE_WINDOW`, five
+    seconds) so a rejected cookie is not re-asked of Kratos per request.
+    The `UserConfigurationID` resolution of Go's `context.go` is the
+    platform's, not a tenant's.
+71. **The test bypass is a feature, not a runtime flag.** Go's
+    `WithTestBypass()` was a method production wiring simply never called
+    (and `UserIDFromContext` fell back to `"test-user"` by sniffing the call
+    stack). `Validator::bypassed_for_tests(identity)` exists only under the
+    `test-bypass` cargo feature, which the testkit enables; a binary that
+    does not carry the feature cannot name it. Under crate_universe the
+    feature set of a crate is resolved for the whole workspace, so a tenant
+    whose testkit is a dev-dependency still compiles the constructor in;
+    what remains mechanical is that it is a distinct, grep-able name the
+    scaffold's `main.rs` never writes.
+72. **The protobuf codegen is a build step over two plugins, one of them
+    ours.** F.2 as decided: one genrule per proto package
+    (`tools/proto.bzl`) runs the protobuf module's prebuilt protoc with
+    `protoc-gen-connect-rust` (from `connectrpc-codegen`, which has a
+    library target) and `basable-protoc-gen-buffa`: `buffa-codegen` behind
+    the plugin protocol, because upstream's `protoc-gen-buffa` is a
+    binary-only crate cargo cannot list as a dependency and crate_universe
+    therefore cannot build as a `gen_binaries` tool. Both run in
+    `file_per_package` mode, so a package is exactly one
+    `<dotted.package>.rs` per plugin (no packaging plugin, no per-file
+    stitchers to declare as genrule outputs); the crate mounts them with
+    `include!` from a hand-written module tree, and the generated files
+    sit in `srcs` so rules_rust symlinks the hand-written sources beside
+    them. Options travel through `--<plugin>_opt` (an option value with
+    `::` would split the combined `<opts>:<dir>` form). The crate holding
+    generated messages depends on `serde` itself: buffa's JSON impls
+    derive from it.
+73. **Handlers return the owned message.** The generated trait's return
+    type is `ServiceResult<impl Encodable<Out> + Send + use<'a, Self>>`;
+    a handler answering `ServiceResult<Out>` with `Response::new(msg)` is
+    the refinement `refining_impl_trait` names, allowed on the impl. A
+    server stream is `Response::stream_ok(futures::stream::iter(..))`.
+
