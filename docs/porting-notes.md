@@ -168,3 +168,52 @@ here.
     the reconciler's verdict, whose cause is an `Arc<dyn Error>` internally
     and a `BoxError` again on the way out; `T: Clone` is required of a
     status type for the same reason (Go copied values freely).
+
+## basable-processingobject (worker)
+
+27. **The reconciler and the callback are traits with `impl Future`
+    methods.** Go's `Reconciler` interface and `AfterComplete` func value
+    become `Reconciler<S, T, A>` and `AfterComplete<S, T>`; the callback is
+    implemented for any `Fn(&Ctx, Object, Completion) -> impl Future`
+    closure and for `NoAfterComplete`, which replaces Go's nil. There is no
+    boxing on the hot path.
+28. **A panicking pass completes as a loud `Retry`, without a stack.** Each
+    attempt is a task in a `JoinSet` (a panic there cannot take the loop
+    down), and inside it the pass and the callback are polled under
+    `catch_unwind`, so the claim outlives the panic and is completed with
+    `reconciler panic: <message>` as the cause. Go attached
+    `debug.Stack()`; the port records the payload message only — a
+    backtrace is the panic hook's to print. This requires the default
+    `unwind` panic strategy; under `panic = "abort"` the process ends
+    first.
+29. **The attempt deadline and cancellation are enforced by dropping the
+    pass's future.** Go cancelled a context the reconciler was expected to
+    honour; here the worker races the pass against the deadline and the
+    context's cancellation and drops it when either fires, so a reconciler
+    that never polls its context is still bounded. The resulting causes are
+    `attempt timed out` and `attempt cancelled`, where Go recorded
+    `context.DeadlineExceeded` / `context.Canceled` text.
+30. **The heartbeat pump is a task on the `LeaseHandle`, aborted before
+    completion.** Go cancelled the pump's context and joined it; the port
+    aborts the task (dropping an in-flight heartbeat statement) and awaits
+    the abort, for the same reason — a heartbeat stalled on a dead
+    connection must not hold the completion.
+31. **The wake listener is sqlx's `PgListener`.** It reconnects by itself;
+    a `None` from `try_recv` marks a gap whose notifications are lost, which
+    the poll covers, exactly as Go's listener drop-out did. The retry pacing
+    is kept for connect and `LISTEN` failures. The listener returns its
+    connection with `UNLISTEN *` on drop, so `release_listen_conn` is not
+    needed here.
+32. **The completion is bounded by a timeout, not a detached context.**
+    `Claim::complete` takes no context; the worker wraps it in a 30 s
+    `tokio::time::timeout` and, past it, drops the future — the pool rolls
+    the transaction back — and leaves the claim to lease expiry, as Go did
+    when its detached context expired.
+33. **`run` returns `()` and `Replica::stop` is `async`.** Go's `Run`
+    always returned nil after the drain and `Stop` returned that nil;
+    neither carried information.
+34. **`update_spec`'s status-copy proof is a type, not a test.** Go's
+    `TestProcessingObjectStatusSightedCAS` scribbled on the status copy
+    inside the closure to prove the write was discarded; here the closure
+    sees `&Status` (note 16), so the port's `status_sighted_cas` asserts
+    the rejection and the acceptance only.

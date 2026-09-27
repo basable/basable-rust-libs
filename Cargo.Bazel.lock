@@ -1,5 +1,5 @@
 {
-  "checksum": "ee0beaa007ed0db03decb31b08cf97298946b286283ac97c7d6515f47eec3751",
+  "checksum": "d7535f3aacab961aa380d37a8d37123d429304128d585d27071889c2f20cc9eb",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -777,6 +777,10 @@
           {
             "id": "sqlx 0.8.6",
             "target": "sqlx"
+          },
+          {
+            "id": "tokio 1.53.1",
+            "target": "tokio"
           },
           {
             "id": "tracing 0.1.44",

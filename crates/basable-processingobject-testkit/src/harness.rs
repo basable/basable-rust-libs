@@ -3,19 +3,20 @@
 //! scenarios from — create, a manual one-shot drive (`drive_once`), the
 //! crash seam (`claim_batch` + `force_expire_claim`: drop a claim without
 //! completing it and collapse its lease so a successor adopts at once),
-//! and the envelope readers the assertions need. The running worker
-//! (`Replica`) arrives with the worker phase.
+//! the running worker (`start_worker`, a `Replica`), and the envelope
+//! readers the assertions need.
 
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use basable_core::BoxError;
 use basable_db::NanoPool;
 use basable_processingobject::{
-    Adapter, Backoff, Claim, Completion, CreateOptions, Error, Meta, NamespacedName, Object,
-    Outcome, Ref, TypedStore, WorkerConfig,
+    Adapter, AfterComplete, Backoff, Claim, Completion, CreateOptions, Error, Meta, NamespacedName,
+    Object, Outcome, Reconciler, Ref, TypedStore, WorkerConfig,
 };
 use basable_testkit::TestDb;
 use chrono::{DateTime, Utc};
@@ -25,6 +26,7 @@ use uuid::Uuid;
 use crate::conformance::{
     Conformance, ConformanceAdapter, Spec, Status, apply_schema, conformance_type, identity_name,
 };
+use crate::runtime::{ExampleReconciler, Replica, run_worker};
 use crate::widgetsim::WidgetSim;
 
 /// The default worker and claim policy for conformance: short poll and
@@ -117,8 +119,9 @@ pub struct Harness {
     pub db: TestDb,
     /// The conformance nanoservice's pool, as production would hold it.
     pub pool: NanoPool<Conformance>,
-    /// The provider simulator.
-    pub sim: WidgetSim,
+    /// The provider simulator, shared with the reconcilers the harness
+    /// starts.
+    pub sim: Arc<WidgetSim>,
     /// The store.
     pub store: ConformanceStore,
     /// The config-namespace id the harness stamps on every identity it
@@ -155,7 +158,7 @@ impl Harness {
         Harness {
             db,
             pool,
-            sim: WidgetSim::start().await,
+            sim: Arc::new(WidgetSim::start().await),
             store,
             namespace: Uuid::new_v4(),
             cfg,
@@ -279,6 +282,49 @@ impl Harness {
         let snapshot = claim.object.clone();
         let done = claim.complete(out).await?;
         Ok((snapshot, done))
+    }
+
+    /// The default reconciler over the harness simulator, ready for hooks.
+    pub fn example_reconciler(&self) -> ExampleReconciler {
+        ExampleReconciler::new(Arc::clone(&self.sim))
+    }
+
+    /// Runs a worker on the harness store with the harness policy. The
+    /// reconciler is usually [`Harness::example_reconciler`] with or without
+    /// hooks; `after` is `NoAfterComplete` when nothing observes.
+    pub fn start_worker<R, F>(&self, rec: R, after: F) -> Result<Replica, Error>
+    where
+        R: Reconciler<Spec, Status, ConformanceAdapter>,
+        F: AfterComplete<Spec, Status>,
+    {
+        self.start_worker_config(self.cfg.clone(), rec, after)
+    }
+
+    /// [`Harness::start_worker`] with an explicit policy (parallelism,
+    /// `max_attempts`, timeouts for capacity and escalation scenarios).
+    pub fn start_worker_config<R, F>(
+        &self,
+        cfg: WorkerConfig,
+        rec: R,
+        after: F,
+    ) -> Result<Replica, Error>
+    where
+        R: Reconciler<Spec, Status, ConformanceAdapter>,
+        F: AfterComplete<Spec, Status>,
+    {
+        run_worker(self.store.clone(), cfg, rec, after)
+    }
+
+    /// How many conformance envelopes are currently claimed (token
+    /// present): the observation for worker parallelism and lease liveness.
+    pub async fn claimed_count(&self) -> i64 {
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM processing_object_conformance WHERE claim_token IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .expect("the partition is readable");
+        n
     }
 
     /// Expires the live lease on `r` directly in the database so a successor

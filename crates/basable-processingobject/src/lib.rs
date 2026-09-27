@@ -6,12 +6,12 @@
 //! doc and the eight invariants below, and each module names the invariant
 //! it implements.
 //!
-//! **This release is the store and the attempt**: the declaration
-//! ([`decl`]), the read model ([`Meta`], [`Object`]), the reconciler's
-//! verdict ([`Outcome`]), [`TypedStore`]'s create, mutate and read paths,
-//! and the claimed attempt — [`TypedStore::claim_batch`], [`Claim`] with its
-//! heartbeat, `write_status` and `complete`. The worker runtime follows in
-//! the next release.
+//! The pieces: the declaration ([`decl`]), the read model ([`Meta`],
+//! [`Object`]), the reconciler's verdict ([`Outcome`]), [`TypedStore`]'s
+//! create, mutate and read paths, the claimed attempt —
+//! [`TypedStore::claim_batch`], [`Claim`] with its heartbeat,
+//! `write_status` and `complete` — and the [`Worker`] that runs a type's
+//! [`Reconciler`] over claimed attempts on one replica.
 //!
 //! # Invariants
 //!
@@ -71,6 +71,7 @@ mod store;
 mod store_mutate;
 mod store_read;
 mod tx;
+mod worker;
 mod writestatus;
 
 pub use claim::{Claim, LEASE_SLACK, LeaseHandle};
@@ -84,3 +85,4 @@ pub use model::{
 pub use outcome::{Outcome, Schedule};
 pub use store::{CreateOptions, TypedStore, WAKE_CHANNEL};
 pub use tx::Tx;
+pub use worker::{AfterComplete, COMPLETION_TIMEOUT, NoAfterComplete, Reconciler, Worker};

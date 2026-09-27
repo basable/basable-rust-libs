@@ -1,8 +1,9 @@
 //! The conformance substrate for `basable-processingobject`, the port of
 //! the monorepo's `lib/processingobject/testkit`: a reserved test-only
 //! processing-object type with its nanoservice, migrations and adapter
-//! ([`conformance`]), a provider simulator ([`WidgetSim`]), and the
-//! [`Harness`] the conformance suites build scenarios from. The conformance
+//! ([`conformance`]), a provider simulator ([`WidgetSim`]), the
+//! [`Harness`] the conformance suites build scenarios from, and the running
+//! side: [`ExampleReconciler`] with its hooks, [`Gate`], [`Replica`]. The conformance
 //! TESTS live under `tests/` of this crate and port
 //! `golang/test/processingobject` phase by phase.
 //!
@@ -16,6 +17,7 @@
 
 mod conformance;
 mod harness;
+mod runtime;
 mod widgetsim;
 
 pub use conformance::{
@@ -26,4 +28,5 @@ pub use harness::{
     ConformanceClaim, ConformanceStore, DriveError, DriveFn, EnvelopeSnapshot, Harness,
     fast_config, reconciled,
 };
+pub use runtime::{ExampleReconciler, Gate, Hook, HookFuture, Replica, hook, run_worker};
 pub use widgetsim::{WidgetSim, canonical_key};

@@ -1,6 +1,6 @@
 [package]
 name = "basable-processingobject"
-description = "The declarative reconciliation framework for basable nanoservices: typed spec and status rows under a generic envelope, reconciled by claimed, fenced attempts. This release ships the store half (declaration, read model, Outcome, create, mutate, read)."
+description = "The declarative reconciliation framework for basable nanoservices: typed spec and status rows under a generic envelope, reconciled by claimed, fenced attempts. This release ships the store, the claim and completion path, and the worker runtime."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,6 +17,7 @@ sqlx = { workspace = true }
 futures-core = { workspace = true }
 chrono = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 
