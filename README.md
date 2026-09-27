@@ -8,5 +8,5 @@ messenger generated from `routing.yaml`, Connect glue, Kratos auth, and the
 app runtime that boots them.
 
 Bazel + rules_rust is the build (`bazel test //...`); the crates are also
-published to crates.io in lockstep. See `CLAUDE.md` for the rules and
+published to crates.io in lockstep. See `AGENTS.md` for the rules and
 `docs/` for the decisions and porting notes.
