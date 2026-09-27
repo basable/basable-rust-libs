@@ -1,9 +1,16 @@
 -- migrate:up
 
+-- The role is cluster-global and two databases may run this migration at
+-- once (a test database per test); the existence check is not atomic, so
+-- the concurrent loser's CREATE ROLE is caught rather than failed.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nano_inventory') THEN
-        CREATE ROLE nano_inventory NOLOGIN NOINHERIT;
+        BEGIN
+            CREATE ROLE nano_inventory NOLOGIN NOINHERIT;
+        EXCEPTION WHEN duplicate_object OR unique_violation THEN
+            NULL; -- created concurrently
+        END;
     END IF;
 END $$;
 
