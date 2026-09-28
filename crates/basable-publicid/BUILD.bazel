@@ -1,0 +1,26 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "basable_publicid",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "basable_publicid",
+    visibility = ["//visibility:public"],
+    deps = ["//crates/basable-core:basable_core"] + all_crate_deps(normal = True),
+)
+
+# The crate's own #[cfg(test)] modules.
+rust_test(
+    name = "basable_publicid_test",
+    crate = ":basable_publicid",
+    deps = all_crate_deps(normal_dev = True),
+)
+
+# The Go-produced fixture: 20 UUIDs the monorepo's publicid encoded, which
+# this port must round-trip byte for byte.
+rust_test(
+    name = "go_fixture_test",
+    srcs = ["tests/go_fixture.rs"],
+    compile_data = ["tests/fixtures/go_ids.txt"],
+    deps = [":basable_publicid"] + all_crate_deps(normal_dev = True),
+)

@@ -1,0 +1,16 @@
+# expect: E_RESPONSE_MISMATCH
+# The Go rule (spec.go:107): an error fan-out's handlers declare error too.
+version: 1
+messenger:
+  name: AppMessenger
+  rust:
+    error_type: basable_core::AppError
+    ctx_type: basable_core::Ctx
+    uses: ["messages::*"]
+nanoservices:
+  - name: sender
+    sends:
+      - { message: Event, response: error }
+  - name: receiver
+    handles:
+      - { message: Event }

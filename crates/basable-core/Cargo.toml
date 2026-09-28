@@ -1,0 +1,17 @@
+[package]
+name = "basable-core"
+workspace = "../.."
+description = "Leaf types every basable framework crate shares: naming rules, labels, the two-clock Deadline, BoxError, AppError with the Connect codes, and the request Ctx."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

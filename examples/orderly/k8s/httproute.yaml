@@ -1,0 +1,45 @@
+# One HTTPRoute on the platform's tenant gateway with the path split the
+# basable platform uses itself: /api/ to the binary, /.ory/ to Kratos,
+# everything else to the frontend. TENANT_DOMAIN_PLACEHOLDER is replaced by the
+# platform with the environment's hostname.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: app
+  annotations:
+    basable.com/apply-wave: "1"
+spec:
+  parentRefs:
+    - name: tenant-gateway
+      namespace: basable-gateway
+      sectionName: https
+  hostnames:
+    - TENANT_DOMAIN_PLACEHOLDER
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/
+      backendRefs:
+        - name: app
+          port: 80
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /.ory/
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - name: kratos-public
+          port: 4433
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: frontend
+          port: 80

@@ -1,0 +1,16 @@
+# The identity database: a CNPG Database `kratos` on the same cluster, owned
+# by the `app` login CNPG created at bootstrap. Kratos connects as `app`
+# with the credentials in the CNPG-minted `app-postgres-app` Secret, so no
+# password is generated or stored anywhere else; the separate DATABASE is
+# what keeps Kratos's tables out of the app's schemas.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: kratos
+  annotations:
+    basable.com/apply-wave: "-1"
+spec:
+  name: kratos
+  owner: app
+  cluster:
+    name: app-postgres

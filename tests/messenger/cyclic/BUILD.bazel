@@ -1,0 +1,112 @@
+# The cyclic topology (routing.yaml here): the generated crates compile
+# WITH the boxed back-edge, the re-entrancy test drives `a → b → a → …`
+# under a multi-thread runtime, and the compile-fail doctests pin that the
+# unboxed form and a MutexGuard across a send do not compile.
+load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library", "rust_test")
+load("//tools:messenger.bzl", "messenger_generated")
+
+GEN = "//crates/basable-messenger-gen:basable-messenger-gen"
+
+messenger_generated(
+    name = "gen_interfaces",
+    crate = "interfaces",
+    out = "interfaces/src/lib.rs",
+    spec = "routing.yaml",
+    tool = GEN,
+)
+
+messenger_generated(
+    name = "gen_messenger",
+    crate = "messenger",
+    out = "messenger/src/lib.rs",
+    spec = "routing.yaml",
+    tool = GEN,
+)
+
+rust_library(
+    name = "messages",
+    srcs = ["messages/src/lib.rs"],
+    crate_name = "messages",
+)
+
+rust_library(
+    name = "interfaces",
+    srcs = [":gen_interfaces"],
+    crate_name = "interfaces",
+    tags = ["norustfmt"],
+    deps = [
+        ":messages",
+        "//crates/basable-core:basable_core",
+        "//crates/basable-messenger:basable_messenger",
+    ],
+)
+
+[
+    rust_library(
+        name = component,
+        srcs = [component + "/src/lib.rs"],
+        crate_name = component,
+        deps = [
+            ":interfaces",
+            ":messages",
+            "//crates/basable-core:basable_core",
+        ],
+    )
+    for component in [
+        "a",
+        "b",
+        "api",
+    ]
+]
+
+rust_library(
+    name = "messenger",
+    srcs = [":gen_messenger"],
+    crate_name = "messenger",
+    tags = ["norustfmt"],
+    deps = [
+        ":a",
+        ":api",
+        ":b",
+        ":interfaces",
+        ":messages",
+        "//crates/basable-core:basable_core",
+        "//crates/basable-messenger:basable_messenger",
+    ],
+)
+
+rust_test(
+    name = "reentrancy",
+    srcs = ["tests/reentrancy.rs"],
+    crate_root = "tests/reentrancy.rs",
+    deps = [
+        ":a",
+        ":api",
+        ":b",
+        ":interfaces",
+        ":messages",
+        ":messenger",
+        "//crates/basable-core:basable_core",
+        "@crates//:tokio",
+    ],
+)
+
+# The compile-fail pins live in this crate's documentation.
+rust_library(
+    name = "compilefail",
+    srcs = ["compilefail/src/lib.rs"],
+    crate_name = "compilefail",
+    deps = [
+        ":a",
+        ":b",
+        ":interfaces",
+        ":messages",
+        "//crates/basable-core:basable_core",
+        "//crates/basable-messenger:basable_messenger",
+    ],
+)
+
+rust_doc_test(
+    name = "compilefail_doc_test",
+    crate = ":compilefail",
+)

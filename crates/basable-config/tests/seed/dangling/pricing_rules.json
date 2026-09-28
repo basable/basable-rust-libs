@@ -1,0 +1,15 @@
+{
+  "configSetName": "pricing-rules",
+  "items": [
+    {
+      "@type": "orders.v1.PricingRuleConfiguration",
+      "header": {
+        "namespace": "#{NamespaceConfiguration:default}",
+        "name": "orphan"
+      },
+      "rate_cents": 1,
+      "currency": "EUR",
+      "supersedes": "#{PricingRuleConfiguration:default:ghost}"
+    }
+  ]
+}

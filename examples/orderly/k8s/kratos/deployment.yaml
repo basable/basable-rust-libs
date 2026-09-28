@@ -1,0 +1,81 @@
+# Wave 1: Kratos, public (4433) and admin (4434) on one non-root Deployment.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kratos
+  annotations:
+    basable.com/apply-wave: "1"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kratos
+  template:
+    metadata:
+      labels:
+        app: kratos
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10000
+        runAsGroup: 10000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kratos
+          image: docker.io/oryd/kratos:v26.2.0@sha256:2a13bb8d362c7a7ae33bd7c0f5168aee46921f15c916a06346db91c06dc76643
+          args: ["serve", "all", "--config", "/etc/kratos/kratos.yaml"]
+          ports:
+            - name: public
+              containerPort: 4433
+            - name: admin
+              containerPort: 4434
+          env:
+            # The DSN is composed from the CNPG-minted `app` credentials
+            # ($(VAR) expands env vars declared above it). sslmode=require:
+            # in-cluster traffic, password auth over TLS.
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: app-postgres-app
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-postgres-app
+                  key: password
+            - name: DSN
+              value: postgres://$(PGUSER):$(PGPASSWORD)@app-postgres-rw:5432/kratos?sslmode=require&max_conns=10&max_idle_conns=2
+            # Kratos maps SECRETS_COOKIE_0 onto secrets.cookie[0]. The value
+            # is generated in-cluster by kratos/secret-job.yaml; no cipher
+            # secret because OIDC token encryption is not used.
+            - name: SECRETS_COOKIE_0
+              valueFrom:
+                secretKeyRef:
+                  name: kratos-secrets
+                  key: cookie-secret
+          volumeMounts:
+            - name: config
+              mountPath: /etc/kratos
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: admin
+            initialDelaySeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+      volumes:
+        - name: config
+          configMap:
+            name: kratos-config

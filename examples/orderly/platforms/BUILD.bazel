@@ -1,0 +1,11 @@
+# The one target platform the images are built for: x86_64 Linux on glibc
+# (the distroless cc base). Halves compile time versus two triples; add
+# aarch64 here and to MODULE.bazel's toolchain when the platform runs arm nodes.
+platform(
+    name = "linux_amd64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+    visibility = ["//visibility:public"],
+)

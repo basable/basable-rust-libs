@@ -19,3 +19,14 @@ target
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# Bazel output symlinks
+/bazel-*
+
+# The copy of the workspace crates the example builds against
+# (tools/sync-orderly-crates.sh); refreshed by every render.
+/examples/orderly/tools/basable-crates/
+# The example's crate_universe lockfile records the patched path
+# dependencies by absolute path (not portable); the render creates it, the
+# CI repins. Committed again once the release publishes the crates.
+/examples/orderly/Cargo.Bazel.lock

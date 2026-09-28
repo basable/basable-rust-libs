@@ -1,0 +1,50 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "basable_processingobject_testkit",
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = glob(["migrations/*.sql"]),
+    crate_name = "basable_processingobject_testkit",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//crates/basable-core:basable_core",
+        "//crates/basable-db:basable_db",
+        "//crates/basable-externaleffect:basable_externaleffect",
+        "//crates/basable-processingobject:basable_processingobject",
+        "//crates/basable-testkit:basable_testkit",
+    ] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "basable_processingobject_testkit_test",
+    crate = ":basable_processingobject_testkit",
+    deps = all_crate_deps(normal_dev = True),
+)
+
+# The conformance suites: one target per file under tests/, against the
+# Postgres TEST_DATABASE_URL names (skipped, loudly, without it). They port
+# the monorepo's golang/test/processingobject suite phase by phase.
+[
+    rust_test(
+        name = "conformance_" + src[len("tests/"):-len(".rs")],
+        srcs = [src],
+        crate_root = src,
+        data = ["//crates/basable-testkit:fixture_migrations"],
+        env_inherit = ["TEST_DATABASE_URL"],
+        tags = ["requires-network"],
+        deps = [
+            ":basable_processingobject_testkit",
+            "//crates/basable-core:basable_core",
+            "//crates/basable-db:basable_db",
+            "//crates/basable-externaleffect:basable_externaleffect",
+            "//crates/basable-processingobject:basable_processingobject",
+            "//crates/basable-publicid:basable_publicid",
+            "//crates/basable-testkit:basable_testkit",
+        ] + all_crate_deps(
+            normal = True,
+            normal_dev = True,
+        ),
+    )
+    for src in glob(["tests/*.rs"])
+]

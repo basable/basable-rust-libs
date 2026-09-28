@@ -1,0 +1,21 @@
+[package]
+name = "basable-externaleffect"
+workspace = "../.."
+description = "Typed building blocks for the external-API effect calls a basable reconciler makes: one validated Adapter per call names what makes a retry of it safe (the sealed strategy sum), and Call is the only road to the wire. No runtime, no registry, no state."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+basable-core = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

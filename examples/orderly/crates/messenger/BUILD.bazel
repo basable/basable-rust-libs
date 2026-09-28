@@ -1,0 +1,33 @@
+# GENERATED at build from //:routing.yaml: the concrete AppMessenger with
+# private fields and one Route impl per declared (source, message) pair,
+# boxed back-edges on cycles. Depends on every nanoservice crate (the
+# scaffolder adds each between the markers). No hand-written source.
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//tools:messenger.bzl", "messenger_generated")
+
+messenger_generated(
+    name = "generate",
+    crate = "messenger",
+)
+
+rust_library(
+    name = "messenger",
+    srcs = [":generate"],
+    aliases = aliases(),
+    crate_name = "messenger",
+    crate_root = "src/lib.rs",
+    # prettyplease output, not rustfmt output: the rustfmt aspect skips it.
+    tags = ["norustfmt"],
+    deps = all_crate_deps(normal = True) + [
+        "//crates/messages",
+        "//crates/interfaces",
+        "//api",
+        # basable:bazel-deps-begin
+        "//nanoservices/catalog",
+        "//nanoservices/order",
+        "//nanoservices/notifier",
+        # basable:bazel-deps-end
+    ],
+    visibility = ["//visibility:public"],
+)

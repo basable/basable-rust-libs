@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package catalog.v1;
+
+// CatalogService: the API of nanoservice `catalog`. Fill the
+// message fields; the build regenerates the Rust types and the Connect stubs.
+service CatalogService {
+  rpc UpsertProduct(UpsertProductRequest) returns (UpsertProductResponse);
+}
+
+message UpsertProductRequest {
+  // TODO: the request fields.
+}
+
+message UpsertProductResponse {
+  // TODO: the response fields.
+}
+

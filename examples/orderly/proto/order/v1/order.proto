@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package order.v1;
+
+// OrderService: the API of nanoservice `order`. Fill the
+// message fields; the build regenerates the Rust types and the Connect stubs.
+service OrderService {
+  rpc EnsureOrder(EnsureOrderRequest) returns (EnsureOrderResponse);
+}
+
+message EnsureOrderRequest {
+  // TODO: the request fields.
+}
+
+message EnsureOrderResponse {
+  // TODO: the response fields.
+}
+

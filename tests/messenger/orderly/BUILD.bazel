@@ -1,0 +1,99 @@
+# The generated crates for the orderly topology (spec/routing/fixtures/valid/
+# orderly.yaml) compiled against stub components, exactly as a tenant
+# project's BUILD files do it (tools/messenger.bzl): the genrule runs the
+# in-tree basable-messenger-gen, the two rust_library targets are the
+# generated crates, and the test drives the routes.
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("//tools:messenger.bzl", "messenger_generated")
+
+SPEC = "//spec/routing:fixtures/valid/orderly.yaml"
+
+GEN = "//crates/basable-messenger-gen:basable-messenger-gen"
+
+messenger_generated(
+    name = "gen_interfaces",
+    crate = "interfaces",
+    out = "interfaces/src/lib.rs",
+    spec = SPEC,
+    tool = GEN,
+)
+
+messenger_generated(
+    name = "gen_messenger",
+    crate = "messenger",
+    out = "messenger/src/lib.rs",
+    spec = SPEC,
+    tool = GEN,
+)
+
+rust_library(
+    name = "messages",
+    srcs = ["messages/src/lib.rs"],
+    crate_name = "messages",
+)
+
+rust_library(
+    name = "interfaces",
+    srcs = [":gen_interfaces"],
+    crate_name = "interfaces",
+    tags = ["norustfmt"],
+    deps = [
+        ":messages",
+        "//crates/basable-core:basable_core",
+        "//crates/basable-messenger:basable_messenger",
+    ],
+)
+
+[
+    rust_library(
+        name = component,
+        srcs = [component + "/src/lib.rs"],
+        crate_name = component,
+        deps = [
+            ":interfaces",
+            ":messages",
+            "//crates/basable-core:basable_core",
+            "@crates//:tokio",
+        ],
+    )
+    for component in [
+        "catalog",
+        "order",
+        "notifier",
+        "api",
+    ]
+]
+
+rust_library(
+    name = "messenger",
+    srcs = [":gen_messenger"],
+    crate_name = "messenger",
+    tags = ["norustfmt"],
+    deps = [
+        ":api",
+        ":catalog",
+        ":interfaces",
+        ":messages",
+        ":notifier",
+        ":order",
+        "//crates/basable-core:basable_core",
+        "//crates/basable-messenger:basable_messenger",
+    ],
+)
+
+rust_test(
+    name = "routes",
+    srcs = ["tests/routes.rs"],
+    crate_root = "tests/routes.rs",
+    deps = [
+        ":api",
+        ":catalog",
+        ":interfaces",
+        ":messages",
+        ":messenger",
+        ":notifier",
+        ":order",
+        "//crates/basable-core:basable_core",
+        "@crates//:tokio",
+    ],
+)

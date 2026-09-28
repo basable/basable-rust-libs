@@ -1,0 +1,46 @@
+# The one place cargo runs. A tag `vX.Y.Z` publishes every crate at that
+# workspace version to crates.io in dependency order, after a `cargo check`
+# smoke test so cargo-based consumers are not broken by a Bazel-only change.
+# Pre-1.0: minor may break, patch never; all crates move together.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain Cargo.toml's rust-version names
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: The tag matches the workspace version
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          have=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$want" != "$have" ]; then
+            echo "tag v$want does not match [workspace.package] version $have" >&2
+            exit 1
+          fi
+
+      - name: Cargo smoke test
+        run: cargo check --workspace --locked
+
+      - name: Publish in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          # One line per crate, leaves first. crates.io indexes a fresh
+          # publish within seconds; the wait covers the dependents.
+          for crate in basable-core basable-publicid; do
+            cargo publish -p "$crate" --no-verify --locked
+            sleep 20
+          done

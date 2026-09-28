@@ -1,0 +1,419 @@
+//! The harness: a conformance-typed store over a per-test database, a
+//! provider simulator, the default policy, and the helpers the suites build
+//! scenarios from — create, a manual one-shot drive (`drive_once`), the
+//! crash seam (`claim_batch` + `force_expire_claim`: drop a claim without
+//! completing it and collapse its lease so a successor adopts at once),
+//! the running worker (`start_worker`, a `Replica`), and the envelope
+//! readers the assertions need.
+
+use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
+
+use basable_core::BoxError;
+use basable_db::NanoPool;
+use basable_processingobject::{
+    Adapter, AfterComplete, Backoff, Claim, Completion, CreateOptions, Error, Meta, NamespacedName,
+    Object, Outcome, Reconciler, Ref, TypedStore, WorkerConfig,
+};
+use basable_testkit::TestDb;
+use chrono::{DateTime, Utc};
+use sqlx::Row as _;
+use uuid::Uuid;
+
+use crate::conformance::{
+    Conformance, ConformanceAdapter, Spec, Status, apply_schema, conformance_type, identity_name,
+};
+use crate::runtime::{ExampleReconciler, Replica, run_worker};
+use crate::widgetsim::WidgetSim;
+
+/// The default worker and claim policy for conformance: short poll and
+/// backoff so scenarios converge quickly, a generous attempt timeout so a
+/// gate-held attempt is not timed out mid-test, no attempt cap.
+pub fn fast_config() -> WorkerConfig {
+    WorkerConfig {
+        resync: Duration::from_secs(3600),
+        backoff: Backoff {
+            base: Duration::from_millis(20),
+            max: Duration::from_millis(200),
+        },
+        max_attempts: 0,
+        attempt_timeout: Duration::from_secs(15),
+        poll_interval: Duration::from_millis(50),
+        batch_size: 10,
+        parallelism: 4,
+        after_complete_timeout: Duration::from_secs(1),
+        label_selector: Default::default(),
+    }
+}
+
+/// The conformance store type.
+pub type ConformanceStore = TypedStore<Spec, Status, ConformanceAdapter>;
+/// A claim on a conformance object.
+pub type ConformanceClaim = Claim<Spec, Status, ConformanceAdapter>;
+/// The inline reconciler `drive_once` runs against the claim: it may write
+/// status mid-attempt and returns the attempt's verdict.
+pub type DriveFn = Box<
+    dyn for<'a> FnOnce(
+            &'a mut ConformanceClaim,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<Outcome<Status>, BoxError>> + Send + 'a>,
+        > + Send,
+>;
+
+/// Why a drive did not complete an attempt.
+#[derive(Debug)]
+pub enum DriveError {
+    /// No object was due to claim.
+    NothingDue,
+    /// The claim or the completion failed.
+    Store(Error),
+}
+
+impl fmt::Display for DriveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DriveError::NothingDue => f.write_str("no due object to drive"),
+            DriveError::Store(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for DriveError {}
+
+impl From<Error> for DriveError {
+    fn from(e: Error) -> DriveError {
+        DriveError::Store(e)
+    }
+}
+
+/// The envelope bookkeeping a mid-attempt write must leave alone: everything
+/// a completion settles, plus the fences.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvelopeSnapshot {
+    /// `generation`.
+    pub generation: i64,
+    /// `observed_generation`.
+    pub observed_generation: i64,
+    /// `wake_seq`.
+    pub wake_seq: i64,
+    /// `attempts`.
+    pub attempts: i32,
+    /// `phase`.
+    pub phase: String,
+    /// `last_error`, empty for NULL.
+    pub last_error: String,
+    /// `next_reconcile_at`.
+    pub next_reconcile_at: DateTime<Utc>,
+    /// `claim_token`.
+    pub claim_token: Option<Uuid>,
+}
+
+/// A conformance-typed store over a test database, a simulator, and the
+/// default policy.
+pub struct Harness {
+    /// The database. Its migrator and superuser pools serve assertions that
+    /// cross the nanoservice boundary.
+    pub db: TestDb,
+    /// The conformance nanoservice's pool, as production would hold it.
+    pub pool: NanoPool<Conformance>,
+    /// The provider simulator, shared with the reconcilers the harness
+    /// starts.
+    pub sim: Arc<WidgetSim>,
+    /// The store.
+    pub store: ConformanceStore,
+    /// The config-namespace id the harness stamps on every identity it
+    /// mints: a fresh uuid per harness (the suites need a namespace value,
+    /// not a config database).
+    pub namespace: Uuid,
+    cfg: WorkerConfig,
+}
+
+impl Harness {
+    /// A harness over a fresh database with the tenant fixture and the
+    /// conformance schema applied, or `None` without `TEST_DATABASE_URL`.
+    pub async fn from_env() -> Option<Harness> {
+        Harness::from_env_config(fast_config()).await
+    }
+
+    /// [`Harness::from_env`] with an explicit default policy.
+    pub async fn from_env_config(cfg: WorkerConfig) -> Option<Harness> {
+        let fixtures = basable_testkit::runfile("crates/basable-testkit/tests/fixtures/migrations");
+        let db = TestDb::from_env_with_migrations(&fixtures).await?;
+        Some(Harness::over(db, cfg).await)
+    }
+
+    /// A harness over a database the caller made: installs the conformance
+    /// schema, opens the nanoservice pool, binds the store.
+    pub async fn over(db: TestDb, cfg: WorkerConfig) -> Harness {
+        apply_schema(db.migrator_pool())
+            .await
+            .expect("the conformance migrations apply");
+        let pool = db.nano_pool::<Conformance>().await;
+        let store = TypedStore::bind(&pool, conformance_type())
+            .await
+            .expect("the store binds");
+        Harness {
+            db,
+            pool,
+            sim: Arc::new(WidgetSim::start().await),
+            store,
+            namespace: Uuid::new_v4(),
+            cfg,
+        }
+    }
+
+    /// The harness's default policy.
+    pub fn config(&self) -> WorkerConfig {
+        self.cfg.clone()
+    }
+
+    /// A second store over its own pool, the way a second replica holds one.
+    pub async fn second_store(&self) -> (NanoPool<Conformance>, ConformanceStore) {
+        let pool = self.db.nano_pool::<Conformance>().await;
+        let store = TypedStore::bind(&pool, conformance_type())
+            .await
+            .expect("the store binds");
+        (pool, store)
+    }
+
+    /// The deterministic identity for an object id: the harness namespace
+    /// plus [`identity_name`]. Stable across create replays.
+    pub fn identity(&self, id: Uuid) -> NamespacedName {
+        NamespacedName::new(self.namespace, identity_name(id))
+    }
+
+    /// Mints an id and creates an object with a zero status.
+    pub async fn create(&self, spec: Spec) -> Result<Ref, Error> {
+        self.create_with_id(Uuid::new_v4(), spec).await
+    }
+
+    /// Creates an object under a caller-supplied id — the seam for
+    /// ambiguous-create adoption tests, where the same id is presented
+    /// twice.
+    pub async fn create_with_id(&self, id: Uuid, spec: Spec) -> Result<Ref, Error> {
+        self.store
+            .create(
+                id,
+                self.identity(id),
+                &spec,
+                &Status::default(),
+                CreateOptions::none(),
+            )
+            .await
+    }
+
+    /// The envelope snapshot for `r`.
+    pub async fn meta(&self, r: &Ref) -> Result<Meta, Error> {
+        self.store.read(r).await.map(|o| o.meta)
+    }
+
+    /// Polls `r` until `predicate` holds or `timeout` passes. Not-found is
+    /// "keep waiting" (a deletion scenario waits for the row to vanish
+    /// through a predicate on a separate read); any other error is returned.
+    pub async fn wait_for(
+        &self,
+        r: &Ref,
+        timeout: Duration,
+        predicate: impl Fn(&Object<Spec, Status>) -> bool,
+    ) -> Result<Object<Spec, Status>, Error> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match self.store.read(r).await {
+                Ok(obj) if predicate(&obj) => return Ok(obj),
+                Ok(_) | Err(Error::NotFound(_)) => {}
+                Err(e) => return Err(e),
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(Error::InvalidConfig(format!("waiting for {r}: timed out")));
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Claims up to the harness batch size of due objects and returns their
+    /// live claims. It is the crash seam: DROP a returned claim without
+    /// completing it to simulate process death — its lease then expires and
+    /// a successor adopts. Pair with [`Harness::force_expire_claim`] to make
+    /// adoption immediate instead of waiting out the lease.
+    pub async fn claim_batch(&self) -> Result<Vec<ConformanceClaim>, Error> {
+        self.store.claim_batch(self.cfg.clone()).await
+    }
+
+    /// Claims the single most-due object, runs `f` as an inline reconciler
+    /// against the claim, and completes the attempt in one fenced
+    /// transaction. Returns the claim-time snapshot (as `f` left it, so a
+    /// mid-attempt write shows) and the committed completion. A completion
+    /// error is returned as is; [`DriveError::NothingDue`] means no object
+    /// was due.
+    pub async fn drive_once(
+        &self,
+        f: impl for<'a> FnOnce(
+            &'a mut ConformanceClaim,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<Outcome<Status>, BoxError>> + Send + 'a>,
+        > + Send,
+    ) -> Result<(Object<Spec, Status>, Completion<Status>), DriveError> {
+        Harness::drive_once_with(&self.store, self.cfg.clone(), f).await
+    }
+
+    /// [`Harness::drive_once`] against an arbitrary store and policy: the
+    /// seam for driving a store built over a variant declaration (a failing
+    /// finalizer), or with a small `max_attempts`. The batch size is forced
+    /// to 1.
+    pub async fn drive_once_with<A: Adapter<Spec, Status>>(
+        store: &TypedStore<Spec, Status, A>,
+        mut cfg: WorkerConfig,
+        f: impl for<'a> FnOnce(
+            &'a mut Claim<Spec, Status, A>,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<Outcome<Status>, BoxError>> + Send + 'a>,
+        > + Send,
+    ) -> Result<(Object<Spec, Status>, Completion<Status>), DriveError> {
+        cfg.batch_size = 1;
+        let mut claims = store.claim_batch(cfg).await?;
+        if claims.is_empty() {
+            return Err(DriveError::NothingDue);
+        }
+        let mut claim = claims.remove(0);
+        let out = f(&mut claim).await;
+        let snapshot = claim.object.clone();
+        let done = claim.complete(out).await?;
+        Ok((snapshot, done))
+    }
+
+    /// The default reconciler over the harness simulator, ready for hooks.
+    pub fn example_reconciler(&self) -> ExampleReconciler {
+        ExampleReconciler::new(Arc::clone(&self.sim))
+    }
+
+    /// Runs a worker on the harness store with the harness policy. The
+    /// reconciler is usually [`Harness::example_reconciler`] with or without
+    /// hooks; `after` is `NoAfterComplete` when nothing observes.
+    pub fn start_worker<R, F>(&self, rec: R, after: F) -> Result<Replica, Error>
+    where
+        R: Reconciler<Spec, Status, ConformanceAdapter>,
+        F: AfterComplete<Spec, Status>,
+    {
+        self.start_worker_config(self.cfg.clone(), rec, after)
+    }
+
+    /// [`Harness::start_worker`] with an explicit policy (parallelism,
+    /// `max_attempts`, timeouts for capacity and escalation scenarios).
+    pub fn start_worker_config<R, F>(
+        &self,
+        cfg: WorkerConfig,
+        rec: R,
+        after: F,
+    ) -> Result<Replica, Error>
+    where
+        R: Reconciler<Spec, Status, ConformanceAdapter>,
+        F: AfterComplete<Spec, Status>,
+    {
+        run_worker(self.store.clone(), cfg, rec, after)
+    }
+
+    /// How many conformance envelopes are currently claimed (token
+    /// present): the observation for worker parallelism and lease liveness.
+    pub async fn claimed_count(&self) -> i64 {
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM processing_object_conformance WHERE claim_token IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .expect("the partition is readable");
+        n
+    }
+
+    /// Expires the live lease on `r` directly in the database so a successor
+    /// can adopt it on the next claim scan without waiting out the lease. It
+    /// keeps the claim token (adoption replaces it) and moves `claimed_at`
+    /// back too, preserving the lease-coherence CHECK. It affects only a
+    /// currently-claimed row.
+    pub async fn force_expire_claim(&self, r: &Ref) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE processing_object_conformance
+             SET claimed_at = clock_timestamp() - make_interval(hours => 2),
+                 lease_expires_at = clock_timestamp() - make_interval(hours => 1)
+             WHERE id = $1 AND claim_token IS NOT NULL",
+        )
+        .bind(r.id)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+    }
+
+    /// The live claim's lease horizon, `None` when unclaimed.
+    pub async fn lease_expires_at(&self, r: &Ref) -> Option<DateTime<Utc>> {
+        let (at,): (Option<DateTime<Utc>>,) = sqlx::query_as(
+            "SELECT lease_expires_at FROM processing_object_conformance WHERE id = $1",
+        )
+        .bind(r.id)
+        .fetch_one(&self.pool)
+        .await
+        .expect("the row exists");
+        at
+    }
+
+    /// `generation_changed_at`: the intent clock, which only create,
+    /// update_spec and mark_deleted advance.
+    pub async fn gen_changed_at(&self, r: &Ref) -> DateTime<Utc> {
+        let (at,): (DateTime<Utc>,) = sqlx::query_as(
+            "SELECT generation_changed_at FROM processing_object_conformance WHERE id = $1",
+        )
+        .bind(r.id)
+        .fetch_one(&self.pool)
+        .await
+        .expect("the row exists");
+        at
+    }
+
+    /// The envelope bookkeeping of `r`.
+    pub async fn envelope(&self, r: &Ref) -> EnvelopeSnapshot {
+        let row = sqlx::query(
+            "SELECT generation, observed_generation, wake_seq, attempts, phase,
+                    COALESCE(last_error, '') AS last_error, next_reconcile_at, claim_token
+             FROM processing_object_conformance WHERE id = $1",
+        )
+        .bind(r.id)
+        .fetch_one(&self.pool)
+        .await
+        .expect("the row exists");
+        EnvelopeSnapshot {
+            generation: row.get("generation"),
+            observed_generation: row.get("observed_generation"),
+            wake_seq: row.get("wake_seq"),
+            attempts: row.get("attempts"),
+            phase: row.get("phase"),
+            last_error: row.get("last_error"),
+            next_reconcile_at: row.get("next_reconcile_at"),
+            claim_token: row.get("claim_token"),
+        }
+    }
+
+    /// Whether a durable teardown row exists for `id` — proof
+    /// `finalize_delete` committed. The archive outlives the envelope.
+    pub async fn is_archived(&self, id: Uuid) -> Result<bool, sqlx::Error> {
+        let (exists,): (bool,) =
+            sqlx::query_as("SELECT EXISTS (SELECT 1 FROM conformance_archive WHERE id = $1)")
+                .bind(id)
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(exists)
+    }
+
+    /// Drops the database.
+    pub async fn finish(self) {
+        self.pool.close().await;
+        drop(self.sim);
+        self.db.finish().await;
+    }
+}
+
+/// The terminal-success shape most conformance tests wait for: the current
+/// generation observed and the phase converged.
+pub fn reconciled(obj: &Object<Spec, Status>) -> bool {
+    obj.observed_current() && obj.meta.phase == basable_processingobject::Phase::Converged
+}

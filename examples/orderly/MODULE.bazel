@@ -1,0 +1,92 @@
+"""Shop — a basable nanoservice application.
+
+Rendered by the basable scaffolder (crates 0.1.0, template
+v0.1.0). Bazel + rules_rust is the only build; the Cargo.toml
+files are package metadata for crate_universe. Dependencies are declared in the
+workspace Cargo.toml and repinned with `CARGO_BAZEL_REPIN=1 bazel sync`
+(docs/adding-a-dependency.md).
+"""
+
+module(name = "shop", version = "0.1.0")
+
+bazel_dep(name = "rules_rust", version = "0.74.0")
+bazel_dep(name = "rules_oci", version = "2.3.0")
+bazel_dep(name = "rules_pkg", version = "1.3.0")
+bazel_dep(name = "rules_multirun", version = "0.14.0")
+bazel_dep(name = "rules_buf", version = "0.5.4")
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "bazel_skylib", version = "1.9.2")
+# protoc comes prebuilt from this module's own toolchains (.bazelrc sets
+# prefer_prebuilt_protoc): nothing compiles protobuf's C++.
+bazel_dep(name = "protobuf", version = "36.2")
+
+# --- Rust toolchain --------------------------------------------------------
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2024",
+    versions = ["1.98.1"],
+    extra_target_triples = ["x86_64-unknown-linux-gnu"],
+)
+use_repo(rust, "rust_toolchains")
+register_toolchains("@rust_toolchains//:all")
+
+# --- Crates (crate_universe from the workspace Cargo.toml) ------------------
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crate.from_cargo(
+    name = "crates",
+    cargo_lockfile = "//:Cargo.lock",
+    lockfile = "//:Cargo.Bazel.lock",
+    manifests = [
+        "//:Cargo.toml",
+        "//crates/proto:Cargo.toml",
+        "//crates/messages:Cargo.toml",
+        "//crates/interfaces:Cargo.toml",
+        "//crates/messenger:Cargo.toml",
+        "//api:Cargo.toml",
+        "//app:Cargo.toml",
+        # basable:manifests-begin — one line per nanoservice crate
+        "//nanoservices/catalog:Cargo.toml",
+        "//nanoservices/order:Cargo.toml",
+        "//nanoservices/notifier:Cargo.toml",
+        # basable:manifests-end
+    ],
+)
+
+# The codegen binaries the genrules run: the messenger generator over
+# routing.yaml and the two protoc plugins (buffa messages and views, the
+# connect-rust service stubs).
+crate.annotation(crate = "basable-messenger-gen", gen_binaries = ["basable-messenger-gen"])
+crate.annotation(crate = "basable-protoc-gen-buffa", gen_binaries = ["protoc-gen-buffa"])
+crate.annotation(crate = "connectrpc-codegen", gen_binaries = ["protoc-gen-connect-rust"])
+use_repo(crate, "crates")
+
+# --- buf (lint and breaking checks; codegen is protoc's) --------------------
+buf = use_extension("@rules_buf//buf:extensions.bzl", "buf")
+buf.toolchains(version = "v1.73.0")
+use_repo(buf, "rules_buf_toolchains")
+register_toolchains("@rules_buf_toolchains//:all")
+
+# --- Base images (digest-pinned; a tag would move under the project) --------
+oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
+# gcr.io/distroless/cc-debian12:nonroot
+oci.pull(
+    name = "distroless_cc",
+    digest = "sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f",
+    image = "gcr.io/distroless/cc-debian12",
+    platforms = ["linux/amd64"],
+)
+# ghcr.io/amacneil/dbmate:2.36.0
+oci.pull(
+    name = "dbmate",
+    digest = "sha256:520c740c6e0ad73fde2cd1ea7e2b779aaf789d22aca8858f87a478e7094535fb",
+    image = "ghcr.io/amacneil/dbmate",
+    platforms = ["linux/amd64"],
+)
+# docker.io/nginxinc/nginx-unprivileged:stable-alpine
+oci.pull(
+    name = "nginx_unprivileged",
+    digest = "sha256:daa17b944bac2b578e962da4c61ad72a59233b3c63abea17113acaf4e6b9aea4",
+    image = "docker.io/nginxinc/nginx-unprivileged",
+    platforms = ["linux/amd64"],
+)
+use_repo(oci, "distroless_cc", "distroless_cc_linux_amd64", "dbmate", "dbmate_linux_amd64", "nginx_unprivileged", "nginx_unprivileged_linux_amd64")

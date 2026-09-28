@@ -1,0 +1,12 @@
+# expect: E_DUP_COMPONENT
+version: 1
+messenger:
+  name: AppMessenger
+  rust:
+    error_type: basable_core::AppError
+    ctx_type: basable_core::Ctx
+    uses: ["messages::*"]
+nanoservices:
+  - name: a
+  - name: b
+  - name: a

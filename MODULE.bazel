@@ -1,0 +1,73 @@
+"""basable-rust-libs — the basable nanoservice frameworks for Rust.
+
+Bazel + rules_rust is the ONLY build and test system (mirroring the basable
+monorepo). The Cargo.toml files are package metadata: crate_universe reads
+the workspace manifest and lockfile for dependency resolution, and the
+release job needs them for `cargo publish`. Nobody runs cargo otherwise.
+
+Repin after a dependency change:  CARGO_BAZEL_REPIN=1 bazel build //...
+IDE support:                      bazel run @rules_rust//tools/rust_analyzer:gen_rust_project
+
+Versions mirror golang/controller/lib/scaffold/pins.go in the monorepo: the
+tenant tree the scaffolder renders pins the same rules and toolchain, so a
+crate release and a template bump move together.
+"""
+
+module(name = "basable_rust_libs", version = "0.1.0")
+
+bazel_dep(name = "rules_rust", version = "0.74.0")
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "bazel_skylib", version = "1.9.2")
+# protoc comes prebuilt from this module's own toolchains (.bazelrc sets
+# prefer_prebuilt_protoc): nothing compiles protobuf's C++.
+bazel_dep(name = "protobuf", version = "36.2")
+
+# --- Rust toolchain --------------------------------------------------------
+# One edition and one stable version for every crate. The MSRV published in
+# Cargo.toml (rust-version) is lower: connect-rust's 1.88.
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2024",
+    versions = ["1.98.1"],
+    extra_target_triples = ["x86_64-unknown-linux-gnu"],
+)
+use_repo(rust, "rust_toolchains")
+
+register_toolchains("@rust_toolchains//:all")
+
+# --- Crates (crate_universe from the workspace Cargo.toml) ------------------
+# Every crate's Cargo.toml is listed here; a new crate is one line. BUILD
+# files use all_crate_deps() so they never name a dependency twice.
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crate.from_cargo(
+    name = "crates",
+    cargo_lockfile = "//:Cargo.lock",
+    lockfile = "//:Cargo.Bazel.lock",
+    manifests = [
+        "//:Cargo.toml",
+        "//crates/basable-core:Cargo.toml",
+        "//crates/basable-publicid:Cargo.toml",
+        "//crates/basable-db:Cargo.toml",
+        "//crates/basable-testkit:Cargo.toml",
+        "//crates/basable-processingobject:Cargo.toml",
+        "//crates/basable-processingobject-testkit:Cargo.toml",
+        "//crates/basable-externaleffect:Cargo.toml",
+        "//crates/basable-effecttest:Cargo.toml",
+        "//crates/basable-config:Cargo.toml",
+        "//crates/basable-messenger:Cargo.toml",
+        "//crates/basable-messenger-codegen:Cargo.toml",
+        "//crates/basable-messenger-gen:Cargo.toml",
+        "//crates/basable-pubsub:Cargo.toml",
+        "//crates/basable-app:Cargo.toml",
+        "//crates/basable-auth:Cargo.toml",
+        "//crates/basable-connect:Cargo.toml",
+        "//crates/basable-protoc-gen-buffa:Cargo.toml",
+    ],
+)
+# The codegen binaries the genrules run: the messenger generator over
+# routing.yaml (tools/messenger.bzl) and the two protoc plugins
+# (tools/proto.bzl).
+crate.annotation(crate = "basable-messenger-gen", gen_binaries = ["basable-messenger-gen"])
+crate.annotation(crate = "basable-protoc-gen-buffa", gen_binaries = ["protoc-gen-buffa"])
+crate.annotation(crate = "connectrpc-codegen", gen_binaries = ["protoc-gen-connect-rust"])
+use_repo(crate, "crates")

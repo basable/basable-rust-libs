@@ -1,0 +1,17 @@
+[package]
+name = "basable-messenger"
+workspace = "../.."
+description = "The runtime half of the basable messenger: the Route trait the generated crates implement (one impl per declared (source, message) pair on the concrete router) and the boxing helper the generator uses on the back-edges of route cycles. Everything else is generated at build by basable-messenger-gen from routing.yaml."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

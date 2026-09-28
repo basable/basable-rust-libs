@@ -1,0 +1,21 @@
+apiVersion: basable.com/v1
+kind: TenantConfig
+
+# Sizing per environment. Both environments use exactly the free-tier maximum
+# the platform allows during the organisation's first month; raise them once
+# a payment method is on file. The block you set also selects the tenancy
+# model (virtual-cluster: a namespace quota on a shared cluster).
+spec:
+  environments:
+    preview:
+      virtual-cluster:
+        cpu: "2000m"
+        memory: "4Gi"
+        storage: "10Gi"
+        maxPods: 30
+    live:
+      virtual-cluster:
+        cpu: "2000m"
+        memory: "4Gi"
+        storage: "10Gi"
+        maxPods: 30

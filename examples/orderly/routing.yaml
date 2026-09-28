@@ -1,0 +1,44 @@
+# The durable topology of this application: one entry per nanoservice, the
+# messages it handles and the messages it sends. basable-messenger-gen reads
+# this file at build (tools/messenger.bzl) and generates the `interfaces`
+# crate (a handler trait with `handle_<snake_message>` per nanoservice, and a
+# sender exposing exactly the declared `send_<snake_message>` calls) and the
+# `messenger` crate (the concrete AppMessenger routing every declared pair).
+#
+# Semantics: a typed `response` is a strict 1:1 request (exactly one
+# handler); `response: error` is sequential fail-fast fan-out; no `response`
+# is a void fan-out event (0..N handlers). Every send and handle of one
+# message declares the same response. A nanoservice with no `handles` is
+# sends-only and is not a field of the router. The build names the YAML line
+# of every violation.
+#
+# Messages are plain Rust structs in crates/messages. Adding a message or a
+# nanoservice is an edit here; the build then tells you which methods are
+# missing. The scaffolder merges new nanoservice entries; it never removes.
+version: 1
+messenger:
+  name: AppMessenger
+  rust:
+    error_type: basable_core::AppError
+    ctx_type: basable_core::Ctx
+    uses: ["messages::*"]
+nanoservices:
+  # The Connect boundary: sends-only, one request per API method.
+  - name: api
+    sends:
+      - {message: UpsertProductRequest, response: Product}
+      - {message: EnsureOrderRequest, response: Order}
+  - name: catalog
+    handles:
+      - {message: UpsertProductRequest, response: Product}
+      - {message: GetProductRequest, response: Product}
+      - {message: OrderEvent}
+  - name: order
+    handles:
+      - {message: EnsureOrderRequest, response: Order}
+    sends:
+      - {message: GetProductRequest, response: Product}
+      - {message: OrderEvent}
+  - name: notifier
+    handles:
+      - {message: OrderEvent}

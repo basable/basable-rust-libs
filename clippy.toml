@@ -1,0 +1,8 @@
+# The Directive's type-level rules, enforced by the clippy aspect in .bazelrc
+# (-Dclippy::disallowed_types). A std::sync::Mutex guard is never held across
+# an .await (-Dclippy::await_holding_lock); an async mutex is the shape that
+# hides the same mistake, so it is disallowed outright.
+disallowed-types = [
+    { path = "tokio::sync::Mutex", reason = "hold a std::sync::Mutex only across synchronous code; never across an .await (Directive)" },
+    { path = "tokio::sync::RwLock", reason = "hold a std::sync::RwLock only across synchronous code; never across an .await (Directive)" },
+]

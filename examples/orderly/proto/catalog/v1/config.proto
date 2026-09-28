@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package catalog.v1;
+
+import "basable/config/v1/config.proto";
+
+// The configuration messages nanoservice `catalog` declares. Each
+// embeds the ConfigHeader; a reference field is a string that holds a
+// #{Type:namespace:name} reference in the seed and the target's id once
+// loaded. Edit the plan's configTypes, not this file.
+
+// PricingRuleConfiguration (id 100, public ids `prule_…`).
+message PricingRuleConfiguration {
+  basable.config.v1.ConfigHeader header = 1;
+  int64 rate_cents = 2;
+  string currency = 3;
+}

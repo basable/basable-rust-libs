@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package basable.connecttest.v1;
+
+// The Phase 9 verification service: a unary echo, a unary failure with an
+// AppError code, the caller's identity, and a server stream.
+service EchoService {
+  rpc Echo(EchoRequest) returns (EchoResponse);
+  rpc Fail(FailRequest) returns (EchoResponse);
+  rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
+  rpc Count(CountRequest) returns (stream CountResponse);
+}
+
+message EchoRequest {
+  string text = 1;
+}
+
+message EchoResponse {
+  string text = 1;
+  string request_id = 2;
+}
+
+message FailRequest {
+  // The AppError code name to fail with (`not_found`, `internal`, …).
+  string code = 1;
+  string message = 2;
+}
+
+message WhoAmIRequest {}
+
+message WhoAmIResponse {
+  string user_id = 1;
+}
+
+message CountRequest {
+  int32 upto = 1;
+}
+
+message CountResponse {
+  int32 n = 1;
+}

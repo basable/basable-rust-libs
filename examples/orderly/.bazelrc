@@ -1,0 +1,42 @@
+# Bazel configuration — rendered by the basable scaffolder. Edit freely; the
+# scaffolder never rewrites an existing file.
+
+# Local caches (the CI restores and saves both — see docs/ci.md).
+build --disk_cache=~/.cache/bazel-disk
+build --repository_cache=~/.cache/bazel-repo
+
+# Reproducible builds.
+build --incompatible_strict_action_env
+build --show_timestamps
+build --color=yes
+
+# protoc is the protobuf module's prebuilt binary, never compiled from its
+# C++ sources (no C++ toolchain needed, nothing to wait for).
+common --@protobuf//bazel/toolchains:prefer_prebuilt_protoc
+
+# Rust: one edition and one target triple for the whole workspace.
+build --@rules_rust//rust/settings:pipelined_compilation=True
+build --@rules_rust//rust/settings:experimental_use_cc_common_link=False
+
+# clippy lints run under `bazel test` through the rules_rust aspect: a
+# std::sync::MutexGuard held across an .await, tokio::sync::Mutex or RefCell in
+# a nanoservice crate, are build errors (the Directive §9).
+build --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
+build --output_groups=+clippy_checks
+build --@rules_rust//rust/settings:clippy_flags=-Dclippy::await_holding_lock,-Dclippy::disallowed_types
+
+# Tests.
+test --test_output=errors
+test --test_summary=detailed
+
+# --config=ci: what the workflow runs. Optimised, no debug info, one graph for
+# tests AND the image so nothing is compiled twice.
+build:ci --compilation_mode=opt
+build:ci --@rules_rust//rust/settings:extra_rustc_flags=-Cdebuginfo=0
+build:ci --jobs=4
+build:ci --local_resources=cpu=HOST_CPUS
+test:ci --test_env=TEST_DATABASE_URL
+
+# Remote cache (the platform's, per tenant): filled in when it is provisioned.
+# build:ci --remote_cache=https://bazel-cache.basable.test
+# build:ci --remote_instance_name=abandon-above-tilt/shop

@@ -1,0 +1,74 @@
+# Wave 1: the nanoservice binary, two replicas (the frameworks are
+# multi-replica safe by construction). The image path is LITERAL with the
+# platform's tag placeholder; the workflow pins the digest by name.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  annotations:
+    basable.com/apply-wave: "1"
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: app
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: registry.test.local/abandon-above-tilt/shop
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: app-postgres-app
+                  key: uri
+            - name: PUBLIC_BASE_URL
+              value: https://TENANT_DOMAIN_PLACEHOLDER
+            - name: KRATOS_PUBLIC_URL
+              value: http://kratos-public:4433
+            - name: RUST_LOG
+              value: info
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi

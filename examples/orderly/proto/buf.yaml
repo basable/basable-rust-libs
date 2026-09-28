@@ -1,0 +1,11 @@
+# buf is used for lint and breaking checks only; this directory is the one
+# module (`buf lint proto` from the root, or `buf lint` in here). Code
+# generation is a Bazel build step (tools/proto.bzl); there is no
+# buf.gen.yaml. The lint runs as //proto:lint under `bazel test`.
+version: v2
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE

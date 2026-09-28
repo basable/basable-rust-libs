@@ -1,0 +1,12 @@
+{
+  "configSetName": "namespaces",
+  "items": [
+    {
+      "@type": "basable.config.v1.NamespaceConfiguration",
+      "header": {
+        "name": "default"
+      },
+      "display_name": "Default"
+    }
+  ]
+}

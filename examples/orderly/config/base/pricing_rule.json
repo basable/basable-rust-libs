@@ -1,0 +1,14 @@
+{
+  "configSetName": "pricing_rule",
+  "items": [
+    {
+      "@type": "catalog.v1.PricingRuleConfiguration",
+      "header": {
+        "namespace": "#{NamespaceConfiguration:default}",
+        "name": "example"
+      },
+      "rate_cents": 0,
+      "currency": ""
+    }
+  ]
+}

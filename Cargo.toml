@@ -1,0 +1,90 @@
+# Workspace metadata for crate_universe (dependency resolution) and for
+# `cargo publish` (the release job). Bazel is the build; see MODULE.bazel.
+#
+# One workspace version: the basable-* crates are released in lockstep and a
+# tenant pins them with `=x.y.z` (the scaffolder's FrameworkVersion).
+[workspace]
+resolver = "3"
+members = [
+    "crates/basable-core",
+    "crates/basable-publicid",
+    "crates/basable-db",
+    "crates/basable-testkit",
+    "crates/basable-processingobject",
+    "crates/basable-processingobject-testkit",
+    "crates/basable-externaleffect",
+    "crates/basable-effecttest",
+    "crates/basable-config",
+    "crates/basable-messenger",
+    "crates/basable-messenger-codegen",
+    "crates/basable-messenger-gen",
+    "crates/basable-pubsub",
+    "crates/basable-app",
+    "crates/basable-auth",
+    "crates/basable-connect",
+    "crates/basable-protoc-gen-buffa",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# connect-rust's MSRV; the rules_rust toolchain (MODULE.bazel) is newer.
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/basable/basable-rust-libs"
+homepage = "https://basable.com"
+authors = ["basable"]
+
+# The curated dependency baseline. A crate takes one with `workspace = true`;
+# a tenant project inherits the same table, so the agent rarely needs a new
+# crate. Never openssl, never a crate that needs a system library.
+[workspace.dependencies]
+basable-core = { version = "=0.1.0", path = "crates/basable-core" }
+basable-publicid = { version = "=0.1.0", path = "crates/basable-publicid" }
+basable-db = { version = "=0.1.0", path = "crates/basable-db" }
+basable-testkit = { version = "=0.1.0", path = "crates/basable-testkit" }
+basable-processingobject = { version = "=0.1.0", path = "crates/basable-processingobject" }
+basable-processingobject-testkit = { version = "=0.1.0", path = "crates/basable-processingobject-testkit" }
+basable-externaleffect = { version = "=0.1.0", path = "crates/basable-externaleffect" }
+basable-effecttest = { version = "=0.1.0", path = "crates/basable-effecttest" }
+basable-config = { version = "=0.1.0", path = "crates/basable-config" }
+basable-messenger = { version = "=0.1.0", path = "crates/basable-messenger" }
+basable-messenger-codegen = { version = "=0.1.0", path = "crates/basable-messenger-codegen" }
+basable-messenger-gen = { version = "=0.1.0", path = "crates/basable-messenger-gen" }
+basable-pubsub = { version = "=0.1.0", path = "crates/basable-pubsub" }
+basable-app = { version = "=0.1.0", path = "crates/basable-app" }
+basable-auth = { version = "=0.1.0", path = "crates/basable-auth" }
+basable-connect = { version = "=0.1.0", path = "crates/basable-connect" }
+basable-protoc-gen-buffa = { version = "=0.1.0", path = "crates/basable-protoc-gen-buffa" }
+
+uuid = { version = "1", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+# Runtime API only, never the query! macros (they need a database at compile
+# time, which the Bazel sandbox does not have). rustls, never openssl.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
+futures-core = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+# HTTP, for the simulators and later the Connect glue and Kratos client.
+axum = "0.8"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2"] }
+# Protobuf and Connect (pre-1.0: pinned to the minor). The two protoc
+# plugins are build-time binaries (crate_universe gen_binaries, MODULE.bazel):
+# connectrpc-codegen's, and basable-protoc-gen-buffa over buffa-codegen.
+buffa = { version = "0.9", features = ["json"] }
+buffa-codegen = "0.9"
+buffa-types = "0.9"
+connectrpc = { version = "0.9", features = ["axum", "client"] }
+connectrpc-codegen = "0.9"
+http = "1"
+futures = "0.3"
+# The messenger code generator (build-time only in a tenant project).
+yaml-rust2 = "0.13"
+jsonschema = { version = "0.58", default-features = false }
+syn = { version = "3", features = ["full", "parsing", "printing"] }
+quote = "1"
+proc-macro2 = "1"
+prettyplease = "0.3"

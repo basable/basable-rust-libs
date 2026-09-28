@@ -1,0 +1,9 @@
+# The workspace root: the manifests and lockfiles crate_universe reads, and
+# the rustfmt configuration the aspect applies to every crate.
+exports_files([
+    "Cargo.toml",
+    "Cargo.lock",
+    "Cargo.Bazel.lock",
+    "rustfmt.toml",
+    "clippy.toml",
+])

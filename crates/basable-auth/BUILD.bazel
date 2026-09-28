@@ -1,0 +1,20 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "basable_auth",
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = ["test-bypass"],
+    crate_name = "basable_auth",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//crates/basable-core:basable_core",
+    ] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "basable_auth_test",
+    crate = ":basable_auth",
+    crate_features = ["test-bypass"],
+    deps = all_crate_deps(normal_dev = True),
+)

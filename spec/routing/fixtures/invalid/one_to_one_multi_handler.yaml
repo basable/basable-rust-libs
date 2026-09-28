@@ -1,0 +1,18 @@
+# expect: E_1TO1_MULTI_HANDLER
+version: 1
+messenger:
+  name: AppMessenger
+  rust:
+    error_type: basable_core::AppError
+    ctx_type: basable_core::Ctx
+    uses: ["messages::*"]
+nanoservices:
+  - name: api
+    sends:
+      - { message: Q, response: R }
+  - name: a
+    handles:
+      - { message: Q, response: R }
+  - name: b
+    handles:
+      - { message: Q, response: R }

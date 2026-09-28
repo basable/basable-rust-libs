@@ -1,0 +1,167 @@
+# The one workflow. The platform deploys the `rendered-manifests` artifact
+# this run uploads and nothing else: lint k8s/, build and test with Bazel,
+# push the images by commit SHA, pin every built image to its digest, render
+# k8s/ with kustomize, upload. Plan commits (docs/** only) start no run and,
+# by the platform's rule, create no deployment. See docs/ci.md for the cache
+# hygiene rules — they exist because the naive shape ran out of disk.
+name: Build
+
+on:
+  push:
+    branches: [dev, main]
+    paths-ignore:
+      - "docs/**"
+
+env:
+  REGISTRY: registry.test.local
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The job's OIDC identity token is what logs in to the platform
+      # registry (federated to this repository; no secret in the repo).
+      id-token: write
+      actions: write
+    services:
+      postgres:
+        image: docker.io/library/postgres:18-alpine@sha256:6c538e7206ea40ff740ef27883529390a690b6ead6ba96b44c67a9f7c638e8fd
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The platform registry namespaces images by project (the same words
+      # as its hostname); only the repository's lowercase name comes from
+      # the run.
+      - name: Set image name
+        run: |
+          repo="${GITHUB_REPOSITORY##*/}"
+          echo "IMAGE_NAME=abandon-above-tilt/${repo,,}" >> "$GITHUB_ENV"
+
+      - name: Lint manifests
+        run: |
+          if grep -rn ':latest' k8s/; then echo "k8s/ must not use :latest tags" >&2; exit 1; fi
+          kustomize build --enable-helm k8s/ > /dev/null
+
+      # Two caches, keyed by how often they change: the repository cache and
+      # bazelisk by the lockfiles (they change only with a dependency), the
+      # disk cache per SHA with a prefix restore (it changes every commit).
+      - name: Restore repository cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/bazel-repo
+            ~/.cache/bazelisk
+          key: repo-cache-${{ hashFiles('MODULE.bazel.lock', 'Cargo.Bazel.lock') }}
+          restore-keys: repo-cache-
+
+      - name: Restore disk cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: disk-cache-${{ github.sha }}
+          restore-keys: disk-cache-
+
+      # Everything the build touches refreshes its mtime past this marker;
+      # the prune step keeps exactly that.
+      - name: Mark cache epoch
+        run: touch "$RUNNER_TEMP/disk-cache-marker"
+
+      - uses: bazel-contrib/setup-bazel@0.14.0
+        with:
+          bazelisk-cache: false
+          disk-cache: false
+          repository-cache: false
+
+      - name: Test
+        env:
+          TEST_DATABASE_URL: postgres://test:test@localhost:5432/test?sslmode=disable
+          CARGO_BAZEL_REPIN: workspace
+        run: bazel test --config=ci //...
+
+      - name: Breaking-change check
+        if: github.ref == 'refs/heads/dev'
+        run: bazel run --config=ci @rules_buf_toolchains//:buf -- breaking --against '.git#branch=main' || true
+
+      # The job's OIDC identity token, exchanged at the platform registry's
+      # token service through this repository's federated service account.
+      # crane (the push below) reads the docker config this writes.
+      - name: Login to the platform registry
+        run: |
+          token="$(curl -fsSL -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${REGISTRY}" | jq -r .value)"
+          echo "${token}" | docker login "${REGISTRY}" --username oidc --password-stdin
+
+      # rules_oci pushes with crane — no Docker daemon. The image() macro
+      # pushes the digest tag; --tag adds the commit-SHA tag the platform
+      # contract names.
+      - name: Build and push images
+        id: build
+        run: |
+          bazel run --config=ci //:push -- --tag ${{ github.sha }}
+          # The digest of each built image, read from its index.json — the
+          # same source the image() macro derives its tag from — handed to the
+          # Render step as an output, never recomputed.
+          digest() { jq -r '.manifests[0].digest' "bazel-bin/$1/index.json"; }
+          echo "digest_app=$(digest app/app_image)" >> "$GITHUB_OUTPUT"
+          echo "digest_frontend=$(digest frontend/static/frontend_image)" >> "$GITHUB_OUTPUT"
+          echo "digest_dbmate=$(digest db/app/dbmate_image)" >> "$GITHUB_OUTPUT"
+      - name: Render manifests
+        run: |
+          cd k8s
+          kustomize edit set image "${REGISTRY}/${IMAGE_NAME}=${REGISTRY}/${IMAGE_NAME}@${{ steps.build.outputs.digest_app }}"
+          kustomize edit set image "${REGISTRY}/${IMAGE_NAME}-frontend=${REGISTRY}/${IMAGE_NAME}-frontend@${{ steps.build.outputs.digest_frontend }}"
+          kustomize edit set image "${REGISTRY}/${IMAGE_NAME}-dbmate=${REGISTRY}/${IMAGE_NAME}-dbmate@${{ steps.build.outputs.digest_dbmate }}"
+          kustomize build --enable-helm . > ../rendered-manifests.yaml
+
+      - name: Upload rendered manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-manifests
+          path: rendered-manifests.yaml
+          retention-days: 7
+
+      # Cache hygiene, on success only: prune the disk cache to what this
+      # build touched, save it under this SHA, delete the superseded entries.
+      - name: Prune disk cache
+        if: success()
+        run: |
+          find ~/.cache/bazel-disk -type f ! -newer "$RUNNER_TEMP/disk-cache-marker" -delete || true
+          find ~/.cache/bazel-disk -type d -empty -delete || true
+
+      - name: Save repository cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cache/bazel-repo
+            ~/.cache/bazelisk
+          key: repo-cache-${{ hashFiles('MODULE.bazel.lock', 'Cargo.Bazel.lock') }}
+
+      - name: Save disk cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: disk-cache-${{ github.sha }}
+
+      - name: Delete superseded disk caches
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          own=$(gh cache list --key "disk-cache-${{ github.sha }}" --json createdAt --jq '.[0].createdAt')
+          gh cache list --key disk-cache- --json key,createdAt --limit 100 \
+            | jq -r --arg own "$own" '.[] | select(.createdAt < $own) | .key' \
+            | xargs -r -n1 gh cache delete || true

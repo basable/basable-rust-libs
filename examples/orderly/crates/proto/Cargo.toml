@@ -1,0 +1,20 @@
+[package]
+name = "proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+# serde: buffa's JSON impls derive from it, so the crate holding the
+# generated messages depends on it itself.
+[dependencies]
+buffa = { workspace = true }
+buffa-types = { workspace = true }
+connectrpc = { workspace = true }
+serde = { workspace = true }
+
+# The protoc plugins the build's genrules run (crate_universe gen_binaries in
+# MODULE.bazel): dependencies so they are in the lock, never linked.
+[dev-dependencies]
+basable-protoc-gen-buffa = { workspace = true }
+connectrpc-codegen = { workspace = true }

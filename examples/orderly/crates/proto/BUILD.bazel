@@ -1,0 +1,66 @@
+# The generated protobuf crate: buffa message types + views and the
+# connect-rust service stubs, regenerated from proto/ on every build, one
+# genrule per proto package, and mounted by src/lib.rs with include!. Never
+# edit generated code; edit the .proto files. The scaffolder adds a package
+# per nanoservice between the markers.
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//tools:proto.bzl", "buffa_connect_library")
+
+buffa_connect_library(
+    name = "health_v1",
+    package = "health.v1",
+    protos = ["//proto:health/v1/health.proto"],
+)
+
+buffa_connect_library(
+    name = "basable_config_v1",
+    connect = False,
+    package = "basable.config.v1",
+    protos = ["//proto:basable/config/v1/config.proto"],
+)
+
+# basable:proto-packages-begin
+
+buffa_connect_library(
+    name = "catalog_v1",
+    deps = ["//proto:protos"],
+    package = "catalog.v1",
+    protos = [
+        "//proto:catalog/v1/catalog.proto",
+        "//proto:catalog/v1/config.proto",
+    ],
+)
+
+buffa_connect_library(
+    name = "order_v1",
+    deps = ["//proto:protos"],
+    package = "order.v1",
+    protos = [
+        "//proto:order/v1/order.proto",
+    ],
+)
+# basable:proto-packages-end
+
+rust_library(
+    name = "proto",
+    srcs = [
+        "src/lib.rs",
+        ":health_v1",
+        ":basable_config_v1",
+        # basable:proto-srcs-begin
+        ":catalog_v1",
+        ":order_v1",
+        # basable:proto-srcs-end
+    ],
+    aliases = aliases(),
+    crate_name = "proto",
+    crate_root = "src/lib.rs",
+    # Generated code: rustfmt and clippy judge the plugins, not the project.
+    tags = [
+        "noclippy",
+        "norustfmt",
+    ],
+    deps = all_crate_deps(normal = True),
+    visibility = ["//visibility:public"],
+)

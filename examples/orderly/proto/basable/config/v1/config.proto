@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package basable.config.v1;
+
+// The header every configuration message embeds (basable-config
+// 0.1.0). In a seed file `namespace` is a
+// #{NamespaceConfiguration:<name>} reference the loader resolves to the
+// namespace's id before the message decodes; `external_id` is read back
+// only; `labels` land on the object's base row.
+message ConfigHeader {
+  string namespace = 1;
+  string name = 2;
+  string external_id = 3;
+  map<string, string> labels = 4;
+}
+
+// NamespaceConfiguration is the root scope object every other configuration
+// object is filed under, referenceable by its plain name.
+message NamespaceConfiguration {
+  ConfigHeader header = 1;
+  string display_name = 2;
+}

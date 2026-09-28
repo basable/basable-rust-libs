@@ -1,0 +1,43 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "basable_effecttest",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "basable_effecttest",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//crates/basable-core:basable_core",
+        "//crates/basable-externaleffect:basable_externaleffect",
+    ] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "basable_effecttest_test",
+    crate = ":basable_effecttest",
+    deps = [
+        "//crates/basable-processingobject-testkit:basable_processingobject_testkit",
+    ] + all_crate_deps(normal_dev = True),
+)
+
+# The reference audits: three adapters over the conformance WidgetSim, one
+# per strategy family the plan names, run through the real HTTP client and
+# the ack-loss proxy. They are what a component's own audit file looks like.
+[
+    rust_test(
+        name = "effecttest_" + src[len("tests/"):-len(".rs")],
+        srcs = [src],
+        crate_root = src,
+        tags = ["requires-network"],
+        deps = [
+            ":basable_effecttest",
+            "//crates/basable-core:basable_core",
+            "//crates/basable-externaleffect:basable_externaleffect",
+            "//crates/basable-processingobject-testkit:basable_processingobject_testkit",
+        ] + all_crate_deps(
+            normal = True,
+            normal_dev = True,
+        ),
+    )
+    for src in glob(["tests/*.rs"])
+]

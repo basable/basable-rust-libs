@@ -1,0 +1,36 @@
+{
+  "configSetName": "pricing-rules",
+  "items": [
+    {
+      "@type": "orders.v1.PricingRuleConfiguration",
+      "header": {
+        "namespace": "#{NamespaceConfiguration:default}",
+        "name": "standard",
+        "labels": {
+          "tier": "standard"
+        }
+      },
+      "rate_cents": 165,
+      "currency": "EUR"
+    },
+    {
+      "@type": "orders.v1.PricingRuleConfiguration",
+      "header": {
+        "namespace": "#{NamespaceConfiguration:default}",
+        "name": "premium"
+      },
+      "rate_cents": 330,
+      "currency": "EUR",
+      "supersedes": "#{PricingRuleConfiguration:default:standard}"
+    },
+    {
+      "@type": "orders.v1.PricingRuleConfiguration",
+      "header": {
+        "namespace": "#{NamespaceConfiguration:eu}",
+        "name": "standard"
+      },
+      "rate_cents": 170,
+      "currency": "EUR"
+    }
+  ]
+}

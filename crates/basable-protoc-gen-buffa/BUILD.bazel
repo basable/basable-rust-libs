@@ -1,0 +1,23 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+rust_library(
+    name = "basable_protoc_gen_buffa",
+    srcs = ["src/lib.rs"],
+    crate_name = "basable_protoc_gen_buffa",
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "protoc-gen-buffa",
+    srcs = ["src/main.rs"],
+    crate_name = "protoc_gen_buffa",
+    visibility = ["//visibility:public"],
+    deps = [":basable_protoc_gen_buffa"] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "basable_protoc_gen_buffa_test",
+    crate = ":basable_protoc_gen_buffa",
+)
