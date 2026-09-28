@@ -32,6 +32,10 @@ project, so the mitigations are not optional for launch. In order:
 | 2026-09-27 | GitHub-hosted `ubuntu-latest`, caches restored from the Phase 7 run, CI run 36350296425 | Phase 8 (`basable-app`, `basable-pubsub`): two crates over the warm stack, `tracing-subscriber` new, every database-backed suite re-ran; lockfile check 51 s, `bazel test //...` 270 s; whole job 6 min 11 s | 321 s (incremental over a warm stack) | — |
 | 2026-09-27 | GitHub-hosted `ubuntu-latest`, caches restored from the Phase 8 run, CI run 36351729407 | Phase 9 (`basable-connect`, `basable-auth`, `basable-protoc-gen-buffa`, `tests/connect`): the protobuf stack cold on the runner (buffa, buffa-codegen, connectrpc with its client and axum features, connectrpc-codegen, the protobuf module's prebuilt protoc) and the first protoc genrules; lockfile check 32 s, `bazel test //...` 711 s; whole job 13 min 23 s | 743 s (the protobuf stack cold, everything else warm) | — |
 
+| 2026-09-27 | GitHub-hosted `ubuntu-latest`, EMPTY caches (the `orderly` job's first run), CI run 36354842501 | Phase 10, the F.3 baseline: `examples/orderly` — a tenant-shaped project (three nanoservices, the proto and messenger genrules, nine test targets over a Postgres service) built from nothing with `bazel test --config=ci //...`, the crate_universe repin included (the patched crates, note 75); crates copy 0 s, `bazel test` 562 s; whole job 10 min 0 s. The libs' `test` job in the same run: 67 s warm | 562 s (everything cold: rules, toolchain, ~340 crates in opt) | — |
+
 Each phase appends a row from the CI run that landed it; Phase 10
 (`examples/orderly`) is the baseline the "repo to live in ten minutes"
-target is measured against.
+target is measured against: 10 min 0 s for the whole job with empty
+caches, so the target holds only with the caches warm (or a remote cache,
+mitigation 4) — the second run of the job will say by how much.
