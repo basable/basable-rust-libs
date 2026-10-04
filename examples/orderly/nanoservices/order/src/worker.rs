@@ -10,19 +10,25 @@ use basable_core::{BoxError, Ctx};
 use crate::Order;
 
 impl Order {
-    /// `sweep_abandoned`, every 15m.
-    pub async fn tick_sweep_abandoned(&self, _ctx: &Ctx) -> Result<(), BoxError> {
+    /// `sweep_abandoned`, every 15m. `_s` is this nanoservice's sender,
+    /// for a tick that sends.
+    pub async fn tick_sweep_abandoned<R>(&self, _ctx: &Ctx, _s: interfaces::OrderSender<'static, R>) -> Result<(), BoxError>
+    where
+        R: interfaces::OrderRoutes + Send + Sync + 'static,
+    {
         Err(crate::unimplemented_step("order.tick_sweep_abandoned").into())
     }
 }
 
-/// The tickers `main.rs` registers for this nanoservice. The router is here
-/// for the tick that sends.
-pub fn tickers<R>(_router: &'static R, this: &'static Order) -> Vec<Ticker>
+/// The tickers `main.rs` registers for this nanoservice. The sender is
+/// built once from the router and copied into every tick.
+pub fn tickers<R>(router: &'static R, this: &'static Order) -> Vec<Ticker>
 where
     R: interfaces::OrderRoutes + Send + Sync + 'static,
 {
+    let sender = interfaces::OrderSender::new(router);
+    let _ = sender;
     vec![
-        Ticker::new("order.sweep_abandoned", std::time::Duration::from_secs(900), move |ctx| Box::pin(this.tick_sweep_abandoned(ctx))),
+        Ticker::new("order.sweep_abandoned", std::time::Duration::from_secs(900), move |ctx| Box::pin(this.tick_sweep_abandoned(ctx, sender))),
     ]
 }

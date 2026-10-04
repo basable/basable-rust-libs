@@ -36,11 +36,14 @@ handler; `response: error` is sequential fail-fast fan-out returning
 message is cloned for all but its last handler, so messages derive `Clone`.
 
 A nanoservice implements `impl<R: OrderRoutes> OrderHandler<R> for
-OrderOperator` (the scaffold emits that header) and a reconciler holds
-`router: &'static R`. `main` builds every component, then
-`Box::leak(Box::new(AppMessenger::new(..)))`, and hands the `&'static`
-router to the Connect server and to each worker. A nanoservice sending an
-undeclared message does not compile (no sender method).
+OrderOperator` (the scaffold emits that header); a handler receives its
+sender per message, and a reconciler, a ticker or a Connect service holds
+its sender (`OrderSender<'static, R>`, a `Copy` wrapper over the router
+exposing exactly the declared sends), built once from the router. `main`
+builds every component, then `Box::leak(Box::new(AppMessenger::new(..)))`,
+and hands the `&'static` router to the Connect server and to each worker,
+which build their senders from it. A nanoservice sending an undeclared
+message does not compile (no sender method).
 
 Cycles in the route graph are boxed mechanically (a feedback vertex set of
 routes, chosen depth-first in declaration order, gets `boxed(..)`);

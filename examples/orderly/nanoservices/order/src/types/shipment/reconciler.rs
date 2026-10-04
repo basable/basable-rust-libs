@@ -24,8 +24,10 @@ use basable_processingobject::{
 use super::{Adapter, Spec, Status};
 use crate::Order;
 
+/// The pass's two handles: this nanoservice's sender (exactly its declared
+/// sends, built once from the router) and the component itself.
 pub struct Reconciler<R: 'static> {
-    pub(crate) router: &'static R,
+    pub(crate) sender: interfaces::OrderSender<'static, R>,
     pub(crate) this: &'static Order,
 }
 
@@ -50,7 +52,8 @@ where
         //          Err(DispatchError::ReplayWindowElapsed { .. }) => return Ok(Outcome::retry(Some(status), "replay window elapsed: hold")),
         //      }` (`basable_externaleffect::DispatchError`);
         //   3. one outcome: `Outcome::converged(Some(status))`, `Outcome::converged_after(.., d)`, `Outcome::requeue_now(..)`.
-        let _ = self.router;
+        //   A send to another nanoservice is `self.sender.send_<message>(ctx, m).await`.
+        let _ = self.sender;
         tracing::warn!(step = "order.shipment.reconcile", "unimplemented step reached");
         Ok(Outcome::converged(None))
     }
@@ -83,7 +86,7 @@ where
             max_attempts: 0,
             ..WorkerConfig::default()
         },
-        Reconciler { router, this },
+        Reconciler { sender: interfaces::OrderSender::new(router), this },
         NoAfterComplete,
     )
     .expect("order.shipment: a valid worker policy")

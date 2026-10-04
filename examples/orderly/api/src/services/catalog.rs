@@ -7,14 +7,16 @@ use std::sync::Arc;
 
 use basable_connect::{ConnectRouter, into_connect_error, request_ctx};
 use connectrpc::{RequestContext, ServiceRequest, ServiceResult};
-use interfaces::ApiRoutes;
+use interfaces::{ApiRoutes, ApiSender};
 use proto::connect::catalog::v1::CatalogService;
 use proto::proto::catalog::v1::*;
 
 use crate::Api;
 
+/// The service holds the api sender (exactly the sends `api` declares),
+/// built once from the router at mount.
 pub struct CatalogServiceImpl<R: ApiRoutes + Send + Sync + 'static> {
-    router: &'static R,
+    sender: ApiSender<'static, R>,
 }
 
 // The generated trait returns `impl Encodable`; answering with the owned
@@ -25,9 +27,9 @@ impl<R: ApiRoutes + Send + Sync + 'static> CatalogService for CatalogServiceImpl
         let ctx = request_ctx(&ctx);
         let _req = request.to_owned_message();
         // TODO: validate `_req`, convert it into `messages::UpsertProductRequest`,
-        // send it with `interfaces::ApiSender::new(self.router).send_…(&ctx, m).await`,
+        // send it with `self.sender.send_…(&ctx, m).await`,
         // and convert the answer into `UpsertProductResponse` (`Ok(connectrpc::Response::new(..))`).
-        let _ = (&ctx, self.router);
+        let _ = (&ctx, self.sender);
         Err(into_connect_error(crate::unimplemented_step("api.upsert_product")))
     }
 }
@@ -36,5 +38,5 @@ pub fn mount<R>(connect: &mut ConnectRouter, _api: &'static Api, router: &'stati
 where
     R: ApiRoutes + Send + Sync + 'static,
 {
-    connect.add_service(Arc::new(CatalogServiceImpl { router }));
+    connect.add_service(Arc::new(CatalogServiceImpl { sender: ApiSender::new(router) }));
 }

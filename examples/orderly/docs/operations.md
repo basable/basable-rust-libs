@@ -14,12 +14,16 @@
   Secret as above); there is no cipher secret because OIDC token
   encryption is not used.
 - **Mail**: the Kratos courier's SMTP connection is a user-supplied secret
-  the platform's secrets input path will carry; until then sign-in codes
-  appear in the Kratos pod's logs only.
+  (below); until one is wired in, sign-in codes appear in the Kratos pod's
+  logs only.
 - **Provider API keys** (payments, email, anything under
-  `externalSystems`): user-supplied secrets, added through the platform's
-  secrets input path when it ships; until then, a repository Actions secret
-  rendered into a Kubernetes Secret by a workflow step.
+  `externalSystems`): user-supplied secrets. Each lives in the `app-secrets`
+  Secret in the `default` namespace of each environment's cluster, and the app
+  reads it with its own non-optional `secretKeyRef` (never `envFrom`). The
+  user adds the value in the editor (the environment's Secrets action, or Add
+  secrets on a deploy waiting at its secrets step); preview and live hold
+  separate values, and the platform stores none of them. Never put a value in
+  the repository, a manifest or a workflow.
 
 ## Database
 
