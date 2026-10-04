@@ -84,7 +84,9 @@ impl Calls {
                     irreversible: true,
                     late_call: LateCall::KeyScoped,
                     strategy: Strategy::KeyedReplay {
-                        window: Duration::from_secs(24 * 3600),
+                        // The provider's replay horizon, from the manifest
+                        // (replayWindow): past it dispatch refuses to send.
+                        window: std::time::Duration::from_secs(86400),
                         intent_age: intent_age_fn(|a: &CapturePaymentArgs| a.intent_age()),
                         provider_id: provider_id_fn(|r: &CapturePaymentResult| r.provider_id.clone()),
                         resolve: {
