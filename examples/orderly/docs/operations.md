@@ -19,19 +19,23 @@
   in the editor's Secrets action (an `smtps://user:pass@host:465/` URI);
   until then the ConfigMap's localhost placeholder applies and sign-in codes
   appear in the Kratos pod's logs only.
-- **User-supplied secrets** (a webhook's signing secret, a provider's API
-  key, anything under `externalSystems`): each lives in the `app-secrets`
-  Secret in the `default` namespace of each environment's cluster, and the
-  app reads it with its own non-optional `secretKeyRef` in
+- **User-supplied secrets** (a provider's API key, a webhook's
+  verification secret, anything under `externalSystems`): each lives in the
+  `app-secrets` Secret in the `default` namespace of each environment's
+  cluster, and the app reads it with its own non-optional `secretKeyRef` in
   `k8s/app/deployment.yaml` (never `envFrom`); the deploy waits at its
   secrets step until the key exists, so a missing one is never silent. The
-  scaffolder wires every declared webhook's `<PROVIDER>_WEBHOOK_SECRET`
-  between the `basable:secrets` markers; a provider's API key is wired the
-  same way by whoever fills `provider.rs` (name the key in the chat so the
-  user can add it). The user adds the value in the editor (the environment's
-  Secrets action, or Add secrets on a deploy waiting at its secrets step);
-  preview and live hold separate values, and the platform stores none of
-  them. Never put a value in the repository, a manifest or a workflow.
+  reference is added by whoever fills the code that reads the secret (the
+  provider in `provider.rs`, a webhook's `verify`), who names the key in the
+  chat so the user can add it. The user adds the value in the editor (the
+  environment's Secrets action, or Add secrets on a deploy waiting at its
+  secrets step); preview and live hold separate values, and the platform
+  stores none of them. Never put a value in the repository, a manifest or a
+  workflow.
+- **Webhooks**: a declared webhook is a raw route under `/api/webhooks/`
+  whose `verify` refuses every delivery until the provider's own scheme is
+  implemented there (a signature, a token, a certificate, an API lookup);
+  the scaffold assumes nothing about it.
 
 ## Database
 

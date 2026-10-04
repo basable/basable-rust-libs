@@ -71,9 +71,6 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 http = "1"
 futures = "0.3"
 dashmap = "6"
-hmac = "0.12"
-sha2 = "0.10"
-hex = "0.4"
 
 # basable:local-crates-begin — the workspace crates through the tools/basable-crates copy, until the release publishes them
 [patch.crates-io]
