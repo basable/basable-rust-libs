@@ -646,3 +646,17 @@ of it changed, in the crates and in the templates:
     field type; a variable nothing reads is not declared (the Kratos admin
     URL left the config until an identity lookup needs it).
 
+## The release (Phase 11)
+
+80. **`cargo package --workspace` is the publish gate, because Bazel hides
+    feature gaps.** crate_universe resolves every crate's features once for
+    the whole workspace, so a crate using `Uuid::new_v4()` built under Bazel
+    without declaring uuid's `v4` feature (another crate had it) and would
+    have failed for every cargo consumer. The release dry run (every crate
+    packaged and built from its packaged form, in dependency order, with
+    the Bazel-pinned cargo 1.98) found it in `basable-processingobject`;
+    the feature is declared now. The same run flagged a yanked transitive
+    crate (`yoke-derive 0.8.3`), moved to 0.8.4 in both lockfiles. Run the
+    dry run before every tag; the workflow's `cargo check` is the cheaper
+    echo of it.
+

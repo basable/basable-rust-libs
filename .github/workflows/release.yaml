@@ -38,9 +38,18 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          # One line per crate, leaves first. crates.io indexes a fresh
-          # publish within seconds; the wait covers the dependents.
-          for crate in basable-core basable-publicid; do
+          # Leaves first; a crate's dev-dependencies on siblings (the two
+          # testkits, the buffa plugin) are published before it, since
+          # cargo resolves them against the index at publish. crates.io
+          # indexes a fresh publish within seconds; the wait covers the
+          # dependents. Verification ran in cargo package before the tag.
+          for crate in \
+            basable-core basable-publicid basable-db basable-testkit \
+            basable-externaleffect basable-processingobject basable-processingobject-testkit \
+            basable-effecttest basable-config \
+            basable-messenger basable-messenger-codegen basable-messenger-gen \
+            basable-pubsub basable-auth basable-protoc-gen-buffa basable-connect \
+            basable-app; do
             cargo publish -p "$crate" --no-verify --locked
             sleep 20
           done
