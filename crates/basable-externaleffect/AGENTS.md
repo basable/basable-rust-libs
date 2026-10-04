@@ -8,7 +8,10 @@ that names, in code, what makes a retry of that call safe, and
 `basable-effecttest` proves that evidence against the component's own
 simulator. The Go package's `CLAUDE.md` is the specification; this file
 says what is the same and what the type system changed
-(`docs/porting-notes.md` 35–43 has the list).
+(`docs/porting-notes.md` 35–43 has the list). The Directive
+(`docs/DIRECTIVE.md` in every tenant repository,
+`golang/controller/lib/scaffold/directive.md` in the monorepo) is the
+contract this crate serves: section 6, external-effect admission.
 
 Three deliberate boundaries, decided up front (do not re-litigate):
 

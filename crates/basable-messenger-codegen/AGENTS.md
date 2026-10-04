@@ -9,6 +9,10 @@ semantics are the specification: a typed `response` is a strict 1:1
 request with exactly one handler, `response: error` is a sequential
 fail-fast fan-out, no `response` is a void fan-out to 0..N handlers in
 declaration order (`docs/porting-notes.md` 55–62 lists what Rust changed).
+The Directive (`docs/DIRECTIVE.md` in every tenant repository,
+`golang/controller/lib/scaffold/directive.md` in the monorepo) is the
+contract this crate serves: section 7, the cross-nanoservice rules the
+messenger is the one channel for.
 
 ## The pipeline
 
