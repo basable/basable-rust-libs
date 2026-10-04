@@ -49,6 +49,14 @@ spec:
               value: http://kratos-public:4433
             - name: RUST_LOG
               value: info
+            # User-supplied secrets, each its own non-optional secretKeyRef on
+            # the app-secrets Secret the editor fills per environment: the
+            # deploy waits at its secrets step until the key exists. The
+            # scaffolder adds one per declared webhook between the markers;
+            # a provider's API key is added the same way when provider.rs is
+            # filled (name the key in the chat so the user can add it).
+            # basable:secrets-begin
+            # basable:secrets-end
           readinessProbe:
             httpGet:
               path: /readyz

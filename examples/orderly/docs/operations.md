@@ -13,17 +13,25 @@
   reaches its own `kratos` database as the CNPG `app` login (the same
   Secret as above); there is no cipher secret because OIDC token
   encryption is not used.
-- **Mail**: the Kratos courier's SMTP connection is a user-supplied secret
-  (below); until one is wired in, sign-in codes appear in the Kratos pod's
-  logs only.
-- **Provider API keys** (payments, email, anything under
-  `externalSystems`): user-supplied secrets. Each lives in the `app-secrets`
-  Secret in the `default` namespace of each environment's cluster, and the app
-  reads it with its own non-optional `secretKeyRef` (never `envFrom`). The
-  user adds the value in the editor (the environment's Secrets action, or Add
-  secrets on a deploy waiting at its secrets step); preview and live hold
-  separate values, and the platform stores none of them. Never put a value in
-  the repository, a manifest or a workflow.
+- **Mail**: the Kratos courier reads its SMTP connection from the
+  `app-secrets` key `SMTP_CONNECTION_URI` (`k8s/kratos/deployment.yaml`, an
+  OPTIONAL `secretKeyRef`, so the first deploy does not wait for it). Add it
+  in the editor's Secrets action (an `smtps://user:pass@host:465/` URI);
+  until then the ConfigMap's localhost placeholder applies and sign-in codes
+  appear in the Kratos pod's logs only.
+- **User-supplied secrets** (a webhook's signing secret, a provider's API
+  key, anything under `externalSystems`): each lives in the `app-secrets`
+  Secret in the `default` namespace of each environment's cluster, and the
+  app reads it with its own non-optional `secretKeyRef` in
+  `k8s/app/deployment.yaml` (never `envFrom`); the deploy waits at its
+  secrets step until the key exists, so a missing one is never silent. The
+  scaffolder wires every declared webhook's `<PROVIDER>_WEBHOOK_SECRET`
+  between the `basable:secrets` markers; a provider's API key is wired the
+  same way by whoever fills `provider.rs` (name the key in the chat so the
+  user can add it). The user adds the value in the editor (the environment's
+  Secrets action, or Add secrets on a deploy waiting at its secrets step);
+  preview and live hold separate values, and the platform stores none of
+  them. Never put a value in the repository, a manifest or a workflow.
 
 ## Database
 

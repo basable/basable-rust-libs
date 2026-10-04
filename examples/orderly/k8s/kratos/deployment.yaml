@@ -55,6 +55,16 @@ spec:
                 secretKeyRef:
                   name: kratos-secrets
                   key: cookie-secret
+            # The courier's SMTP connection (courier.smtp.connection_uri), a
+            # user-supplied secret: OPTIONAL, so the first deploy does not
+            # wait for it; absent, the ConfigMap's localhost placeholder
+            # applies and sign-in codes are in the logs (docs/operations.md).
+            - name: COURIER_SMTP_CONNECTION_URI
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: SMTP_CONNECTION_URI
+                  optional: true
           volumeMounts:
             - name: config
               mountPath: /etc/kratos

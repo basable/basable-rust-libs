@@ -1,8 +1,10 @@
 # Kratos: passwordless email code + passkeys, the identity schema, the
 # self-service flows. TENANT_DOMAIN_PLACEHOLDER is replaced by the platform
-# with the environment's hostname at deploy. The courier SMTP connection is
-# a user-supplied secret (docs/operations.md); until it is set, sign-in codes
-# are visible in the Kratos logs only.
+# with the environment's hostname at deploy. The courier SMTP connection
+# below is a localhost placeholder: k8s/kratos/deployment.yaml overrides it
+# with the app-secrets key SMTP_CONNECTION_URI when the user has added one
+# (docs/operations.md); until then sign-in codes are visible in the Kratos
+# logs only.
 apiVersion: v1
 kind: ConfigMap
 metadata:
