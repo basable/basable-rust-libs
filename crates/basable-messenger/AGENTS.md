@@ -25,8 +25,11 @@ intersection the opaque type cannot express (E0700).
 
 ## Rules the design fixes (B2, B2b)
 
-- Handlers take `&self`; the concrete router is passed by shared reference
-  into every handler, reconciler and service; no `Arc<dyn>`, no channels.
+- Handlers take `&self` and receive their nanoservice's sender per message;
+  a reconciler, a ticker, a Connect service or a webhook holds that sender
+  (`<Nano>Sender<'static, R>`, a `Copy` wrapper over the one `&'static`
+  router, exposing exactly the declared sends), built once from the router
+  at construction; no `Arc<dyn>`, no channels.
 - Every route's future is `Send`, so the router and the context are `Sync`
   and a `std::sync::MutexGuard` held across a send is a compile error.
 - Boxing is per route and only on cycles; a nanoservice never names

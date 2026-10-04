@@ -19,8 +19,9 @@ use basable_core::AppError;
 pub mod services;
 pub mod webhooks;
 
-/// The sends-only component. It holds nothing: the router it sends through
-/// is handed in per call by the messenger.
+/// The sends-only component. It holds nothing: each Connect service and
+/// webhook route builds its `ApiSender` once, at mount, from the `&'static`
+/// router `main.rs` hands in, and sends through that.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Api;
 

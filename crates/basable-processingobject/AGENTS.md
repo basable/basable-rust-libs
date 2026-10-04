@@ -86,7 +86,7 @@ claim-time `object` snapshot, `adopted()`, `config()`, `r#ref()`,
   and zero rows affected is `Error::Fenced`, permanent for the attempt;
 - the LOCAL ownership proof, a `Deadline` (note 3, 24) measured from a
   reading taken BEFORE the claim was sent and extended by each successful
-  heartbeat (`claim.rs:173`). `require_proof` fails closed with zero I/O
+  heartbeat (`LeaseHandle::heartbeat` in `claim.rs`). `require_proof` fails closed with zero I/O
   once it lapses, so a paused process cannot write after its lease was
   stolen even if the database still shows its token.
 

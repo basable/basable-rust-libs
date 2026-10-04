@@ -27,7 +27,6 @@ where
     R: interfaces::OrderRoutes + Send + Sync + 'static,
 {
     let sender = interfaces::OrderSender::new(router);
-    let _ = sender;
     vec![
         Ticker::new("order.sweep_abandoned", std::time::Duration::from_secs(900), move |ctx| Box::pin(this.tick_sweep_abandoned(ctx, sender))),
     ]
