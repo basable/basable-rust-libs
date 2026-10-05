@@ -1,7 +1,13 @@
-# The one place cargo runs. A tag `vX.Y.Z` publishes every crate at that
-# workspace version to crates.io in dependency order, after a `cargo check`
-# smoke test so cargo-based consumers are not broken by a Bazel-only change.
-# Pre-1.0: minor may break, patch never; all crates move together.
+# The one place cargo runs in CI. A tag `vX.Y.Z` checks that the workspace
+# version matches and that cargo-based consumers are not broken by a
+# Bazel-only change. Publishing itself is done from a logged-in machine,
+# after the dry run, in one command that orders the crates by dependency:
+#
+#   cargo package --workspace --locked        # every crate built from its tarball
+#   cargo publish --workspace --locked        # then the tag
+#
+# so no publish token lives in the repository. Pre-1.0: minor may break,
+# patch never; all crates move together.
 name: Release
 
 on:
@@ -33,23 +39,3 @@ jobs:
 
       - name: Cargo smoke test
         run: cargo check --workspace --locked
-
-      - name: Publish in dependency order
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          # Leaves first; a crate's dev-dependencies on siblings (the two
-          # testkits, the buffa plugin) are published before it, since
-          # cargo resolves them against the index at publish. crates.io
-          # indexes a fresh publish within seconds; the wait covers the
-          # dependents. Verification ran in cargo package before the tag.
-          for crate in \
-            basable-core basable-publicid basable-db basable-testkit \
-            basable-externaleffect basable-processingobject basable-processingobject-testkit \
-            basable-effecttest basable-config \
-            basable-messenger basable-messenger-codegen basable-messenger-gen \
-            basable-pubsub basable-auth basable-protoc-gen-buffa basable-connect \
-            basable-app; do
-            cargo publish -p "$crate" --no-verify --locked
-            sleep 20
-          done
