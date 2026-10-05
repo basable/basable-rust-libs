@@ -42,6 +42,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Free disk space
+        # ubuntu-latest ships ~14GB free, most of it preinstalled toolchains
+        # this build never uses (Bazel brings its own). A rules_rust build of
+        # three images plus the restored caches does not fit beside them: the
+        # platform's own CI died mid-build with "No space left on device"
+        # before it removed these. NOT /usr/local/lib/android: a transitive
+        # rule auto-detects a real SDK path and breaks when it is half-gone.
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL \
+            /usr/local/.ghcup /usr/share/swift /usr/local/share/boost \
+            /usr/share/miniconda /usr/local/julia* /opt/az /opt/microsoft \
+            /opt/google /usr/local/share/powershell /usr/local/share/chromium \
+            /usr/lib/jvm /opt/hostedtoolcache/Ruby /opt/hostedtoolcache/PyPy \
+            /opt/hostedtoolcache/Python /opt/hostedtoolcache/go \
+            /opt/hostedtoolcache/node /opt/hostedtoolcache/Java_*
+          docker image prune -a -f
+          df -h /
       # The platform registry namespaces images by project (the same words
       # as its hostname); only the repository's lowercase name comes from
       # the run.
@@ -74,12 +93,18 @@ jobs:
           key: disk-cache-${{ github.sha }}
           restore-keys: disk-cache-
 
-      # Everything the build touches refreshes its mtime past this marker;
-      # the prune step keeps exactly that.
+      # Every disk-cache entry this build USES has its mtime refreshed (Bazel
+      # touches an entry on a hit); anything still older than this marker at
+      # the end was dead weight carried in from earlier builds, and the prune
+      # step drops it.
       - name: Mark cache epoch
         run: touch "$RUNNER_TEMP/disk-cache-marker"
 
-      - uses: bazel-contrib/setup-bazel@0.14.0
+      # setup-bazel's own caches are off: its disk cache keys on a hash of
+      # the BUILD and MODULE files alone and skips the save on an exact hit,
+      # so it would stop updating while the sources keep changing. The two
+      # caches above are restored and saved by hand instead.
+      - uses: bazel-contrib/setup-bazel@0.19.0
         with:
           bazelisk-cache: false
           disk-cache: false
@@ -132,13 +157,21 @@ jobs:
           path: rendered-manifests.yaml
           retention-days: 7
 
-      # Cache hygiene, on success only: prune the disk cache to what this
-      # build touched, save it under this SHA, delete the superseded entries.
+      # Cache hygiene, on success only (a failed build keeps the previous good
+      # cache): prune the disk cache to what this build touched, save it under
+      # this SHA, delete the entries it supersedes. Saved whole, the cache only
+      # ever grows, and a dependency bump that invalidates most of it makes
+      # the next run carry gigabytes of dead weight plus a full fresh build.
       - name: Prune disk cache
         if: success()
         run: |
-          find ~/.cache/bazel-disk -type f ! -newer "$RUNNER_TEMP/disk-cache-marker" -delete || true
-          find ~/.cache/bazel-disk -type d -empty -delete || true
+          set -euo pipefail
+          cache="$HOME/.cache/bazel-disk"
+          [ -d "${cache}" ] || exit 0
+          echo "before: $(du -sh "${cache}" | cut -f1), $(find "${cache}" -type f | wc -l) entries"
+          find "${cache}" -type f ! -newer "$RUNNER_TEMP/disk-cache-marker" -delete
+          find "${cache}" -mindepth 1 -type d -empty -delete
+          echo "after:  $(du -sh "${cache}" | cut -f1), $(find "${cache}" -type f | wc -l) entries"
 
       - name: Save repository cache
         if: success()
@@ -156,12 +189,33 @@ jobs:
           path: ~/.cache/bazel-disk
           key: disk-cache-${{ github.sha }}
 
-      - name: Delete superseded disk caches
+      # A cache entry is immutable, so every commit saves a new one; without
+      # this step a ~GB entry per commit piles up until the quota is hit.
+      # Only entries created BEFORE this run's: a concurrent run on a newer
+      # commit may already have saved its own, and it must survive. The
+      # repository cache is keyed by the lockfiles, so a dependency bump
+      # leaves the previous entry standing: whichever entry this run used or
+      # saved is the newest by access time, every other one is superseded.
+      # Best effort: a failure here leaves an extra entry for GitHub's own
+      # 7-day eviction, never a broken build.
+      - name: Delete superseded caches
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          own=$(gh cache list --key "disk-cache-${{ github.sha }}" --json createdAt --jq '.[0].createdAt')
-          gh cache list --key disk-cache- --json key,createdAt --limit 100 \
-            | jq -r --arg own "$own" '.[] | select(.createdAt < $own) | .key' \
-            | xargs -r -n1 gh cache delete || true
+          set -uo pipefail
+          mine="disk-cache-${GITHUB_SHA}"
+          gh cache list --key disk-cache- --limit 100 --json key,createdAt \
+            | jq -r --arg mine "${mine}" '(map(select(.key==$mine))[0].createdAt) as $t
+                | if $t == null then empty else .[] | select(.key != $mine and .createdAt < $t) | .key end' \
+            | while read -r key; do
+                echo "deleting ${key}"
+                gh cache delete "${key}" || echo "::warning::could not delete ${key}"
+              done
+          gh cache list --key repo-cache- --limit 100 --json key,lastAccessedAt \
+            | jq -r 'sort_by(.lastAccessedAt) | .[:-1][] | .key' \
+            | while read -r key; do
+                echo "deleting superseded repository cache ${key}"
+                gh cache delete "${key}" || echo "::warning::could not delete ${key}"
+              done

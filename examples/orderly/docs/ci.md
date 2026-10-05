@@ -28,7 +28,20 @@ a Dockerfile step: the images are `oci_image` targets.
 - **Delete the superseded entries after save** (`gh cache delete`, GitHub
   only). A per-SHA key is required — a cache entry is immutable — but
   without cleanup a ~GB entry per commit piles up until the quota is hit.
+  Only entries created before this run's own, so a concurrent run on a
+  newer commit keeps what it saved. The repository cache gets the same
+  treatment: every entry but the most recently accessed one is superseded,
+  since a dependency bump saves a fresh entry under a new lockfile hash and
+  leaves the old one standing.
 - **Only on success**, so a failed build keeps the previous good cache.
+- **Free the disk first** (GitHub only). A hosted runner ships about 14 GB
+  free, most of it preinstalled toolchains Bazel never uses; the build plus
+  the restored caches do not fit beside them. The removal list leaves
+  `/usr/local/lib/android` alone, because a transitive rule auto-detects a
+  real SDK path and breaks when it is half-gone.
+- **setup-bazel's own caches are off.** Its disk cache keys on the BUILD and
+  MODULE files alone and skips the save on an exact hit, so it would stop
+  updating while the sources keep changing.
 - **A later step never recomputes what an earlier one pushed**: the Render
   step uses the digests the build step reported, never a rebuild.
 
