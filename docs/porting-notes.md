@@ -586,8 +586,8 @@ of it changed, in the crates and in the templates:
     exactly as a tenant's CI would (`--config=ci`, no repin, its own
     caches). Templates are never fixed in the rendered tree.
 75. **The crates come in through a copy under `tools/`, with an explicit
-    workspace root.** Until the release publishes them, the example's
-    `[patch.crates-io]` names the crates by path. Three things about
+    workspace root.** The example's `[patch.crates-io]` names the crates by
+    path (and keeps doing so after the release, see the end of this note). Three things about
     crate_universe and cargo decide the shape: the splicer copies the root
     manifest into a temp dir and links the module root's entries beside
     it, so the path must lie inside the module; the splicer skips a
@@ -606,8 +606,9 @@ of it changed, in the crates and in the templates:
     dependency by ABSOLUTE path in `Cargo.Bazel.lock`, so the example's
     Bazel lockfile is not portable and is not committed — the CI's
     `orderly` job repins (`CARGO_BAZEL_REPIN=1`), the one way it differs
-    from a tenant's CI until the release publishes the crates and the
-    patch block goes.
+    from a tenant's CI. The crates are published since 0.1.0 and the patch
+    stays anyway: the example's job is to build the working tree against
+    the templates, which the published release cannot do.
 76. **A bin-only crate cannot be a dependency.** cargo drops a dependency
     on a crate without a library target ("ignoring invalid dependency …
     missing a lib target"), so the lock never carried
@@ -658,5 +659,9 @@ of it changed, in the crates and in the templates:
     the feature is declared now. The same run flagged a yanked transitive
     crate (`yoke-derive 0.8.3`), moved to 0.8.4 in both lockfiles. Run the
     dry run before every tag; the workflow's `cargo check` is the cheaper
-    echo of it.
+    echo of it. 0.1.0 went up on 2026-10-05 from a logged-in machine with
+    `cargo publish --workspace --locked`; crates.io's new-crate rate limit
+    (five in a burst, then one every ten minutes) spread seventeen first
+    publishes over two hours, so a first publish is a loop that waits out
+    the `try again after` it is told, and the workflow holds no token.
 
