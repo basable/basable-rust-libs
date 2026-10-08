@@ -1,18 +1,20 @@
 //! The store half of the conformance suite, ported from the monorepo's
 //! `golang/test/processingobject`: envelope identity (round trip, name
 //! conflicts, adoption, release by deletion intent), the create carve-outs,
-//! the intent writes, the read model, and identity stability across an
-//! ambiguous create commit in both commit-fault modes.
+//! the intent writes, the read model, identity stability across an
+//! ambiguous create commit in both commit-fault modes, and the create's
+//! in-process wake.
 
 use std::time::Duration;
 
 use basable_core::labels::Labels;
 use basable_db::{NanoPool, PoolConfig};
 use basable_processingobject::{
-    CreateOptions, Error, NamespacedName, Phase, SCHEDULE_IMMEDIATE, TypedStore,
+    CreateOptions, Error, NamespacedName, NoAfterComplete, Phase, SCHEDULE_IMMEDIATE, TypedStore,
 };
 use basable_processingobject_testkit::{
-    Conformance, Harness, PUBLIC_ID_PREFIX, Spec, Status, TYPE_KEY, conformance_type, identity_name,
+    Conformance, Harness, PUBLIC_ID_PREFIX, Spec, Status, TYPE_KEY, conformance_type, fast_config,
+    identity_name, reconciled,
 };
 use basable_testkit::{CommitFault, CommitFaultProxy};
 use sqlx::Row as _;
@@ -561,27 +563,46 @@ async fn create_is_idempotent_when_the_ambiguous_commit_rolled_back() {
     create_is_idempotent_under_ambiguous_commit(CommitFault::RolledBack).await;
 }
 
+/// A committed create wakes the workers running on its store: under a 60 s
+/// poll, a worker that has already scanned picks the new object up at
+/// once. The row lands in the type's partition.
 #[tokio::test]
-async fn a_create_publishes_a_wake_and_the_row_lands_in_the_partition() {
-    let Some(h) = Harness::from_env().await else {
+async fn a_create_wakes_the_stores_worker_and_the_row_lands_in_the_partition() {
+    let mut cfg = fast_config();
+    cfg.poll_interval = Duration::from_secs(60); // the poll cannot fire in the window
+    let Some(h) = Harness::from_env_config(cfg).await else {
         return;
     };
-    let mut listener = sqlx::postgres::PgListener::connect_with(h.db.superuser())
-        .await
-        .unwrap();
-    listener.listen("processing_object_wake").await.unwrap();
-    let r = h
+    // The first object is there before the worker starts, so its first
+    // scan drives it: once it converged, the worker is registered and past
+    // that scan, and only a wake can make it look again within a minute.
+    let first = h
         .create(Spec {
             widgets: 1,
-            content: "w".into(),
+            content: "first".into(),
         })
         .await
         .unwrap();
-    let n = tokio::time::timeout(Duration::from_secs(5), listener.recv())
-        .await
-        .unwrap()
+    let replica = h
+        .start_worker(h.example_reconciler(), NoAfterComplete)
         .unwrap();
-    assert_eq!(n.payload(), "conformance");
+    h.wait_for(&first, Duration::from_secs(30), reconciled)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let r = h
+        .create(Spec {
+            widgets: 2,
+            content: "woken".into(),
+        })
+        .await
+        .unwrap();
+    let obj = h
+        .wait_for(&r, Duration::from_secs(5), reconciled)
+        .await
+        .expect("the create woke the worker, far under its 60 s poll");
+    assert_eq!(obj.status.provisioned_widgets, 2);
 
     let row = sqlx::query(
         "SELECT processing_object_type_key, tableoid::regclass::text AS tbl
@@ -596,8 +617,6 @@ async fn a_create_publishes_a_wake_and_the_row_lands_in_the_partition() {
         row.get::<String, _>("tbl"),
         "nano_conformance.processing_object_conformance"
     );
-    // The listener holds one of the superuser pool's connections; the pool
-    // waits for it on close, so it goes first.
-    drop(listener);
+    replica.stop().await;
     h.finish().await;
 }

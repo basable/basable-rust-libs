@@ -72,8 +72,7 @@ where
 }
 
 /// The worker `main.rs` registers for this type: one per replica, identical
-/// policy everywhere. The app hands it the wake bus and joins it on
-/// shutdown.
+/// policy everywhere. The app runs it and joins it on shutdown.
 pub fn worker<R>(router: &'static R, this: &'static Order) -> Worker<Spec, Status, Adapter, Reconciler<R>, NoAfterComplete>
 where
     R: interfaces::OrderRoutes + Send + Sync + 'static,

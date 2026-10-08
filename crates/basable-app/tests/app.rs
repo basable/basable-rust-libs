@@ -1,17 +1,18 @@
 //! The Phase 8 verification: the boot gate on the migration ledger, two
 //! nanoservice pools that cannot read each other's schema, the connection
-//! budget, readiness over a live server, the wake bus reaching a worker,
-//! and a shutdown that drains an in-flight attempt as a retry.
+//! budget, readiness over a live server, a write through a registered
+//! worker's store waking it, and a shutdown that drains an in-flight
+//! attempt as a retry.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use basable_app::{App, Config, Error};
+use basable_app::{APP_POOL_CONNECTIONS, App, Config, Error};
 use basable_db::{Nanoservice, Stateful};
-use basable_processingobject::{NoAfterComplete, TypedStore, Worker};
+use basable_processingobject::{NoAfterComplete, Ref, TypedStore, Worker};
 use basable_processingobject_testkit::{
-    Conformance, ExampleReconciler, Gate, Spec, Status, TYPE_NAME, WidgetSim, apply_schema,
-    conformance_type, fast_config,
+    Conformance, ConformanceStore, ExampleReconciler, Gate, Hook, Spec, Status, WidgetSim,
+    apply_schema, conformance_type, fast_config, hook, reconciled,
 };
 use basable_testkit::TestDb;
 use sqlx::Row;
@@ -70,10 +71,7 @@ async fn boot_refuses_a_ledger_behind_the_binary_and_accepts_one_that_is_current
         .connect()
         .await
         .expect("a current ledger boots");
-    assert_eq!(
-        app.connections_reserved(),
-        basable_app::APP_POOL_CONNECTIONS
-    );
+    assert_eq!(app.connections_reserved(), APP_POOL_CONNECTIONS);
     db.finish().await;
 }
 
@@ -99,7 +97,7 @@ async fn nanoservice_pools_are_isolated_and_budgeted() {
     let Some(db) = test_db().await else { return };
     let mut cfg = local_config();
     cfg.pool_max_connections = 4;
-    cfg.connection_budget = basable_app::APP_POOL_CONNECTIONS + 2 * 4;
+    cfg.connection_budget = APP_POOL_CONNECTIONS + 2 * 4;
     let app = App::new(cfg)
         .connect_options(db.app_options())
         .connect()
@@ -108,10 +106,7 @@ async fn nanoservice_pools_are_isolated_and_budgeted() {
 
     let orders = app.pool::<Orders>().await.unwrap();
     let inventory = app.pool::<Inventory>().await.unwrap();
-    assert_eq!(
-        app.connections_reserved(),
-        basable_app::APP_POOL_CONNECTIONS + 8
-    );
+    assert_eq!(app.connections_reserved(), APP_POOL_CONNECTIONS + 8);
 
     // The owner reads its own table; the neighbour gets 42501.
     sqlx::query("SELECT count(*) FROM nano_orders.order_spec")
@@ -136,10 +131,8 @@ async fn nanoservice_pools_are_isolated_and_budgeted() {
     assert!(
         matches!(
             err,
-            Error::ConnectionBudget {
-                requested: 16,
-                budget: 12
-            }
+            Error::ConnectionBudget { requested, budget }
+                if requested == APP_POOL_CONNECTIONS + 12 && budget == APP_POOL_CONNECTIONS + 8
         ),
         "{err}"
     );
@@ -171,52 +164,13 @@ async fn readiness_flips_after_wiring_and_the_routes_are_served() {
     assert_eq!(r.text().await.unwrap(), "hi\n");
     assert!(running.is_ready().await);
 
-    tokio::time::timeout(Duration::from_secs(10), running.wake_bus().listening())
-        .await
-        .expect("the wake bus listens");
     running.shutdown().await.unwrap();
     // The server is gone after shutdown.
     assert!(client.get(format!("{base}/healthz")).send().await.is_err());
     db.finish().await;
 }
 
-#[tokio::test]
-async fn a_wake_reaches_the_registered_worker_and_shutdown_drains_an_attempt_as_a_retry() {
-    let Some(db) = test_db().await else { return };
-    apply_schema(db.migrator_pool()).await.unwrap();
-    let app = App::new(local_config())
-        .connect_options(db.app_options())
-        .connect()
-        .await
-        .unwrap();
-    let pool = app.pool::<Conformance>().await.unwrap();
-    let store: TypedStore<Spec, Status, _> =
-        TypedStore::bind(&pool, conformance_type()).await.unwrap();
-
-    let sim = Arc::new(WidgetSim::start().await);
-    let gate = Gate::new();
-    let mut cfg = fast_config();
-    // A long poll: only a wake from the bus can pick the object up quickly.
-    cfg.poll_interval = Duration::from_secs(30);
-    let worker = Worker::new(
-        store.clone(),
-        cfg,
-        ExampleReconciler::new(sim.clone()).before(gate.clone()),
-        NoAfterComplete,
-    )
-    .unwrap();
-    let running = app
-        .serve()
-        .worker("conformance", worker)
-        .start()
-        .await
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), running.wake_bus().listening())
-        .await
-        .expect("the wake bus listens");
-
-    // Creating an object nudges the wake channel; the bus wakes the worker,
-    // which claims it and blocks at the gate.
+async fn create(store: &ConformanceStore, content: &str) -> Ref {
     let id = Uuid::new_v4();
     let name = basable_processingobject::NamespacedName::new(
         Uuid::new_v4(),
@@ -228,13 +182,69 @@ async fn a_wake_reaches_the_registered_worker_and_shutdown_drains_an_attempt_as_
             name,
             &Spec {
                 widgets: 1,
-                content: "x".into(),
+                content: content.into(),
             },
             &Status::default(),
             basable_processingobject::CreateOptions::none(),
         )
         .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_write_through_its_store_wakes_the_worker_and_shutdown_drains_the_attempt() {
+    let Some(db) = test_db().await else { return };
+    apply_schema(db.migrator_pool()).await.unwrap();
+    let app = App::new(local_config())
+        .connect_options(db.app_options())
+        .connect()
+        .await
         .unwrap();
+    let pool = app.pool::<Conformance>().await.unwrap();
+    let store: ConformanceStore = TypedStore::bind(&pool, conformance_type()).await.unwrap();
+
+    let sim = Arc::new(WidgetSim::start().await);
+    // The gate holds only the object created once the worker is running.
+    let gate = Gate::new();
+    let held = gate.clone();
+    let rec = ExampleReconciler::new(sim.clone()).before(hook(move |ctx, claim| {
+        let gate = held.clone();
+        Box::pin(async move {
+            if claim.object.spec.content == "held" {
+                gate.call(ctx, claim).await
+            } else {
+                Ok(())
+            }
+        })
+    }));
+    let mut cfg = fast_config();
+    // A long poll: only a wake can pick an object up quickly.
+    cfg.poll_interval = Duration::from_secs(30);
+    let worker = Worker::new(store.clone(), cfg, rec, NoAfterComplete).unwrap();
+
+    // The first object is there before the app starts, so the worker's
+    // first scan drives it: once it converged, the worker is registered on
+    // the store and past that scan.
+    let first = create(&store, "first").await;
+    let running = app
+        .serve()
+        .worker("conformance", worker)
+        .start()
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !reconciled(&store.read(&first).await.unwrap()) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the first scan converges the first object"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // A create through the same store wakes the worker, which claims the
+    // object and blocks at the gate.
+    let r = create(&store, "held").await;
     tokio::time::timeout(Duration::from_secs(5), gate.wait_entered())
         .await
         .expect(
@@ -253,7 +263,7 @@ async fn a_wake_reaches_the_registered_worker_and_shutdown_drains_an_attempt_as_
         "SELECT attempts, phase, COALESCE(last_error, '') AS last_error, claim_token
          FROM nano_conformance.processing_object_conformance WHERE id = $1",
     )
-    .bind(id)
+    .bind(r.id)
     .fetch_one(db.superuser())
     .await
     .unwrap();
@@ -271,7 +281,6 @@ async fn a_wake_reaches_the_registered_worker_and_shutdown_drains_an_attempt_as_
         phase, "converged",
         "a cancelled attempt is a retry, not a convergence"
     );
-    let _ = TYPE_NAME;
     pool.close().await;
     db.finish().await;
 }

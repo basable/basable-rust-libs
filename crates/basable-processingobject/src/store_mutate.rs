@@ -11,7 +11,8 @@
 //!
 //! All three writers lock the envelope row first, so intent writes serialize
 //! with each other and with completion. They WAIT on the row lock, which
-//! every framework path holds only for a few I/O-free statements.
+//! every framework path holds only for a few I/O-free statements. Each one
+//! that changed the row wakes the store's workers after its commit.
 //!
 //! `update_spec` is deliberately read-modify-write: the lock serializes
 //! writers, but a writer that computes its row from a read taken BEFORE the
@@ -25,7 +26,7 @@ use sqlx::PgConnection;
 use crate::decl::Adapter;
 use crate::error::Error;
 use crate::model::{Ref, Row};
-use crate::store::{TypedStore, publish_wake};
+use crate::store::TypedStore;
 use crate::tx::Tx;
 
 impl<S, T, A> TypedStore<S, T, A>
@@ -82,7 +83,7 @@ where
     /// row, applies `mutate` to the spec, writes the result through the
     /// adapter, and advances the envelope in the same transaction —
     /// generation, `generation_changed_at`, wake fence, retry state reset —
-    /// then publishes a wake (invariant 2).
+    /// then, once committed, wakes the store's workers (invariant 2).
     ///
     /// `mutate` also sees the last committed status, by shared reference: a
     /// status-gated mutation (a CAS admitting an object only in a claimable
@@ -136,19 +137,20 @@ where
         .execute(&mut *tx)
         .await
         .map_err(|e| Error::sql(format!("{op} {r}: advance envelope"), e))?;
-        publish_wake(&mut tx, self.inner.decl.name).await?;
         tx.commit()
             .await
             .map_err(|e| Error::commit(format!("{op} {r}"), e))?;
+        self.inner.wakes.signal();
         Ok(())
     }
 
     /// Requests deletion: one-way, idempotent (invariant 6). The first call
     /// stamps `deleted_at` and advances the generation — teardown is new
-    /// intent, immediately due, with a fresh retry budget — and returns
-    /// `true`. Repeat calls change nothing and return `false`; the request
-    /// already stands. [`Error::NotFound`] means the envelope is gone, which
-    /// for a deletion caller usually reads as "teardown already finished".
+    /// intent, immediately due, with a fresh retry budget, so the store's
+    /// workers are woken — and returns `true`. Repeat calls change nothing,
+    /// wake nobody and return `false`; the request already stands.
+    /// [`Error::NotFound`] means the envelope is gone, which for a deletion
+    /// caller usually reads as "teardown already finished".
     pub async fn mark_deleted(&self, r: &Ref) -> Result<bool, Error> {
         self.check_ref(r)?;
         let op = "mark deleted";
@@ -175,18 +177,19 @@ where
         .execute(&mut *tx)
         .await
         .map_err(|e| Error::sql(format!("{op} {r}: stamp deletion"), e))?;
-        publish_wake(&mut tx, self.inner.decl.name).await?;
         tx.commit()
             .await
             .map_err(|e| Error::commit(format!("{op} {r}"), e))?;
+        self.inner.wakes.signal();
         Ok(true)
     }
 
     /// Makes an object due now without inventing intent: wake fence
-    /// advanced, schedule pulled forward, generation untouched. A nudged
-    /// blocked object gets exactly one fresh attempt (its exhausted retry
-    /// budget stands), so nudging cannot turn a poison object into a hot
-    /// loop. A deleting object may be nudged: teardown is live work.
+    /// advanced, schedule pulled forward, generation untouched, the store's
+    /// workers woken once committed. A nudged blocked object gets exactly
+    /// one fresh attempt (its exhausted retry budget stands), so nudging
+    /// cannot turn a poison object into a hot loop. A deleting object may
+    /// be nudged: teardown is live work.
     pub async fn nudge(&self, r: &Ref) -> Result<(), Error> {
         self.check_ref(r)?;
         let op = "nudge";
@@ -208,10 +211,10 @@ where
         .execute(&mut *tx)
         .await
         .map_err(|e| Error::sql(format!("{op} {r}: advance wake"), e))?;
-        publish_wake(&mut tx, self.inner.decl.name).await?;
         tx.commit()
             .await
             .map_err(|e| Error::commit(format!("{op} {r}"), e))?;
+        self.inner.wakes.signal();
         Ok(())
     }
 }

@@ -1,8 +1,7 @@
 //! Wiring and running: one axum server carrying the application's routes
-//! and the probes, the wake bus, the pubsub bus, every processing-object
-//! worker and ticker on its own task, and a shutdown that cancels the root
-//! context, drains everything within the grace, and names what did not
-//! drain.
+//! and the probes, the pubsub bus, every processing-object worker and
+//! ticker on its own task, and a shutdown that cancels the root context,
+//! drains everything within the grace, and names what did not drain.
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -26,7 +25,6 @@ use tokio::task::JoinHandle;
 use crate::boot::App;
 use crate::error::Error;
 use crate::ticker::Ticker;
-use crate::wake::WakeBus;
 
 /// Bounds the readiness probe's database check.
 const READY_DB_TIMEOUT: Duration = Duration::from_secs(2);
@@ -82,9 +80,9 @@ impl Serve {
         self
     }
 
-    /// Registers a processing-object worker. It takes its wakes from the
-    /// wake bus (no listener of its own), runs on its own task under the
-    /// root context, and is drained on shutdown.
+    /// Registers a processing-object worker. It runs on its own task under
+    /// the root context, woken by writes through the store it was built
+    /// with, and is drained on shutdown.
     pub fn worker<S, T, A, R, F>(mut self, name: &str, worker: Worker<S, T, A, R, F>) -> Serve
     where
         S: Clone + Send + Sync + 'static,
@@ -93,8 +91,6 @@ impl Serve {
         R: Reconciler<S, T, A>,
         F: AfterComplete<S, T>,
     {
-        let subscription = self.app.wake_bus().subscribe(worker.type_name());
-        let worker = worker.with_wake(subscription);
         self.loops.push(Registered {
             name: format!("{name}/{}", worker.type_name()),
             run: Box::new(move |ctx| Box::pin(worker.run(ctx))),
@@ -113,8 +109,8 @@ impl Serve {
         self
     }
 
-    /// Binds the listen address, starts the server, the buses and every
-    /// loop, and returns once the readiness probe would answer 200.
+    /// Binds the listen address, starts the server, the pubsub bus and
+    /// every loop, and returns once the readiness probe would answer 200.
     pub async fn start(self) -> Result<Running, Error> {
         let Serve {
             app,
@@ -122,7 +118,7 @@ impl Serve {
             auth,
             loops,
         } = self;
-        let (cfg, pool, wake, bus) = app.into_parts();
+        let (cfg, pool, bus) = app.into_parts();
         let addr = cfg.listen_addr();
         let listener = tokio::net::TcpListener::bind(addr)
             .await
@@ -157,12 +153,6 @@ impl Serve {
                 .await
         });
 
-        let wake = Arc::new(wake);
-        let wake_task = {
-            let wake = wake.clone();
-            let ctx = ctx.clone();
-            tokio::spawn(async move { wake.run(ctx).await })
-        };
         let bus_task = {
             let bus = bus.clone();
             let ctx = ctx.clone();
@@ -189,9 +179,7 @@ impl Serve {
             ctx,
             health,
             server,
-            wake,
             bus,
-            wake_task,
             bus_task,
             tasks,
             pool,
@@ -232,9 +220,7 @@ pub struct Running {
     ctx: Ctx,
     health: Arc<Health>,
     server: JoinHandle<Result<(), std::io::Error>>,
-    wake: Arc<WakeBus>,
     bus: Arc<Bus>,
-    wake_task: JoinHandle<()>,
     bus_task: JoinHandle<()>,
     tasks: Vec<(String, JoinHandle<()>)>,
     pool: PgPool,
@@ -252,11 +238,6 @@ impl Running {
     /// begins the drain [`Running::shutdown`] completes.
     pub fn ctx(&self) -> &Ctx {
         &self.ctx
-    }
-
-    /// The wake bus.
-    pub fn wake_bus(&self) -> &Arc<WakeBus> {
-        &self.wake
     }
 
     /// The pubsub bus.
@@ -289,7 +270,6 @@ impl Running {
                 }
             }
         }
-        let _ = tokio::time::timeout_at(deadline, self.wake_task).await;
         let _ = tokio::time::timeout_at(deadline, self.bus_task).await;
         let server = match tokio::time::timeout_at(deadline, self.server).await {
             Ok(Ok(r)) => r.map_err(Error::Server),

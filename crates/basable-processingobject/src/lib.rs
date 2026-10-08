@@ -11,7 +11,8 @@
 //! create, mutate and read paths, the claimed attempt —
 //! [`TypedStore::claim_batch`], [`Claim`] with its heartbeat,
 //! `write_status` and `complete` — and the [`Worker`] that runs a type's
-//! [`Reconciler`] over claimed attempts on one replica.
+//! [`Reconciler`] over claimed attempts on one replica, woken in process
+//! by writes through its store and polling for everything else.
 //!
 //! # Invariants
 //!
@@ -21,8 +22,8 @@
 //!    (type key, id) with ON DELETE CASCADE.
 //! 2. Every accepted spec mutation locks the envelope first and, in that one
 //!    transaction: advances generation, stamps generation_changed_at,
-//!    advances wake_seq, resets retry state, re-arms scheduling, and
-//!    publishes a wake.
+//!    advances wake_seq, resets retry state, and re-arms scheduling; once it
+//!    commits, the store wakes its workers.
 //! 3. Typed status is writable only under exact claim authority: the writing
 //!    transaction locks the envelope and verifies the attempt's claim token,
 //!    generation, and wake sequence before the adapter write. There is no
@@ -71,6 +72,7 @@ mod store;
 mod store_mutate;
 mod store_read;
 mod tx;
+mod wake;
 mod worker;
 mod writestatus;
 
@@ -83,8 +85,6 @@ pub use model::{
     SCHEDULE_PARKED_SQL,
 };
 pub use outcome::{Outcome, Schedule};
-pub use store::{CreateOptions, TypedStore, WAKE_CHANNEL};
+pub use store::{CreateOptions, TypedStore};
 pub use tx::Tx;
-pub use worker::{
-    AfterComplete, COMPLETION_TIMEOUT, NoAfterComplete, Reconciler, WakeSubscription, Worker,
-};
+pub use worker::{AfterComplete, COMPLETION_TIMEOUT, NoAfterComplete, Reconciler, Worker};

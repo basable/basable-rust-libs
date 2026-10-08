@@ -5,10 +5,10 @@ as several identical replicas; the `Bus` lets one replica broadcast a
 message that handlers on every replica receive, with Postgres as the
 transport and no broker. One `Bus` per process multiplexes every logical
 channel over one listen connection and runs as a background task. This is
-the BROADCAST channel (SSE fan-out, cross-replica cancels); the
-processing-object wake channel is separate, owned by
-`basable-processingobject` and the app's `WakeBus`
-(`docs/porting-notes.md` 63–64).
+the BROADCAST channel (SSE fan-out, cross-replica cancels). A
+processing-object wake does not travel over Postgres at all: it is in
+process, from a store to the workers running on it (`docs/porting-notes.md`
+63, 81).
 
 The Directive (`docs/DIRECTIVE.md` in every tenant repository,
 `golang/controller/lib/scaffold/directive.md` in the monorepo) is the
@@ -42,9 +42,11 @@ contract this crate serves.
   wants no database does not build a bus.
 - **Wait for `listening()` in tests.** Go's tests slept; here the signal
   says when the first publish will be heard.
-- **Do not use it for wakes.** `basable-app`'s `WakeBus` holds the one
-  `LISTEN` on `processing_object_wake`; a nanoservice never publishes a
-  wake by hand (the store does, inside the writing transaction).
+- **Do not use it for wakes.** A processing object's store wakes the
+  workers running on it after each commit that makes an object due, and
+  the poll covers every other replica; a cross-replica wake would only
+  help a replica whose own worker is full, where raising its parallelism
+  is the answer (note 81). A nanoservice never sends a wake by hand.
 
 ## What the tests pin
 
@@ -61,8 +63,8 @@ contract this crate serves.
 `docs/porting-notes.md` 63 (the Go bus one to one: origin prefix, dedup,
 the payload bound, the reconnect delay; added `listening()` and the
 `SubscribeError`; reconnection is sqlx's `PgListener`, so
-`db.ReleaseListenConn` has no counterpart here), 64 (one wake listener per
-process, in `basable-app`).
+`db.ReleaseListenConn` has no counterpart here); 81 (the processing-object
+wake is in process, so this bus is the only `LISTEN` a process holds).
 
 ## File map
 

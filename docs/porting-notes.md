@@ -198,12 +198,13 @@ here.
     aborts the task (dropping an in-flight heartbeat statement) and awaits
     the abort, for the same reason — a heartbeat stalled on a dead
     connection must not hold the completion.
-31. **The wake listener is sqlx's `PgListener`.** It reconnects by itself;
-    a `None` from `try_recv` marks a gap whose notifications are lost, which
-    the poll covers, exactly as Go's listener drop-out did. The retry pacing
-    is kept for connect and `LISTEN` failures. The listener returns its
-    connection with `UNLISTEN *` on drop, so `release_listen_conn` is not
-    needed here.
+31. **The wake listener was sqlx's `PgListener`; since 2026-10-08 there is
+    none (note 81).** Through 0.1.0 it reconnected by itself, a `None` from
+    `try_recv` marked a gap whose notifications were lost (the poll covered
+    them, as it did Go's listener drop-out), the retry pacing was kept for
+    connect and `LISTEN` failures, and the listener returned its connection
+    with `UNLISTEN *` on drop, so `release_listen_conn` was never needed.
+    The wake is in process now and holds no connection.
 32. **The completion is bounded by a timeout, not a detached context.**
     `Claim::complete` takes no context; the worker wraps it in a 30 s
     `tokio::time::timeout` and, past it, drops the future — the pool rolls
@@ -467,14 +468,15 @@ here.
     `LISTEN`s and returns its connection with `UNLISTEN *`), so the Go
     `db.ReleaseListenConn` dance has no counterpart; the `try_recv() ==
     None` signal is what fires the reconnect hooks.
-64. **One wake listener per process (B8 deviation 5).** Go pins one
-    `LISTEN` connection per worker. The library `Worker` still does that
-    on its own, but a worker registered with the app takes a
+64. **One wake listener per process (B8 deviation 5), superseded on
+    2026-10-08 by none at all (note 81).** Go pinned one `LISTEN`
+    connection per worker. Through 0.1.0 the library `Worker` did that on
+    its own, and a worker registered with the app took a
     `WakeSubscription` from the app's `WakeBus` instead
-    (`Worker::with_wake`), which holds the one listen connection on
-    `processing_object_wake` and fans each payload to the workers of the
-    type it names; a lost-and-restored connection wakes every worker once.
-    A replica with N types holds one listener, not N.
+    (`Worker::with_wake`): one listen connection per process on
+    `processing_object_wake`, fanning each payload to the workers of the
+    type it named. `WakeBus`, `WakeSubscription` and `with_wake` are gone;
+    a worker registered with the app is woken by its store like any other.
 65. **Boot is a bounded wait, then a verdict.** Go's `main` panics on the
     first failed connect and never checks the ledger. Here
     `App::new(cfg).expect_migrations(v).connect()` retries every second
@@ -486,8 +488,9 @@ here.
     naming the versions, the template's exit 3.
 66. **The connection budget is checked at boot, per pool.** Every
     `App::pool::<N>()` adds `DATABASE_POOL_MAX_CONNECTIONS` to a running
-    total that starts at the framework pool's four; the pool that would
-    pass `DATABASE_CONNECTION_BUDGET` (default 100, the template's
+    total that starts at the framework pool's three (four until the wake
+    listener went, note 81); the pool that would pass
+    `DATABASE_CONNECTION_BUDGET` (default 100, the template's
     `max_connections`) is `Error::ConnectionBudget` before it opens. Go
     sized pools by convention.
 67. **Workers and tickers are joined by name.** `Serve::worker` and
@@ -665,3 +668,38 @@ of it changed, in the crates and in the templates:
     publishes over two hours, so a first publish is a loop that waits out
     the `try again after` it is told, and the workflow holds no token.
 
+## After 0.1.0
+
+81. **The wake is in process, and the database wake is gone
+    (2026-10-08).** Through 0.1.0 every write that made an object due ran
+    `pg_notify` on `processing_object_wake` inside its transaction, and a
+    worker heard it over a `LISTEN`: its own `PgListener` (note 31) or the
+    app's `WakeBus` (note 64). Go and the port dropped it together. Go's
+    per-worker `LISTEN` connections came to 12 per replica out of a
+    30-connection pool, and they bought little: every replica runs every
+    worker and every write to a type happens in a process running that
+    type's worker, so a wake that crosses processes only helps when the
+    local worker is full, and Go raises parallelism for that instead. Now
+    `TypedStore`'s shared inner holds the wake (a `Notify`: a stored
+    permit, so wakes coalesce) of every worker running on it, registered
+    for the whole of `Worker::run` by an RAII guard. `create` (when it
+    inserted, not when it adopted), `update_spec`, `mark_deleted` (when it
+    stamped, not the idempotent repeat) and `nudge` signal them after the
+    commit, and `Claim::complete` does the same for a completion it left
+    due now (`requeue_now`, superseded or woken, the finalizer-failed retry
+    under a stale fence): after the commit and before it returns, so before
+    the worker's `after_complete` and identically for a manual drive. A
+    completion due again after `d` with `0 < d <= poll_interval` arms a
+    one-shot timer that signals after `d`, a detached task holding no
+    parallelism slot and harmless once the worker stopped: before it,
+    `after(5s)` under a 30 s poll ran up to 30 s late. A longer delay and a
+    parked, deleted or unknown completion arm nothing. A store bound
+    separately for the same type shares no wakes and models another
+    process; the poll stays the correctness path for it and for every
+    other replica. The resolved schedule travels from the settle statement
+    to the wake as the crate-internal `Due`, the decision is
+    `Wake::for_due`. Removed, a break against the published 0.1.0:
+    `basable_processingobject::{WAKE_CHANNEL, WakeSubscription}`,
+    `Worker::with_wake`, `basable_app::WakeBus`, `App::wake_bus`,
+    `Running::wake_bus`; and `APP_POOL_CONNECTIONS` is 3, not 4, because
+    one of the four was the wake listener.

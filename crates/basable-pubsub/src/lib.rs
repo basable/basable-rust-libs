@@ -11,9 +11,9 @@
 //! is built in: every payload carries the publishing bus's instance id and
 //! a bus skips its own messages unless [`Bus::deliver_to_self`] was set.
 //!
-//! This is the broadcast channel (SSE fan-out, cross-replica cancels). The
-//! processing-object wake channel is separate and owned by
-//! `basable-processingobject` and the app's `WakeBus`.
+//! This is the broadcast channel (SSE fan-out, cross-replica cancels). A
+//! processing-object wake never travels over it: that wake is in process,
+//! from a store to the workers running on it.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

@@ -3,9 +3,7 @@
 - **`basable-app`** — `App::new(config).connect().await` opens one
   `NanoPool<N>` per stateful nanoservice (`SET ROLE nano_<name>`,
   `search_path` pinned), verifies the migration ledger holds every embedded
-  version (missing ⇒ exit 3 naming it), starts the `WakeBus` (one LISTEN
-  connection per process fanning `processing_object_wake` to per-type
-  subscriptions). `app.serve(router).connect(..).raw(..).auth(..)
+  version (missing ⇒ exit 3 naming it). `app.serve(router).connect(..).raw(..).auth(..)
   .worker(name, w).ticker(name, t).run()` mounts the Connect router and the
   raw routes on one axum server, registers workers and tickers, serves
   `/healthz` and `/readyz`, and joins every loop on SIGTERM (naming stuck
@@ -22,7 +20,8 @@
   bypass exists only through the testkit.
 - **`basable-pubsub`** — `Bus` over LISTEN/NOTIFY for cross-replica
   broadcast (SSE fan-out, cancels): publish, subscribe-before-run,
-  own-message dedup, ~8 KB payload bound. Distinct from the wake channel.
+  own-message dedup, ~8 KB payload bound. Processing-object workers are
+  not woken through it: a worker's wake is in-process, from its own store.
 - **`basable-testkit`** — testcontainers Postgres (reused container, a
   database per test), `CommitFaultProxy` (drops one COMMIT ack),
   `test_service_pool::<Svc>()`; `basable-processingobject-testkit` adds the

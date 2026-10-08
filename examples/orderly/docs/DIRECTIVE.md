@@ -72,9 +72,10 @@ a code-review note.
    carry domain columns only and cascade from it.
 2. **Spec mutation is one locked transaction.** Every accepted mutation locks
    the envelope first and, in that transaction, advances the generation,
-   stamps `generation_changed_at`, advances `wake_seq`, resets retry state,
-   re-arms scheduling and publishes a wake. Newer intent is visible to every
-   fence before any successor could act on the old spec.
+   stamps `generation_changed_at`, advances `wake_seq`, resets retry state
+   and re-arms scheduling; once it commits, the store's workers are woken.
+   Newer intent is visible to every fence before any successor could act on
+   the old spec.
 3. **Status is writable only under exact claim authority — single
    provenance.** The writing transaction locks the envelope and verifies the
    attempt's claim token, generation and wake sequence before the adapter

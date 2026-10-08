@@ -5,7 +5,7 @@
 //! for a confirmed teardown, removes the object (invariant 6). It commits
 //! whole or not at all.
 //!
-//! Three deliberate behaviours:
+//! Four deliberate behaviours:
 //!
 //! - A superseded or woken completion (the claim-time generation or wake
 //!   sequence is no longer current) still commits its status observation
@@ -21,6 +21,11 @@
 //!   reports [`Completion::Unknown`]: SOME completion of ours landed, but
 //!   not WHICH normalized form, so no post-completion callback runs. A retry
 //!   whose proof has lapsed is fenced instead.
+//! - Once the transaction committed, `complete` itself wakes the store's
+//!   workers when it left the object due now, and arms a one-shot timer
+//!   when it left it due within one poll interval (`wake.rs`). Here and not
+//!   in the worker loop, so a manual drive schedules exactly as the worker
+//!   does and the next pass never waits for `after_complete`.
 
 use std::error::Error as StdError;
 use std::fmt;
@@ -37,9 +42,9 @@ use crate::decl::Adapter;
 use crate::error::Error;
 use crate::model::{Meta, Object, Phase, SCHEDULE_PARKED};
 use crate::outcome::{Outcome, Schedule};
-use crate::store::publish_wake;
 use crate::store_read::{META_COLUMNS, scan_meta};
 use crate::tx::Tx;
+use crate::wake::{Due, Wake};
 
 /// What a completion transaction durably committed.
 #[derive(Debug)]
@@ -346,6 +351,20 @@ struct Settle {
     delay: Duration,
 }
 
+impl Settle {
+    /// When the settled envelope is due again, in the precedence the
+    /// statement's `next_reconcile_at` CASE applies.
+    fn due(&self) -> Due {
+        if self.due_now {
+            Due::In(Duration::ZERO)
+        } else if self.parked {
+            Due::Never
+        } else {
+            Due::In(self.delay)
+        }
+    }
+}
+
 impl<S, T, A> Claim<S, T, A>
 where
     S: Send + Sync + 'static,
@@ -355,7 +374,9 @@ where
     /// Ends the attempt with one fenced transaction and closes the claim.
     /// `out` is the reconciler's verdict, or the error the reconciler (or
     /// the attempt runtime — a timeout, a panic) produced, which resolves to
-    /// `Retry`.
+    /// `Retry`. A committed completion that leaves the object due now wakes
+    /// the store's workers before this returns; one that leaves it due
+    /// within the claim's `poll_interval` arms a timer that wakes them then.
     ///
     /// [`Error::Fenced`] means nothing of this attempt landed: a successor
     /// holds or held the object. Any other error left no committed
@@ -368,8 +389,12 @@ where
         let mut first: Option<Error> = None;
         for retry in 0..2 {
             match self.complete_once(&verdict, retry > 0).await {
-                Ok(done) => {
+                Ok((done, due)) => {
                     self.lease.close();
+                    self.store
+                        .inner
+                        .wakes
+                        .wake(Wake::for_due(due, self.cfg.poll_interval));
                     return Ok(done);
                 }
                 Err(e) if e.is_commit_unknown() => first = Some(e),
@@ -391,11 +416,13 @@ where
         }
     }
 
+    /// One try: the completion and, when it committed, when the object is
+    /// due again.
     async fn complete_once(
         &self,
         verdict: &Verdict<T>,
         commit_retry: bool,
-    ) -> Result<Completion<T>, Error> {
+    ) -> Result<(Completion<T>, Due), Error> {
         let r = self.r#ref();
         let op = format!("complete {r}");
         let partition = self.store.inner.partition.clone();
@@ -439,7 +466,7 @@ where
                 && token.is_none()
                 && meta.observed_generation >= self.object.meta.generation
             {
-                return Ok(Completion::Unknown);
+                return Ok((Completion::Unknown, Due::Never));
             }
             return Err(Error::Fenced);
         }
@@ -471,45 +498,43 @@ where
             // Record the observation, release the claim, leave the object
             // due now. Phase and last_error belong to the newer intent or
             // the wake's fresh pass; attempts is settled normally.
-            self.settle_envelope(
-                &mut tx,
-                Settle {
-                    phase: None,
-                    attempts: fields.attempts,
-                    cause: None,
-                    due_now: true,
-                    parked: false,
-                    delay: Duration::ZERO,
-                },
-            )
-            .await?;
-            publish_wake(&mut tx, self.store.inner.decl.name).await?;
+            let due = self
+                .settle_envelope(
+                    &mut tx,
+                    Settle {
+                        phase: None,
+                        attempts: fields.attempts,
+                        cause: None,
+                        due_now: true,
+                        parked: false,
+                        delay: Duration::ZERO,
+                    },
+                )
+                .await?;
             tx.commit()
                 .await
                 .map_err(|e| Error::commit(op.clone(), e))?;
-            return Ok(Completion::Committed {
+            let done = Completion::Committed {
                 outcome: res.into_outcome(),
                 superseded,
                 woken,
-            });
+            };
+            return Ok((done, due));
         }
 
-        let due_now = !fields.parked && fields.delay.is_zero();
-        self.settle_envelope(
-            &mut tx,
-            Settle {
-                phase: Some(fields.phase),
-                attempts: fields.attempts,
-                cause: res.cause.clone(),
-                due_now,
-                parked: fields.parked,
-                delay: fields.delay,
-            },
-        )
-        .await?;
-        if due_now {
-            publish_wake(&mut tx, self.store.inner.decl.name).await?;
-        }
+        let due = self
+            .settle_envelope(
+                &mut tx,
+                Settle {
+                    phase: Some(fields.phase),
+                    attempts: fields.attempts,
+                    cause: res.cause.clone(),
+                    due_now: !fields.parked && fields.delay.is_zero(),
+                    parked: fields.parked,
+                    delay: fields.delay,
+                },
+            )
+            .await?;
         tx.commit()
             .await
             .map_err(|e| Error::commit(op.clone(), e))?;
@@ -524,16 +549,19 @@ where
                 "processing object blocked — parked until new intent or a nudge"
             );
         }
-        Ok(Completion::Committed {
+        let done = Completion::Committed {
             outcome: res.into_outcome(),
             superseded: false,
             woken: false,
-        })
+        };
+        Ok((done, due))
     }
 
     /// The one statement every completion shape settles through: observed
-    /// generation, retry state, schedule, claim release.
-    async fn settle_envelope(&self, conn: &mut PgConnection, s: Settle) -> Result<(), Error> {
+    /// generation, retry state, schedule, claim release. Returns when the
+    /// envelope is due again, for the wake once the transaction commits.
+    async fn settle_envelope(&self, conn: &mut PgConnection, s: Settle) -> Result<Due, Error> {
+        let due = s.due();
         let phase: Option<&str> = s.phase.map(Phase::as_str);
         let last_error = error_text(s.cause.as_ref());
         let parked_at: DateTime<Utc> = *SCHEDULE_PARKED;
@@ -564,7 +592,7 @@ where
         .bind(s.delay.as_secs_f64())
         .execute(&mut *conn)
         .await
-        .map(|_| ())
+        .map(|_| due)
         .map_err(|e| Error::sql(format!("complete {}: settle envelope", self.r#ref()), e))
     }
 
@@ -578,7 +606,7 @@ where
         mut tx: sqlx::Transaction<'static, sqlx::Postgres>,
         verdict: &Verdict<T>,
         commit_retry: bool,
-    ) -> Result<Completion<T>, Error> {
+    ) -> Result<(Completion<T>, Due), Error> {
         if !commit_retry || verdict.decision != Decision::Delete {
             return Err(Error::Fenced);
         }
@@ -605,11 +633,12 @@ where
                 let _ = tx.commit().await;
             }
         }
-        Ok(Completion::Committed {
+        let done = Completion::Committed {
             outcome: Outcome::Delete,
             superseded: false,
             woken: false,
-        })
+        };
+        Ok((done, Due::Never))
     }
 
     /// Finalizes a confirmed teardown under a savepoint: durable evidence
@@ -623,10 +652,9 @@ where
         mut res: Resolved<T>,
         superseded: bool,
         woken: bool,
-    ) -> Result<Completion<T>, Error> {
+    ) -> Result<(Completion<T>, Due), Error> {
         let r = self.r#ref();
         let op = format!("complete delete {r}");
-        let name = self.store.inner.decl.name;
         tx.execute("SAVEPOINT complete_delete")
             .await
             .map_err(|e| Error::sql(format!("{op}: savepoint"), e))?;
@@ -674,11 +702,12 @@ where
             tx.commit()
                 .await
                 .map_err(|e| Error::commit(op.clone(), e))?;
-            return Ok(Completion::Committed {
+            let done = Completion::Committed {
                 outcome: Outcome::Delete,
                 superseded,
                 woken,
-            });
+            };
+            return Ok((done, Due::Never));
         };
         tx.execute("ROLLBACK TO SAVEPOINT complete_delete")
             .await
@@ -690,30 +719,28 @@ where
         // The deletion exemption from superseded/woken handling is earned
         // only by the success path, where the row is removed. This retry
         // keeps the row, so it honours the fence like any other completion.
-        let due_now = superseded || woken;
-        self.settle_envelope(
-            &mut tx,
-            Settle {
-                phase: Some(fields.phase),
-                attempts: fields.attempts,
-                cause: res.cause.clone(),
-                due_now,
-                parked: false,
-                delay: fields.delay,
-            },
-        )
-        .await?;
-        if due_now {
-            publish_wake(&mut tx, name).await?;
-        }
+        let due = self
+            .settle_envelope(
+                &mut tx,
+                Settle {
+                    phase: Some(fields.phase),
+                    attempts: fields.attempts,
+                    cause: res.cause.clone(),
+                    due_now: superseded || woken,
+                    parked: false,
+                    delay: fields.delay,
+                },
+            )
+            .await?;
         tx.commit()
             .await
             .map_err(|e| Error::commit(op.clone(), e))?;
-        Ok(Completion::Committed {
+        let done = Completion::Committed {
             outcome: res.into_outcome(),
             superseded,
             woken,
-        })
+        };
+        Ok((done, due))
     }
 
     /// Writes typed status under a savepoint. A constraint-rejected status
@@ -897,6 +924,22 @@ mod tests {
             .decision,
             Decision::Retry
         );
+    }
+
+    #[test]
+    fn a_settled_envelope_is_due_in_the_statements_precedence() {
+        let settle = |due_now, parked, delay| Settle {
+            phase: None,
+            attempts: 0,
+            cause: None,
+            due_now,
+            parked,
+            delay,
+        };
+        let ms = Duration::from_millis;
+        assert_eq!(settle(true, false, ms(900)).due(), Due::In(Duration::ZERO));
+        assert_eq!(settle(false, true, Duration::ZERO).due(), Due::Never);
+        assert_eq!(settle(false, false, ms(200)).due(), Due::In(ms(200)));
     }
 
     #[test]

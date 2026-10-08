@@ -66,9 +66,10 @@ without it) with `fast_config()` as the default policy. Scenario helpers:
   `stop()` cancels and drains (note 33), `claimed_count()`;
 - the envelope readers: `meta`, `envelope` (an `EnvelopeSnapshot`),
   `lease_expires_at`, `gen_changed_at`, `is_archived`, `wait_for`;
-- `second_store()` — a second pool and store, for the two-replica cases;
-- `finish()` — drop every listener before the database goes (a
-  `PgListener` holds a pool connection).
+- `second_store()` — a second pool and store, for the two-replica cases.
+  It shares no wakes with `store`: a write through it reaches a worker on
+  `store` only through the poll, as another replica's would;
+- `finish()` — closes the pool and drops the database.
 
 `ExampleReconciler` (`runtime.rs`) is the default pass over the simulator
 with two injection points, `before(hook)` and `after_call(hook)` (`hook`
@@ -79,11 +80,11 @@ builds one from a closure), and `Gate` holds a pass open (`wait_entered`,
 
 | File | Tests | Ported from | Covers |
 |---|---|---|---|
-| `tests/store.rs` | 10 | `processingobject_store_test.go` | envelope identity round trip, name conflicts and adoption, release by deletion intent, the create carve-outs, the intent writes, the read model, identity across an ambiguous create commit in both commit-fault modes |
+| `tests/store.rs` | 10 | `processingobject_store_test.go` | envelope identity round trip, name conflicts and adoption, release by deletion intent, the create carve-outs, the intent writes, the read model, identity across an ambiguous create commit in both commit-fault modes, a create waking the worker running on its store |
 | `tests/fencing.rs` | 10 | `processingobject_fencing_test.go` | the token fence, lease adoption, the local proof, superseded and woken completions — through manual `claim_batch`, `complete` and `heartbeat` plus raw SQL |
 | `tests/writestatus.rs` | 10 | `processingobject_writestatus_test.go` | the mid-attempt write: durable across a dropped claim, fenced after a lease steal, envelope untouched, lands under a superseded generation, a rejected row writes nothing, the no-status completion forms preserve it, a deleting object takes the marker |
 | `tests/deletion.rs` | 5 | `processingobject_deletion_test.go` | one-way deletion, intent guards, hard delete versus a settled tombstone, the savepoint rollback of a failed finalizer |
-| `tests/worker.rs` | 8 | `processingobject_worker_test.go` | multi-replica claim exclusivity, crash adoption, panic containment, parallelism-bounded claiming, wake versus poll scheduling, `after_complete` containment — the real worker loop |
+| `tests/worker.rs` | 10 | `processingobject_worker_test.go` | multi-replica claim exclusivity, crash adoption, panic containment, parallelism-bounded claiming, the in-process wake versus the poll (a nudge through the worker's store is prompt under a 60 s poll, one through `second_store` is not; `converged_after(200 ms)` runs on the completion's timer; `requeue_now` runs its next pass while the first attempt's `after_complete` still runs), the poll alone converging a row no store wrote, `after_complete` containment — the real worker loop |
 | `tests/carveouts.rs` | 6 | `processingobject_carveouts_test.go` | label routing across logical workers, the unroutable unlabelled row, the adoption flag, the status-sighted `update_spec` against a committed status and against an attempt in flight |
 | `tests/commitfault.rs` | 3 | `processingobject_commitfault_test.go` | a completion whose COMMIT ack is lost: applied (adopted, `Unknown`) and rolled back (re-run cleanly); the provider-side twin, an effect whose ack is lost lands once |
 | `tests/schema.rs` | 2 | `processingobject_schema_test.go` | the claim scan rides the partial `due_at` index; a status constraint violation becomes a loud `Retry` |
@@ -94,8 +95,10 @@ back (note 12: pgx's dial hook has no sqlx equivalent).
 
 ## Gotchas
 
-- Drop every `PgListener` (through `Harness::finish` or `Replica::stop`)
-  before `TestDb` closes, or the close deadlocks on the held connection.
+- A wake reaches only the workers running on the store that wrote, so a
+  wake test writes through `h.store` (the store `start_worker` runs on)
+  and lets the worker's first scan go by before writing, so that only a
+  wake can explain a prompt pass.
 - The suites need `TEST_DATABASE_URL` and return early without it; `bazel
   test //crates/basable-processingobject-testkit/...` alone is not the gate.
 - `fast_config()` shortens the lease and the attempt timeout; a scenario

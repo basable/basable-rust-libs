@@ -4,10 +4,10 @@ There is no single Go original: this crate is what the monorepo's
 `golang/controller/main.go` wiring and `golang/controller/lib/server`'s
 lifecycle (workers, health, graceful shutdown) do, shaped for a tenant's
 `app/src/main.rs` so that file is a dozen lines of composition and nothing
-else (`docs/porting-notes.md` 63–68 list what Rust changed). The Directive
-(`docs/DIRECTIVE.md` in every tenant repository,
-`golang/controller/lib/scaffold/directive.md` in the monorepo) is the
-contract this crate serves: workers are registered, never spawned loose;
+else (`docs/porting-notes.md` 63–68 list what Rust changed, 81 why there
+is no wake listener). The Directive (`docs/DIRECTIVE.md` in every tenant
+repository, `golang/controller/lib/scaffold/directive.md` in the monorepo)
+is the contract this crate serves: workers are registered, never spawned loose;
 state lives in Postgres; a boot that cannot prove its migrations ran does
 not serve.
 
@@ -32,11 +32,10 @@ app.serve()
 | Item | What it does |
 |---|---|
 | `Config` (`from_env`, `new(url)`, `validate`) | The framework's variables (`var::*` names them): `DATABASE_URL`; `HOST` (default `0.0.0.0`), `PORT` (8080), `DATABASE_POOL_MAX_CONNECTIONS` (8 per nanoservice pool), `DATABASE_CONNECTION_BUDGET` (100 across every pool), `DATABASE_BOOT_WAIT_SECS` (60), `SHUTDOWN_GRACE_SECS` (30). `serde::Deserialize` with defaults, so a project's own config flattens it |
-| `App::new(cfg)` → `Unbooted` | `.expect_migrations(&["<version>", ..])`, `.connect_options(..)`, then `.connect()`: the framework pool (`APP_POOL_CONNECTIONS`, 4) with a bounded wait — a refused connection or a ledger missing a version is retried every second until the boot wait, then the last error is the verdict (`Error::Connect` / `Error::Migrations`) |
+| `App::new(cfg)` → `Unbooted` | `.expect_migrations(&["<version>", ..])`, `.connect_options(..)`, then `.connect()`: the framework pool (`APP_POOL_CONNECTIONS`, 3: the ledger check, the pubsub listener and its publishes, the readiness probe) with a bounded wait — a refused connection or a ledger missing a version is retried every second until the boot wait, then the last error is the verdict (`Error::Connect` / `Error::Migrations`) |
 | `App::pool::<N: Stateful>()` | One `basable_db::NanoPool<N>` per stateful nanoservice, under the connection budget: opening one more than the budget allows is `Error::ConnectionBudget` at boot, not a surprise at the database's `max_connections` (`connections_reserved` says how much is spoken for) |
-| `App::bus()`, `App::wake_bus()`, `App::framework_pool()` | The `basable_pubsub::Bus`, the `WakeBus`, the framework's own pool |
-| `App::serve()` → `Serve` | `.connect(ConnectRouter)`, `.raw(axum::Router)`, `.auth(Validator)` (the layer over every route; `/healthz` and `/readyz` are public from the start), `.worker(name, Worker)`, `.ticker(name, tickers)`; `.start()` → `Running` (`addr`, `ctx`, `is_ready`, `shutdown`), `.run()` = start, wait for SIGTERM or SIGINT, shut down |
-| `WakeBus` | ONE `LISTEN processing_object_wake` connection per process; `subscribe(type_name)` hands a worker a `WakeSubscription` fed by payloads naming its type (Go pinned one listener per worker, note 64); `listening()` / `is_listening` for tests |
+| `App::bus()`, `App::framework_pool()` | The `basable_pubsub::Bus`, the framework's own pool |
+| `App::serve()` → `Serve` | `.connect(ConnectRouter)`, `.raw(axum::Router)`, `.auth(Validator)` (the layer over every route; `/healthz` and `/readyz` are public from the start), `.worker(name, Worker)` (a worker is woken in process by writes through the store it was built on, so the app runs no wake listener and the budget counts none — note 81), `.ticker(name, tickers)`; `.start()` → `Running` (`addr`, `ctx`, `is_ready`, `shutdown`), `.run()` = start, wait for SIGTERM or SIGINT, shut down |
 | `Ticker::new(name, every, \|ctx\| Box::pin(..))` | An immediate first tick, then one per interval; a failing tick is logged and retried next time; joined on shutdown. Never a CronJob |
 | `basable_app::tracing::init_json()` / `init_pretty()` | JSON logs for production, pretty for a terminal |
 | `Error` | `DatabaseUrl`, `Connect { attempts, source }`, `Migrations`, `Pool { nanoservice, source }`, `ConnectionBudget { requested, budget }`, `Bind`, `Server`, `Stuck(names)` |
@@ -75,8 +74,8 @@ abandoned (`Error::Stuck`), never waited on forever.
 a ledger behind the binary and accepts a current one; a database that
 never answers fails within the boot wait; nanoservice pools are isolated
 and budgeted; readiness flips after wiring and the routes are served; a
-wake reaches the registered worker and shutdown drains an attempt as a
-retry.
+write through a registered worker's store wakes it under a long poll, and
+shutdown drains its attempt as a retry.
 
 ## File map
 
@@ -85,7 +84,6 @@ retry.
 | `src/config.rs` | `Config`, `ConfigError`, the `var` names and defaults |
 | `src/boot.rs` | `Unbooted`, `App`, the bounded connect, the ledger gate, the budget |
 | `src/serve.rs` | `Serve`, `Running`, the probes, the loop registry, shutdown |
-| `src/wake.rs` | `WakeBus`, `WakeSubscription` |
 | `src/ticker.rs` | `Ticker`, `TickFuture` |
 | `src/logging.rs` (`basable_app::tracing`) | `init_json`, `init_pretty` |
 | `src/error.rs` | `Error` |

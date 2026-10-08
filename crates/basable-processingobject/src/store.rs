@@ -9,7 +9,9 @@
 //! There is deliberately no process-wide store and no in-process type
 //! registry: type keys and names are static data declared in code and
 //! checked against the database's registry table at bind. A nanoservice
-//! constructs a handle for each type it owns over its own pool.
+//! constructs a handle for each type it owns over its own pool, and hands
+//! clones of it to the type's worker and to every writer: the handle is
+//! also where the worker's wake lives (`wake.rs`).
 //!
 //! Scheduling note: `create` never touches `next_reconcile_at`. `due_at` is
 //! generated from `observed_generation < generation`, so a new object
@@ -26,16 +28,21 @@ use crate::decl::{Adapter, ProcessingObjectType};
 use crate::error::Error;
 use crate::model::{NamespacedName, Ref};
 use crate::tx::Tx;
-
-/// The `pg_notify` channel carrying wake hints. The payload is the type
-/// name. Notifications are a latency hint only — polling remains the
-/// correctness path — and they fire on commit, never for rolled-back work.
-pub const WAKE_CHANNEL: &str = "processing_object_wake";
+use crate::wake::Wakes;
 
 /// The handle for one processing-object type, bound at boot by the owning
 /// nanoservice over its [`NanoPool`]. Cheap to clone: every clone shares
-/// the pool and the declaration, which is how a [`crate::Claim`] carries
-/// its store into a spawned attempt.
+/// the pool, the declaration and the wakes of the [`crate::Worker`]s
+/// running on it, which is how a [`crate::Claim`] carries its store into a
+/// spawned attempt and how a write reaches the worker at once.
+///
+/// A write that makes an object due — `create`, `update_spec`,
+/// `mark_deleted`, `nudge`, a completion that leaves it due now — signals
+/// every worker running on this handle or a clone of it once it has
+/// committed, and a completion that leaves it due within one poll interval
+/// arms a timer that signals them when it is. A store bound separately for
+/// the same type shares none of that, as one in another process could not:
+/// its writes reach these workers through their poll.
 pub struct TypedStore<S, T, A: Adapter<S, T>> {
     pub(crate) inner: std::sync::Arc<StoreInner<S, T, A>>,
 }
@@ -46,6 +53,8 @@ pub(crate) struct StoreInner<S, T, A: Adapter<S, T>> {
     pub(crate) decl: ProcessingObjectType<S, T, A>,
     /// `processing_object_<name>`, the partition every statement targets.
     pub(crate) partition: String,
+    /// The wakes of the workers running on this store.
+    pub(crate) wakes: std::sync::Arc<Wakes>,
 }
 
 impl<S, T, A: Adapter<S, T>> Clone for TypedStore<S, T, A> {
@@ -94,6 +103,7 @@ where
                 pool: pool.pool().clone(),
                 decl,
                 partition,
+                wakes: std::sync::Arc::default(),
             }),
         })
     }
@@ -132,16 +142,16 @@ where
     }
 
     /// Inserts envelope, typed spec and typed status in one transaction
-    /// through the adapter, and publishes a wake. The id is client-minted:
-    /// it is the adoption handle that makes creation safe to retry across an
-    /// ambiguous commit (invariant 5). The `external_id` is always derived
-    /// from it, never supplied.
+    /// through the adapter, and wakes this store's workers once it has
+    /// committed. The id is client-minted: it is the adoption handle that
+    /// makes creation safe to retry across an ambiguous commit (invariant
+    /// 5). The `external_id` is always derived from it, never supplied.
     ///
     /// A create that finds the `(namespace, name)` pair held by another live
     /// object of the type fails with [`Error::NameTaken`]; a deleting object
     /// is no longer a live holder. If the id already exists, the earlier
-    /// attempt's commit landed and this call adopts it, writing nothing —
-    /// provided it presents the identity the object was born with, name AND
+    /// attempt's commit landed and this call adopts it, writing nothing and
+    /// waking nobody — provided it presents the identity the object was born with, name AND
     /// labels (a mismatch is [`Error::InvalidConfig`]: an ambiguous-commit
     /// retry must never believe labels landed that did not). An existing
     /// object that is already deleting is [`Error::Deleting`].
@@ -267,10 +277,10 @@ where
                 .await
                 .map_err(|e| Error::sql(op("insert typed status"), e))?;
         }
-        publish_wake(&mut tx, self.inner.decl.name).await?;
         tx.commit().await.map_err(|e| {
             Error::commit(format!("create {r} (retry with the same id to adopt)"), e)
         })?;
+        self.inner.wakes.signal();
         Ok(r)
     }
 }
@@ -351,17 +361,4 @@ async fn verify_type_schema(
         .await
         .map_err(|e| Error::sql(format!("verify type {name:?} partition: rollback"), e))?;
     Ok(())
-}
-
-/// Emits the wake hint inside the transaction, so it reaches listeners
-/// exactly when the transaction's work becomes visible. Rule: every
-/// transaction that makes an object due publishes a wake.
-pub(crate) async fn publish_wake(conn: &mut PgConnection, type_name: &str) -> Result<(), Error> {
-    sqlx::query("SELECT pg_notify($1, $2)")
-        .bind(WAKE_CHANNEL)
-        .bind(type_name)
-        .execute(&mut *conn)
-        .await
-        .map(|_| ())
-        .map_err(|e| Error::sql(format!("publish wake for {type_name}"), e))
 }

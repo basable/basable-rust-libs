@@ -23,8 +23,8 @@ rust_test(
 )
 
 # The database-backed suites: the boot sequence and the ledger gate, pool
-# isolation, the wake bus, readiness over a live server, and the SIGTERM
-# drain of an in-flight attempt; against the Postgres TEST_DATABASE_URL
+# isolation, readiness over a live server, a registered worker woken by a
+# write through its store, and the SIGTERM drain of an in-flight attempt; against the Postgres TEST_DATABASE_URL
 # names, over the tenant fixture migrations and the conformance type.
 [
     rust_test(

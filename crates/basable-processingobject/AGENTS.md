@@ -5,9 +5,9 @@ desired state lives in typed spec rows under a generic envelope, and
 stateless multi-replica workers drive the external world to match it, one
 exclusively claimed, fenced attempt at a time. The Go package's `CLAUDE.md`
 and package doc are the specification; this file says what is the same and
-what the type system changed (`docs/porting-notes.md` 13–34 has the list;
-3, 7–9 and 12 cover the pieces it leans on in `basable-core`, `basable-db`
-and the testkit). The Directive (`docs/DIRECTIVE.md` in every tenant repository, `golang/controller/lib/scaffold/directive.md` in the monorepo) is the contract this crate serves.
+what the type system changed (`docs/porting-notes.md` 13–34 has the list,
+81 the in-process wake that replaced the database one; 3, 7–9 and 12 cover
+the pieces it leans on in `basable-core`, `basable-db` and the testkit). The Directive (`docs/DIRECTIVE.md` in every tenant repository, `golang/controller/lib/scaffold/directive.md` in the monorepo) is the contract this crate serves.
 
 Two meta-rules govern any change: an invariant the framework cannot
 mechanically enforce is a comment, and comments rot — enforcement lives in
@@ -58,18 +58,25 @@ migration is a boot failure. The paths:
 
 | Path | Module | Transaction shape |
 |---|---|---|
-| `create(id, name, &spec, &status, CreateOptions)` | `store.rs` | the only INSERT: envelope + typed spec + typed status in one transaction, `id` client-minted so an ambiguous commit is adopted by retrying the same id (`Error::NameTaken` is the one natural-key violation the framework classifies itself); ends with the wake |
-| `update_spec(&ref, mutate)` | `store_mutate.rs` | invariant 2: lock the envelope, read the committed row, apply the synchronous closure `FnOnce(&mut S, &T) -> Result<(), BoxError>` (the status is the last committed one, read-only — note 16, 34), write the spec through the adapter, advance `generation` and `wake_seq`, wake |
-| `mark_deleted(&ref)` | `store_mutate.rs` | invariant 6: stamps `deleted_at`; further intent writes answer `Error::Deleting` |
-| `nudge(&ref)` | `store_mutate.rs` | advances `wake_seq` and makes the object due now |
+| `create(id, name, &spec, &status, CreateOptions)` | `store.rs` | the only INSERT: envelope + typed spec + typed status in one transaction, `id` client-minted so an ambiguous commit is adopted by retrying the same id (`Error::NameTaken` is the one natural-key violation the framework classifies itself); wakes the store's workers after the commit (an adopting call wakes nobody) |
+| `update_spec(&ref, mutate)` | `store_mutate.rs` | invariant 2: lock the envelope, read the committed row, apply the synchronous closure `FnOnce(&mut S, &T) -> Result<(), BoxError>` (the status is the last committed one, read-only — note 16, 34), write the spec through the adapter, advance `generation` and `wake_seq`; wakes after the commit |
+| `mark_deleted(&ref)` | `store_mutate.rs` | invariant 6: stamps `deleted_at` and wakes (the idempotent repeat changes nothing and wakes nobody); further intent writes answer `Error::Deleting` |
+| `nudge(&ref)` | `store_mutate.rs` | advances `wake_seq`, makes the object due now, wakes |
 | `read(&ref)` / `read_many(&ids)` | `store_read.rs` | one `REPEATABLE READ READ ONLY` snapshot per call, envelope and typed rows together |
 | `claim_batch(cfg)` | `claim.rs` | invariant 4, below |
 
-`publish_wake` (`pg_notify` on `WAKE_CHANNEL`, payload = the type name)
-runs inside every transaction that makes an object due, so the hint reaches
-listeners exactly when the row becomes visible and never for a rolled-back
-write. It is `pub(crate)`: a nanoservice cannot publish a wake for a write
-the framework did not make.
+The wake is in process (`wake.rs`, note 81). A store's shared inner holds
+the wake of every `Worker` currently running on it (registered for the whole
+of `run`, removed by a guard on exit), so every clone of one store shares
+them; a write that makes an object due signals them all once its
+transaction has COMMITTED, never for a rolled-back write, and a nanoservice
+cannot signal one by hand. It rests on two facts of the deployment: every
+replica runs every worker, and every write to a type happens in a process
+running that type's worker, through the one store the nanoservice bound.
+A store bound separately for the same type (`Harness::second_store`)
+shares nothing and models another process: its writes reach these workers
+through the poll, which stays the correctness path. Bind once, clone
+everywhere.
 
 ## Claims, fenced two ways
 
@@ -141,6 +148,21 @@ COMMIT is retried once; if the retry finds the landed completion's
 signature it adopts it and answers `Completion::Unknown` (note 23, 26),
 and no post-completion callback runs. `COMPLETION_TIMEOUT` bounds it.
 
+`complete` also does the completion's wake, after the commit and before
+it returns (so before the worker runs `after_complete`, and identically
+for a manual drive): a completion that leaves the object due now —
+`requeue_now`, superseded or woken, the finalizer-failed retry under a
+stale fence — signals the store's workers; one due again after `d` with
+`0 < d <= poll_interval` (the claim's `WorkerConfig`) — `converged_after`,
+a short `Retry` backoff, a short default resync — arms a one-shot timer
+that signals them after `d`, a detached task that holds no parallelism
+slot and signals nobody once the worker stopped. Parked (`Blocked`,
+`Settled`), deleted and `Unknown` completions arm nothing, nor does a
+delay longer than the poll interval: the poll serves it within one
+interval, as before. Without the timer `after(5s)` under a 30 s poll ran
+up to 30 s late. The settled schedule (`Due`) and the decision (`Wake::
+for_due`) are crate-internal.
+
 `claim.write_status(status)` (`writestatus.rs`) is the mid-attempt half of
 invariant 3: a fenced whole-row write that settles nothing, for exactly
 one pattern completion cannot express — declare-before-I/O, a marker that
@@ -152,6 +174,8 @@ overwrites the whole row from whatever `T` it is given.
 
 `Worker::new(store, WorkerConfig, reconciler, after_complete)` drives one
 type on one replica; `run(ctx)` until the context is cancelled, then drains.
+Give it a clone of the store the type's writers use: `run` registers the
+worker's wake on that store for its whole duration.
 `Reconciler::reconcile(&self, ctx, &mut claim) -> impl Future<Output =
 Result<Outcome<T>, BoxError>> + Send` and `AfterComplete::after_complete`
 are traits with `impl Future` methods (note 27); `NoAfterComplete` is the
@@ -164,14 +188,16 @@ no-op. Per attempt (`worker.rs`):
    `attempt_timeout`; a panic completes as a loud `Retry` without a stack
    (note 28), a deadline or cancellation drops the pass future (note 29);
 3. the pump is aborted and joined, then `complete` runs under
-   `COMPLETION_TIMEOUT`, not a detached context (note 32);
+   `COMPLETION_TIMEOUT`, not a detached context (note 32), and does the
+   completion's wake once committed;
 4. `after_complete` runs on a bounded detached context for a `Committed`
    completion only, its panic contained.
 
 Scheduling is poll-first: the `poll_interval` scan is the correctness
-path; the `pg_notify` listener (sqlx's `PgListener`, note 31) or an
-app-supplied `WakeSubscription` (`with_wake`, the app's one LISTEN per
-process) only shortens latency, and wakes coalesce into a stored permit.
+path; the store's in-process wake (above) only shortens latency, and wakes
+coalesce into a stored permit (many signals while a scan runs mean one
+more scan). The worker holds no database connection of its own. A freed
+attempt slot signals this worker alone: that news is local.
 `WorkerConfig`'s scheduling fields (`resync`, `backoff`, `max_attempts`,
 `attempt_timeout`) MUST be identical on every replica of one logical
 worker; `poll_interval`, `batch_size`, `parallelism`,
@@ -188,8 +214,10 @@ retry after it: a create adopts by id, the rest re-apply). Not to be
 resurrected, as in Go: unfenced status writes, cross-type cascades, a
 generation-CAS `update_spec`, caller-supplied external ids, `Permanent`
 outcomes (`Settled` is the parked success), a process-wide store or type
-registry, kill seams on the worker. The admin inspector (`inspect.go`) is
-the platform's and has no port here.
+registry, kill seams on the worker. Gone in both since 2026-10-08 (note
+81): the database wake — `pg_notify` on a wake channel, a `LISTEN` per
+worker or per process. The admin inspector (`inspect.go`) is the
+platform's and has no port here.
 
 ## File map
 
@@ -201,12 +229,13 @@ the platform's and has no port here.
 | `src/decl.rs` | `Adapter`, `ProcessingObjectType`, `Backoff`, `WorkerConfig` + `validated` |
 | `src/tx.rs` | `Tx`, the statements-only transaction |
 | `src/error.rs` | `Error` |
-| `src/store.rs` | `TypedStore`, `bind`, `create`, `CreateOptions`, `publish_wake`, `WAKE_CHANNEL` |
+| `src/store.rs` | `TypedStore`, `bind`, `create`, `CreateOptions` |
 | `src/store_mutate.rs` | `update_spec`, `mark_deleted`, `nudge` (invariants 2 and 6) |
 | `src/store_read.rs` | `read`, `read_many` |
 | `src/claim.rs` | `claim_batch`, `Claim`, `LeaseHandle`, `heartbeat`, the local proof, `LEASE_SLACK` (invariant 4) |
 | `src/writestatus.rs` | `Claim::write_status` (invariant 3, mid-attempt) |
-| `src/complete.rs` | `Claim::complete`, `Completion` (invariants 3, 5, 6) |
-| `src/worker.rs` | `Reconciler`, `AfterComplete`, `NoAfterComplete`, `WakeSubscription`, `Worker`, `COMPLETION_TIMEOUT` |
+| `src/complete.rs` | `Claim::complete`, `Completion`, the completion's wake (invariants 3, 5, 6) |
+| `src/wake.rs` | The in-process wake: `Wakes` (the store's registered workers, `signal`, the timer), the `Registration` guard, `Due`, `Wake::for_due` — all crate-internal |
+| `src/worker.rs` | `Reconciler`, `AfterComplete`, `NoAfterComplete`, `Worker`, `COMPLETION_TIMEOUT` |
 
 The conformance suite lives in `basable-processingobject-testkit`.

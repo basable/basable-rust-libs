@@ -6,8 +6,12 @@
 //! callback.
 //!
 //! Scheduling is poll-first: the `poll_interval` scan is the correctness
-//! path, and the `pg_notify` wake listener only shortens latency. Losing the
-//! listen connection therefore degrades promptness, never correctness.
+//! path, and the store's in-process wake only shortens latency. A running
+//! worker registers its wake on the store it was built with: a write
+//! through that store (or a clone of it) that makes an object due rescans
+//! at once, and a completion that leaves its object due within one poll
+//! interval rescans when it is due. A write anywhere else — another
+//! replica, a separately bound store — is found by the poll.
 //!
 //! Shutdown is cancellation of the context `run` was given: claiming stops,
 //! in-flight attempts see their contexts cancelled and complete as retries
@@ -24,8 +28,6 @@ use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use basable_core::{BoxError, Ctx};
-use sqlx::PgPool;
-use sqlx::postgres::PgListener;
 use tokio::sync::Notify;
 use tokio::task::{JoinError, JoinSet};
 
@@ -35,15 +37,12 @@ use crate::decl::{Adapter, WorkerConfig};
 use crate::error::Error;
 use crate::model::Object;
 use crate::outcome::Outcome;
-use crate::store::{TypedStore, WAKE_CHANNEL};
+use crate::store::TypedStore;
 
 /// Bounds the fenced completion transaction. It runs detached from the
 /// attempt: a timed-out or cancelled attempt must still complete as a
 /// `Retry`.
 pub const COMPLETION_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Paces reconnecting the wake listener after an error.
-const LISTEN_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 /// Invariant 6's loud-by-age threshold: claiming a deleting object whose
 /// `deleted_at` is older than this logs an error on every pass. Teardown
@@ -116,31 +115,10 @@ where
     }
 }
 
-/// A wake source outside the worker: the app-level `WakeBus` (one LISTEN
-/// connection per process) hands one to every worker it registers, so the
-/// worker runs no listener of its own. Cloning shares the subscription.
-#[derive(Clone, Default)]
-pub struct WakeSubscription {
-    notify: Arc<Notify>,
-}
-
-impl WakeSubscription {
-    /// A subscription nobody has woken yet.
-    pub fn new() -> WakeSubscription {
-        WakeSubscription::default()
-    }
-
-    /// Wakes the worker: it rescans at once. Wakes coalesce (a stored
-    /// permit), as with the worker's own listener.
-    pub fn wake(&self) {
-        self.notify.notify_one();
-    }
-}
-
-/// Drives one processing object type on this replica.
+/// Drives one processing object type on this replica, woken by writes
+/// through the store it was built with.
 pub struct Worker<S, T, A: Adapter<S, T>, R, F> {
     inner: Arc<Inner<S, T, A, R, F>>,
-    wake: Option<WakeSubscription>,
 }
 
 struct Inner<S, T, A: Adapter<S, T>, R, F> {
@@ -160,6 +138,8 @@ where
 {
     /// Binds a typed store, its worker policy, and the type's reconciler.
     /// `after` is [`NoAfterComplete`] when nothing observes completions.
+    /// Give it a clone of the store the type's writers use: that sharing is
+    /// what lets their writes wake it.
     pub fn new(
         store: TypedStore<S, T, A>,
         cfg: WorkerConfig,
@@ -174,7 +154,6 @@ where
                 rec,
                 after,
             }),
-            wake: None,
         })
     }
 
@@ -183,18 +162,12 @@ where
         self.inner.store.name()
     }
 
-    /// Takes wakes from `subscription` instead of a listener of its own.
-    /// The poll remains the correctness path either way.
-    pub fn with_wake(mut self, subscription: WakeSubscription) -> Self {
-        self.wake = Some(subscription);
-        self
-    }
-
     /// Runs the loop, scanning for due work every `poll_interval` (or sooner
     /// on a wake), until `ctx` is cancelled — then drains in-flight attempts
-    /// and returns.
+    /// and returns. The worker's wake is registered on its store for the
+    /// whole call.
     pub async fn run(self, ctx: Ctx) {
-        let Worker { inner, wake } = self;
+        let inner = self.inner;
         let name = inner.store.name();
         tracing::info!(
             processing_object_type = name,
@@ -207,31 +180,19 @@ where
             "processing object worker starting"
         );
 
-        // The wake: a stored permit, so wakes coalesce like Go's one-slot
-        // channel — many notifications while a scan runs mean one more scan.
-        // With an external subscription the app's bus feeds it and this
-        // worker runs no listener of its own.
-        let listen_ctx = ctx.child();
-        let (wake, listener) = match wake {
-            Some(subscription) => (subscription.notify, None),
-            None => {
-                let wake = Arc::new(Notify::new());
-                let listener = tokio::spawn(listen_wakes(
-                    inner.store.inner.pool.clone(),
-                    name,
-                    listen_ctx.clone(),
-                    Arc::clone(&wake),
-                ));
-                (wake, Some(listener))
-            }
-        };
+        // The wake, registered on the store before the first scan, so a
+        // write that commits after that scan began is never missed: a
+        // stored permit, so wakes coalesce like Go's one-slot channel — many
+        // signals while a scan runs mean one more scan.
+        let registration = inner.store.inner.wakes.register();
+        let wake = registration.notify();
 
         let mut tasks: JoinSet<()> = JoinSet::new();
         let mut ticker = tokio::time::interval(inner.cfg.poll_interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         ticker.tick().await; // the first tick is immediate; the loop scans first anyway
         loop {
-            scan_once(&inner, &ctx, &mut tasks, &wake).await;
+            scan_once(&inner, &ctx, &mut tasks, wake).await;
             tokio::select! {
                 _ = ctx.cancelled() => break,
                 _ = ticker.tick() => {}
@@ -242,10 +203,7 @@ where
         while let Some(joined) = tasks.join_next().await {
             log_join(name, joined);
         }
-        listen_ctx.cancel();
-        if let Some(listener) = listener {
-            let _ = listener.await;
-        }
+        drop(registration);
         tracing::info!(
             processing_object_type = name,
             "processing object worker drained"
@@ -305,8 +263,9 @@ async fn scan_once<S, T, A, R, F>(
             attempt(&inner, &ctx, claim).await;
             // Capacity freed: rescan immediately. This is the local signal
             // that drains a due backlog at completion speed instead of one
-            // batch per poll interval — the database wake only says "an
-            // object became due", never "a slot opened here".
+            // batch per poll interval — the store's wake only says "an
+            // object became due", never "a slot opened here", so it goes to
+            // this worker alone.
             wake.notify_one();
         });
     }
@@ -531,52 +490,6 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
         s.clone()
     } else {
         "non-string panic payload".to_string()
-    }
-}
-
-/// Holds a dedicated connection `LISTEN`ing on the wake channel and forwards
-/// wakes for this worker's type. Purely a latency hint: any failure falls
-/// back to polling, reconnecting at a gentle pace.
-async fn listen_wakes(pool: PgPool, name: &'static str, ctx: Ctx, wake: Arc<Notify>) {
-    while !ctx.is_cancelled() {
-        if let Err(e) = listen_once(&pool, name, &ctx, &wake).await
-            && !ctx.is_cancelled()
-        {
-            tracing::debug!(
-                processing_object_type = name,
-                error = %e,
-                "processing object wake listener reconnecting"
-            );
-        }
-        tokio::select! {
-            _ = ctx.cancelled() => return,
-            _ = tokio::time::sleep(LISTEN_RETRY_DELAY) => {}
-        }
-    }
-}
-
-async fn listen_once(
-    pool: &PgPool,
-    name: &str,
-    ctx: &Ctx,
-    wake: &Arc<Notify>,
-) -> Result<(), sqlx::Error> {
-    // The listener returns its connection to the pool with `UNLISTEN *` on
-    // drop, so a reconnect leaves no subscribed connection behind.
-    let mut listener = PgListener::connect_with(pool).await?;
-    listener.listen(WAKE_CHANNEL).await?;
-    loop {
-        let notification = tokio::select! {
-            n = listener.try_recv() => n?,
-            _ = ctx.cancelled() => return Ok(()),
-        };
-        // `None` is a lost-and-restored connection: notifications in the gap
-        // are gone, and the poll covers them.
-        if let Some(n) = notification
-            && n.payload() == name
-        {
-            wake.notify_one();
-        }
     }
 }
 

@@ -1,9 +1,8 @@
 //! The boot sequence: `App::new(config).connect().await` opens the
 //! framework's own pool with a bounded wait, verifies the migration ledger
-//! holds every version the binary embeds, and prepares the wake bus and
-//! the pubsub bus. The connected [`App`] then opens one [`NanoPool`] per
-//! stateful nanoservice under the connection budget, and [`App::serve`]
-//! moves on to wiring.
+//! holds every version the binary embeds, and prepares the pubsub bus. The
+//! connected [`App`] then opens one [`NanoPool`] per stateful nanoservice
+//! under the connection budget, and [`App::serve`] moves on to wiring.
 
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -17,11 +16,11 @@ use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 use crate::config::Config;
 use crate::error::Error;
 use crate::serve::Serve;
-use crate::wake::WakeBus;
 
-/// The framework's own pool: the ledger check, the wake listener, the
-/// pubsub listener and its publishes, the readiness probe.
-pub const APP_POOL_CONNECTIONS: u32 = 4;
+/// The framework's own pool: the ledger check, the pubsub listener and its
+/// publishes, the readiness probe. Processing-object wakes hold no
+/// connection: they are in process.
+pub const APP_POOL_CONNECTIONS: u32 = 3;
 
 /// How often boot retries the database while waiting.
 const BOOT_RETRY: Duration = Duration::from_secs(1);
@@ -87,7 +86,6 @@ impl Unbooted {
         Ok(App {
             cfg: self.cfg,
             options,
-            wake: WakeBus::new(pool.clone()),
             bus: Arc::new(Bus::new(pool.clone())),
             pool,
             budget: Mutex::new(APP_POOL_CONNECTIONS),
@@ -131,13 +129,12 @@ async fn open_and_verify(
     Ok(pool)
 }
 
-/// The connected app: the framework pool, the buses, and the budget every
-/// nanoservice pool is opened under.
+/// The connected app: the framework pool, the pubsub bus, and the budget
+/// every nanoservice pool is opened under.
 pub struct App {
     cfg: Config,
     options: PgConnectOptions,
     pool: PgPool,
-    wake: WakeBus,
     bus: Arc<Bus>,
     budget: Mutex<u32>,
 }
@@ -199,11 +196,6 @@ impl App {
         &self.bus
     }
 
-    /// The wake bus.
-    pub fn wake_bus(&self) -> &WakeBus {
-        &self.wake
-    }
-
     /// The framework's own pool (the `app` login, no role switch). For the
     /// framework and tests; a nanoservice holds its [`NanoPool`].
     pub fn framework_pool(&self) -> &PgPool {
@@ -215,8 +207,8 @@ impl App {
         Serve::new(self)
     }
 
-    pub(crate) fn into_parts(self) -> (Config, PgPool, WakeBus, Arc<Bus>) {
-        (self.cfg, self.pool, self.wake, self.bus)
+    pub(crate) fn into_parts(self) -> (Config, PgPool, Arc<Bus>) {
+        (self.cfg, self.pool, self.bus)
     }
 }
 

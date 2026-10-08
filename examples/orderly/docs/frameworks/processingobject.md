@@ -50,8 +50,17 @@ enum (an unknown id, a lost claim, the database).
 `WorkerConfig` fields and defaults: resync 10m, backoff 5s/5m, max_attempts
 0 (unbounded), attempt_timeout 5m, poll 30s, batch 50, parallelism 1,
 after_complete 5s, `label_selector`. The scheduling fields must be identical
-on every replica. Constants: lease slack 30s, completion timeout 30s, listen
-retry 2s, deleting alarm 30m, `last_error` cut at 4000 bytes.
+on every replica. Constants: lease slack 30s, completion timeout 30s,
+deleting alarm 30m, `last_error` cut at 4000 bytes.
+
+Scheduling is poll-first; the wake only shortens latency, and it is
+in-process. A worker takes the wakes of the store it was built on while it
+runs: a committed `create`, `update_spec`, `mark_deleted` or `nudge` through
+that store, and a completion that leaves its object due now
+(`requeue_now`, a superseded or woken pass), start a scan at once; a
+completion due again within one poll interval (`after(d)`, a retry backoff)
+starts one on a timer. A worker with no free slot (`parallelism`) claims
+nothing until a slot frees or the poll runs.
 
 Per type the scaffolder renders `types/<type>/{type,adapter,reconciler}.rs`
 and a migration with the registry row, the partition

@@ -19,11 +19,11 @@
 //!
 //! - [`Config`]: the framework's variables from the environment.
 //! - [`App::new`] → [`Unbooted::connect`]: the framework pool with a bounded
-//!   wait, the migration-ledger gate, the buses. [`App::pool`] opens one
+//!   wait, the migration-ledger gate, the pubsub bus. [`App::pool`] opens one
 //!   [`basable_db::NanoPool`] per stateful nanoservice under the connection
 //!   budget.
-//! - [`App::serve`] → [`Serve`]: routes, processing-object workers (wakes
-//!   from the one [`WakeBus`] listener per process), [`Ticker`]s;
+//! - [`App::serve`] → [`Serve`]: routes, processing-object workers (each
+//!   woken in process by writes through its store), [`Ticker`]s;
 //!   [`Serve::start`] returns a [`Running`] app, [`Serve::run`] waits for
 //!   SIGTERM and drains.
 //! - `/healthz` answers while the process lives; `/readyz` once wiring is
@@ -43,14 +43,12 @@ mod ticker;
 /// terminal.
 #[path = "logging.rs"]
 pub mod tracing;
-mod wake;
 
 pub use boot::{APP_POOL_CONNECTIONS, App, Unbooted};
 pub use config::{Config, ConfigError, var};
 pub use error::Error;
 pub use serve::{Running, Serve};
 pub use ticker::{TickFuture, Ticker};
-pub use wake::WakeBus;
 
 pub use basable_auth::{AuthCtx, Identity, Validator};
 pub use basable_connect::{ConnectRouter, request_ctx};

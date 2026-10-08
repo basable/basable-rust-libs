@@ -227,8 +227,9 @@ pub struct WorkerConfig {
     pub max_attempts: u32,
     /// Bounds one attempt and anchors the claim lease. Default 5 minutes.
     pub attempt_timeout: Duration,
-    /// The claim loop's scan cadence; wakes are a latency hint on top.
-    /// Default 30 seconds.
+    /// The claim loop's scan cadence; wakes are a latency hint on top. A
+    /// completion due again within one interval arms a timer instead of
+    /// waiting for the next scan. Default 30 seconds.
     pub poll_interval: Duration,
     /// How many due objects one claim transaction takes. Default 50.
     pub batch_size: u32,

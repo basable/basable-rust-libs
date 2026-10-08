@@ -1,19 +1,24 @@
 //! Worker-runtime conformance, ported from `processingobject_worker_test.go`:
 //! multi-replica claim exclusivity, crash adoption, panic containment,
-//! parallelism-bounded claiming, transactional-wake vs poll scheduling, and
+//! parallelism-bounded claiming, in-process wake vs poll scheduling (the
+//! store's wake, the completion's wake and its short-delay timer), and
 //! `after_complete` containment. These run the real worker loop against a
 //! migrated Postgres.
 
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use basable_core::Ctx;
-use basable_processingobject::{Completion, NoAfterComplete, Object, Phase};
-use basable_processingobject_testkit::{
-    Gate, Harness, Spec, Status, TYPE_KEY, fast_config, hook, identity_name, reconciled,
+use basable_core::{BoxError, Ctx};
+use basable_processingobject::{
+    Completion, NoAfterComplete, Object, Outcome, Phase, Reconciler, Schedule, WorkerConfig,
 };
+use basable_processingobject_testkit::{
+    ConformanceAdapter, ConformanceClaim, ExampleReconciler, Gate, Harness, Spec, Status, TYPE_KEY,
+    fast_config, hook, identity_name, reconciled,
+};
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 const WAIT: Duration = Duration::from_secs(30);
@@ -229,17 +234,16 @@ async fn worker_claims_only_free_slots() {
     h.finish().await;
 }
 
-/// Behaviour 16a: scheduling is poll-first with transactional wakes as a
-/// latency hint. A nudge reconciles a due object promptly even under a long
-/// poll interval (NOTIFY).
-#[tokio::test]
-async fn wake_shortens_latency_under_a_long_poll() {
+/// A worker under a 60 s poll: polling alone would never fire in a test's
+/// window, so every prompt pass below is a wake.
+fn long_poll() -> WorkerConfig {
     let mut cfg = fast_config();
-    cfg.poll_interval = Duration::from_secs(60); // polling alone would never fire in-window
-    let Some(h) = Harness::from_env_config(cfg).await else {
-        return;
-    };
+    cfg.poll_interval = Duration::from_secs(60);
+    cfg
+}
 
+/// Counts passes through the example reconciler.
+fn counting(h: &Harness) -> (ExampleReconciler, Arc<AtomicI64>) {
     let passes = Arc::new(AtomicI64::new(0));
     let counter = Arc::clone(&passes);
     let rec = h.example_reconciler().before(hook(move |_, _| {
@@ -249,11 +253,32 @@ async fn wake_shortens_latency_under_a_long_poll() {
             Ok(())
         })
     }));
+    (rec, passes)
+}
 
+/// Resolves once `passes` exceeds `n`, or panics after `within`.
+async fn wait_for_pass(passes: &AtomicI64, n: i64, within: Duration, what: &str) {
+    let deadline = tokio::time::Instant::now() + within;
+    while passes.load(Ordering::SeqCst) <= n {
+        assert!(tokio::time::Instant::now() < deadline, "{what}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Behaviour 16a: scheduling is poll-first with an in-process wake as the
+/// latency hint. A nudge through the worker's own store reconciles at once
+/// under a long poll; a nudge through a store bound separately for the same
+/// type (another process, as far as the wake goes) reaches it only through
+/// the poll.
+#[tokio::test]
+async fn a_nudge_through_the_workers_store_wakes_it_and_another_stores_waits_for_the_poll() {
+    let Some(h) = Harness::from_env_config(long_poll()).await else {
+        return;
+    };
+    let (rec, passes) = counting(&h);
     // Create before starting the worker so the FIRST convergence is driven
-    // by the worker's initial scan (deterministic), not the create-time
-    // NOTIFY (which would race the wake listener's startup under a 60 s
-    // poll).
+    // by the worker's initial scan; once it converged, the worker is
+    // registered on the store and past that scan.
     let r = h
         .create(Spec {
             widgets: 1,
@@ -263,21 +288,186 @@ async fn wake_shortens_latency_under_a_long_poll() {
         .unwrap();
     let replica = h.start_worker(rec, NoAfterComplete).unwrap();
     h.wait_for(&r, WAIT, reconciled).await.unwrap();
+    // Let the freed slot's rescan go by.
+    tokio::time::sleep(Duration::from_millis(300)).await;
 
-    // Let the wake listener settle so the nudge's NOTIFY is delivered.
-    tokio::time::sleep(Duration::from_millis(500)).await;
     let before = passes.load(Ordering::SeqCst);
+    let (pool2, store2) = h.second_store().await;
+    store2.nudge(&r).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        passes.load(Ordering::SeqCst),
+        before,
+        "a write through another store handle wakes nobody here; the poll would find it"
+    );
+
     h.store.nudge(&r).await.unwrap();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while passes.load(Ordering::SeqCst) <= before {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "a nudge must re-reconcile promptly via NOTIFY, far under the 60 s poll"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    wait_for_pass(
+        &passes,
+        before,
+        Duration::from_secs(5),
+        "a nudge through the worker's store must re-reconcile at once, far under the 60 s poll",
+    )
+    .await;
 
     replica.stop().await;
+    pool2.close().await;
+    h.finish().await;
+}
+
+/// A pass that answers `first` once and converges after that, recording
+/// when each pass started and signalling every later one. Clones share
+/// the record.
+#[derive(Clone)]
+struct Scheduled {
+    first: fn(Option<Status>) -> Outcome<Status>,
+    passes: Arc<Mutex<Vec<Instant>>>,
+    later: Arc<Notify>,
+}
+
+impl Scheduled {
+    fn new(first: fn(Option<Status>) -> Outcome<Status>) -> Scheduled {
+        Scheduled {
+            first,
+            passes: Arc::default(),
+            later: Arc::default(),
+        }
+    }
+
+    fn passes(&self) -> Vec<Instant> {
+        self.passes.lock().unwrap().clone()
+    }
+}
+
+impl Reconciler<Spec, Status, ConformanceAdapter> for Scheduled {
+    async fn reconcile(
+        &self,
+        _ctx: &Ctx,
+        claim: &mut ConformanceClaim,
+    ) -> Result<Outcome<Status>, BoxError> {
+        let pass = {
+            let mut passes = self.passes.lock().unwrap();
+            passes.push(Instant::now());
+            passes.len()
+        };
+        let status = Some(Status {
+            provisioned_widgets: claim.object.spec.widgets,
+            external_id: String::new(),
+        });
+        if pass == 1 {
+            return Ok((self.first)(status));
+        }
+        self.later.notify_one();
+        Ok(Outcome::converged(status))
+    }
+}
+
+/// Waits until `rec` has run at least `n` passes, or panics after `within`.
+async fn wait_for_passes(rec: &Scheduled, n: usize, within: Duration, what: &str) -> Vec<Instant> {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let passes = rec.passes();
+        if passes.len() >= n {
+            return passes;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{what}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// A completion due again within one poll interval arms a timer: under a
+/// 60 s poll, `converged_after(200 ms)` gets its next pass about 200 ms
+/// later instead of at the next poll.
+#[tokio::test]
+async fn a_short_converged_after_runs_on_time_under_a_long_poll() {
+    let Some(h) = Harness::from_env_config(long_poll()).await else {
+        return;
+    };
+    let rec = Scheduled::new(|s| Outcome::converged_after(s, Duration::from_millis(200)));
+    h.create(Spec {
+        widgets: 1,
+        content: "after".into(),
+    })
+    .await
+    .unwrap();
+    let replica = h.start_worker(rec.clone(), NoAfterComplete).unwrap();
+
+    let passes = wait_for_passes(
+        &rec,
+        2,
+        Duration::from_secs(5),
+        "the timer must run the next pass about 200 ms after the first, not at the 60 s poll",
+    )
+    .await;
+    let gap = passes[1] - passes[0];
+    assert!(
+        gap >= Duration::from_millis(200),
+        "the object was not due before its delay: {gap:?}"
+    );
+
+    replica.stop().await;
+    h.finish().await;
+}
+
+/// `requeue_now` wakes the store's workers from the completion itself,
+/// before the worker runs `after_complete`: the next pass starts while the
+/// first attempt's callback is still running, with no poll tick and no
+/// freed slot.
+#[tokio::test]
+async fn requeue_now_runs_the_next_pass_without_waiting_for_a_poll_or_after_complete() {
+    let mut cfg = long_poll();
+    cfg.after_complete_timeout = Duration::from_secs(10);
+    let Some(h) = Harness::from_env_config(cfg).await else {
+        return;
+    };
+    let rec = Scheduled::new(Outcome::requeue_now);
+    let overlapped = Arc::new(AtomicBool::new(false));
+    let after = {
+        let later = Arc::clone(&rec.later);
+        let overlapped = Arc::clone(&overlapped);
+        move |_: &Ctx, _: Object<Spec, Status>, done: Completion<Status>| {
+            let later = Arc::clone(&later);
+            let overlapped = Arc::clone(&overlapped);
+            async move {
+                let requeued = matches!(
+                    done.outcome(),
+                    Some(Outcome::Converged {
+                        schedule: Schedule::Now,
+                        ..
+                    })
+                );
+                if requeued
+                    && tokio::time::timeout(Duration::from_secs(5), later.notified())
+                        .await
+                        .is_ok()
+                {
+                    overlapped.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+    };
+    let r = h
+        .create(Spec {
+            widgets: 1,
+            content: "requeue".into(),
+        })
+        .await
+        .unwrap();
+    let replica = h.start_worker(rec.clone(), after).unwrap();
+
+    wait_for_passes(
+        &rec,
+        2,
+        Duration::from_secs(5),
+        "requeue_now must run the next pass at once, far under the 60 s poll",
+    )
+    .await;
+    h.wait_for(&r, WAIT, reconciled).await.unwrap();
+    replica.stop().await;
+    assert!(
+        overlapped.load(Ordering::SeqCst),
+        "the second pass started while the first attempt's after_complete still ran"
+    );
     h.finish().await;
 }
 
@@ -293,8 +483,8 @@ async fn poll_converges_a_due_object_with_no_wake() {
         .unwrap();
 
     // Insert envelope + typed rows directly, atomically in one transaction
-    // (no store, so no pg_notify wake fires, and the worker never observes
-    // a bare envelope). The worker must find this object by POLLING alone.
+    // (no store, so no wake fires, and the worker never observes a bare
+    // envelope). The worker must find this object by POLLING alone.
     let id = Uuid::new_v4();
     let mut tx = h.pool.begin().await.unwrap();
     sqlx::query(
