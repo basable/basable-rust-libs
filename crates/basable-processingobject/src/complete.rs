@@ -44,7 +44,7 @@ use crate::model::{Meta, Object, Phase, SCHEDULE_PARKED};
 use crate::outcome::{Outcome, Schedule};
 use crate::store_read::{META_COLUMNS, scan_meta};
 use crate::tx::Tx;
-use crate::wake::{Due, Wake};
+use crate::wake::Wake;
 
 /// What a completion transaction durably committed.
 #[derive(Debug)]
@@ -59,6 +59,12 @@ pub enum Completion<T> {
         superseded: bool,
         /// The claim-time wake sequence was stale: likewise.
         woken: bool,
+        /// When the object is due again, counted from the commit:
+        /// `Some(Duration::ZERO)` at once, `Some(d)` after `d`, `None` on no
+        /// schedule (parked by `Blocked` or `Settled`, or deleted). The
+        /// store's workers are woken for it before [`Claim::complete`]
+        /// returns.
+        next_pass: Option<Duration>,
     },
     /// An ambiguity adoption: a completion of this attempt provably landed,
     /// but its normalized form is unknown. Run no callbacks.
@@ -354,13 +360,13 @@ struct Settle {
 impl Settle {
     /// When the settled envelope is due again, in the precedence the
     /// statement's `next_reconcile_at` CASE applies.
-    fn due(&self) -> Due {
+    fn next_pass(&self) -> Option<Duration> {
         if self.due_now {
-            Due::In(Duration::ZERO)
+            Some(Duration::ZERO)
         } else if self.parked {
-            Due::Never
+            None
         } else {
-            Due::In(self.delay)
+            Some(self.delay)
         }
     }
 }
@@ -389,12 +395,16 @@ where
         let mut first: Option<Error> = None;
         for retry in 0..2 {
             match self.complete_once(&verdict, retry > 0).await {
-                Ok((done, due)) => {
+                Ok(done) => {
                     self.lease.close();
+                    let next_pass = match &done {
+                        Completion::Committed { next_pass, .. } => *next_pass,
+                        Completion::Unknown => None,
+                    };
                     self.store
                         .inner
                         .wakes
-                        .wake(Wake::for_due(due, self.cfg.poll_interval));
+                        .wake(Wake::for_next_pass(next_pass, self.cfg.poll_interval));
                     return Ok(done);
                 }
                 Err(e) if e.is_commit_unknown() => first = Some(e),
@@ -416,13 +426,12 @@ where
         }
     }
 
-    /// One try: the completion and, when it committed, when the object is
-    /// due again.
+    /// One try.
     async fn complete_once(
         &self,
         verdict: &Verdict<T>,
         commit_retry: bool,
-    ) -> Result<(Completion<T>, Due), Error> {
+    ) -> Result<Completion<T>, Error> {
         let r = self.r#ref();
         let op = format!("complete {r}");
         let partition = self.store.inner.partition.clone();
@@ -466,7 +475,7 @@ where
                 && token.is_none()
                 && meta.observed_generation >= self.object.meta.generation
             {
-                return Ok((Completion::Unknown, Due::Never));
+                return Ok(Completion::Unknown);
             }
             return Err(Error::Fenced);
         }
@@ -498,7 +507,7 @@ where
             // Record the observation, release the claim, leave the object
             // due now. Phase and last_error belong to the newer intent or
             // the wake's fresh pass; attempts is settled normally.
-            let due = self
+            let next_pass = self
                 .settle_envelope(
                     &mut tx,
                     Settle {
@@ -514,15 +523,15 @@ where
             tx.commit()
                 .await
                 .map_err(|e| Error::commit(op.clone(), e))?;
-            let done = Completion::Committed {
+            return Ok(Completion::Committed {
                 outcome: res.into_outcome(),
                 superseded,
                 woken,
-            };
-            return Ok((done, due));
+                next_pass,
+            });
         }
 
-        let due = self
+        let next_pass = self
             .settle_envelope(
                 &mut tx,
                 Settle {
@@ -549,19 +558,23 @@ where
                 "processing object blocked — parked until new intent or a nudge"
             );
         }
-        let done = Completion::Committed {
+        Ok(Completion::Committed {
             outcome: res.into_outcome(),
             superseded: false,
             woken: false,
-        };
-        Ok((done, due))
+            next_pass,
+        })
     }
 
     /// The one statement every completion shape settles through: observed
     /// generation, retry state, schedule, claim release. Returns when the
-    /// envelope is due again, for the wake once the transaction commits.
-    async fn settle_envelope(&self, conn: &mut PgConnection, s: Settle) -> Result<Due, Error> {
-        let due = s.due();
+    /// envelope is due again, for the completion to carry.
+    async fn settle_envelope(
+        &self,
+        conn: &mut PgConnection,
+        s: Settle,
+    ) -> Result<Option<Duration>, Error> {
+        let next_pass = s.next_pass();
         let phase: Option<&str> = s.phase.map(Phase::as_str);
         let last_error = error_text(s.cause.as_ref());
         let parked_at: DateTime<Utc> = *SCHEDULE_PARKED;
@@ -592,7 +605,7 @@ where
         .bind(s.delay.as_secs_f64())
         .execute(&mut *conn)
         .await
-        .map(|_| due)
+        .map(|_| next_pass)
         .map_err(|e| Error::sql(format!("complete {}: settle envelope", self.r#ref()), e))
     }
 
@@ -606,7 +619,7 @@ where
         mut tx: sqlx::Transaction<'static, sqlx::Postgres>,
         verdict: &Verdict<T>,
         commit_retry: bool,
-    ) -> Result<(Completion<T>, Due), Error> {
+    ) -> Result<Completion<T>, Error> {
         if !commit_retry || verdict.decision != Decision::Delete {
             return Err(Error::Fenced);
         }
@@ -633,12 +646,12 @@ where
                 let _ = tx.commit().await;
             }
         }
-        let done = Completion::Committed {
+        Ok(Completion::Committed {
             outcome: Outcome::Delete,
             superseded: false,
             woken: false,
-        };
-        Ok((done, Due::Never))
+            next_pass: None,
+        })
     }
 
     /// Finalizes a confirmed teardown under a savepoint: durable evidence
@@ -652,7 +665,7 @@ where
         mut res: Resolved<T>,
         superseded: bool,
         woken: bool,
-    ) -> Result<(Completion<T>, Due), Error> {
+    ) -> Result<Completion<T>, Error> {
         let r = self.r#ref();
         let op = format!("complete delete {r}");
         tx.execute("SAVEPOINT complete_delete")
@@ -702,12 +715,12 @@ where
             tx.commit()
                 .await
                 .map_err(|e| Error::commit(op.clone(), e))?;
-            let done = Completion::Committed {
+            return Ok(Completion::Committed {
                 outcome: Outcome::Delete,
                 superseded,
                 woken,
-            };
-            return Ok((done, Due::Never));
+                next_pass: None,
+            });
         };
         tx.execute("ROLLBACK TO SAVEPOINT complete_delete")
             .await
@@ -719,7 +732,7 @@ where
         // The deletion exemption from superseded/woken handling is earned
         // only by the success path, where the row is removed. This retry
         // keeps the row, so it honours the fence like any other completion.
-        let due = self
+        let next_pass = self
             .settle_envelope(
                 &mut tx,
                 Settle {
@@ -735,12 +748,12 @@ where
         tx.commit()
             .await
             .map_err(|e| Error::commit(op.clone(), e))?;
-        let done = Completion::Committed {
+        Ok(Completion::Committed {
             outcome: res.into_outcome(),
             superseded,
             woken,
-        };
-        Ok((done, due))
+            next_pass,
+        })
     }
 
     /// Writes typed status under a savepoint. A constraint-rejected status
@@ -937,9 +950,12 @@ mod tests {
             delay,
         };
         let ms = Duration::from_millis;
-        assert_eq!(settle(true, false, ms(900)).due(), Due::In(Duration::ZERO));
-        assert_eq!(settle(false, true, Duration::ZERO).due(), Due::Never);
-        assert_eq!(settle(false, false, ms(200)).due(), Due::In(ms(200)));
+        assert_eq!(
+            settle(true, false, ms(900)).next_pass(),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(settle(false, true, Duration::ZERO).next_pass(), None);
+        assert_eq!(settle(false, false, ms(200)).next_pass(), Some(ms(200)));
     }
 
     #[test]

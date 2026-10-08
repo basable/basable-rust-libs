@@ -697,9 +697,14 @@ of it changed, in the crates and in the templates:
     separately for the same type shares no wakes and models another
     process; the poll stays the correctness path for it and for every
     other replica. The resolved schedule travels from the settle statement
-    to the wake as the crate-internal `Due`, the decision is
-    `Wake::for_due`. Removed, a break against the published 0.1.0:
+    to the wake on the completion itself, as
+    `Completion::Committed { next_pass: Option<Duration>, .. }` — public,
+    because an enum variant's fields cannot be private; Go keeps the same
+    two values as unexported fields of its `Completion` struct. The
+    decision is `Wake::for_next_pass`. Removed, a break against the
+    published 0.1.0:
     `basable_processingobject::{WAKE_CHANNEL, WakeSubscription}`,
     `Worker::with_wake`, `basable_app::WakeBus`, `App::wake_bus`,
     `Running::wake_bus`; and `APP_POOL_CONNECTIONS` is 3, not 4, because
-    one of the four was the wake listener.
+    one of the four was the wake listener. Added: the `next_pass` field on
+    `Completion::Committed`, which a hand-built `Committed` must now name.

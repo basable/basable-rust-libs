@@ -160,8 +160,10 @@ slot and signals nobody once the worker stopped. Parked (`Blocked`,
 `Settled`), deleted and `Unknown` completions arm nothing, nor does a
 delay longer than the poll interval: the poll serves it within one
 interval, as before. Without the timer `after(5s)` under a 30 s poll ran
-up to 30 s late. The settled schedule (`Due`) and the decision (`Wake::
-for_due`) are crate-internal.
+up to 30 s late. The settled schedule is public, as
+`Completion::Committed { next_pass, .. }` (`Option<Duration>`: `Some(0)`
+now, `None` parked or deleted); the decision (`Wake::for_next_pass`) is
+crate-internal.
 
 `claim.write_status(status)` (`writestatus.rs`) is the mid-attempt half of
 invariant 3: a fenced whole-row write that settles nothing, for exactly
@@ -235,7 +237,7 @@ platform's and has no port here.
 | `src/claim.rs` | `claim_batch`, `Claim`, `LeaseHandle`, `heartbeat`, the local proof, `LEASE_SLACK` (invariant 4) |
 | `src/writestatus.rs` | `Claim::write_status` (invariant 3, mid-attempt) |
 | `src/complete.rs` | `Claim::complete`, `Completion`, the completion's wake (invariants 3, 5, 6) |
-| `src/wake.rs` | The in-process wake: `Wakes` (the store's registered workers, `signal`, the timer), the `Registration` guard, `Due`, `Wake::for_due` — all crate-internal |
+| `src/wake.rs` | The in-process wake: `Wakes` (the store's registered workers, `signal`, the timer), the `Registration` guard, `Wake::for_next_pass` — all crate-internal |
 | `src/worker.rs` | `Reconciler`, `AfterComplete`, `NoAfterComplete`, `Worker`, `COMPLETION_TIMEOUT` |
 
 The conformance suite lives in `basable-processingobject-testkit`.

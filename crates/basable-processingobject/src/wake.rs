@@ -90,16 +90,6 @@ impl Drop for Registration {
     }
 }
 
-/// When the envelope a completion settled is due again.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Due {
-    /// On no schedule: parked (`Blocked`, `Settled`), deleted, or adopted
-    /// after an ambiguous commit with its outcome unknown.
-    Never,
-    /// This long after the commit; zero is at once.
-    In(Duration),
-}
-
 /// What a committed completion asks of its store's workers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Wake {
@@ -112,19 +102,22 @@ pub(crate) enum Wake {
 }
 
 impl Wake {
-    /// The wake for an object `due` again, under a worker polling every
+    /// The wake for a completion's `next_pass` (see
+    /// [`Completion::Committed`]), under a worker polling every
     /// `poll_interval`: at once when it is due at once; a one-shot timer
     /// when it is due within one interval, which the poll alone would serve
     /// up to a whole interval late (`after(5s)` under a 30 s poll ran as
     /// late as 35 s); nothing for a longer delay, which the poll serves
     /// within one interval of it as before, and nothing for an object on no
-    /// schedule.
-    pub(crate) fn for_due(due: Due, poll_interval: Duration) -> Wake {
-        match due {
-            Due::Never => Wake::None,
-            Due::In(d) if d.is_zero() => Wake::Now,
-            Due::In(d) if d <= poll_interval => Wake::After(d),
-            Due::In(_) => Wake::None,
+    /// schedule — parked, deleted, or an unknown outcome.
+    ///
+    /// [`Completion::Committed`]: crate::Completion::Committed
+    pub(crate) fn for_next_pass(next_pass: Option<Duration>, poll_interval: Duration) -> Wake {
+        match next_pass {
+            None => Wake::None,
+            Some(d) if d.is_zero() => Wake::Now,
+            Some(d) if d <= poll_interval => Wake::After(d),
+            Some(_) => Wake::None,
         }
     }
 }
@@ -138,20 +131,21 @@ mod tests {
     #[test]
     fn only_a_delay_within_one_poll_interval_arms_a_timer() {
         let secs = Duration::from_secs;
-        assert_eq!(Wake::for_due(Due::In(Duration::ZERO), POLL), Wake::Now);
+        let wake = |next_pass| Wake::for_next_pass(next_pass, POLL);
+        assert_eq!(wake(Some(Duration::ZERO)), Wake::Now);
         assert_eq!(
-            Wake::for_due(Due::In(Duration::from_millis(200)), POLL),
+            wake(Some(Duration::from_millis(200))),
             Wake::After(Duration::from_millis(200))
         );
-        assert_eq!(Wake::for_due(Due::In(secs(5)), POLL), Wake::After(secs(5)));
-        assert_eq!(Wake::for_due(Due::In(POLL), POLL), Wake::After(POLL));
+        assert_eq!(wake(Some(secs(5))), Wake::After(secs(5)));
+        assert_eq!(wake(Some(POLL)), Wake::After(POLL));
         assert_eq!(
-            Wake::for_due(Due::In(POLL + Duration::from_millis(1)), POLL),
+            wake(Some(POLL + Duration::from_millis(1))),
             Wake::None,
             "a delay longer than the poll interval is the poll's"
         );
-        assert_eq!(Wake::for_due(Due::In(secs(3600)), POLL), Wake::None);
-        assert_eq!(Wake::for_due(Due::Never, POLL), Wake::None);
+        assert_eq!(wake(Some(secs(3600))), Wake::None);
+        assert_eq!(wake(None), Wake::None);
     }
 
     #[tokio::test]
