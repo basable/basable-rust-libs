@@ -13,6 +13,9 @@ path = "src/lib.rs"
 
 [dependencies]
 basable-core = { workspace = true }
+# The generated `impl basable_app::Components for AppMessenger`: every
+# component's loops, for `Serve::components`.
+basable-app = { workspace = true }
 basable-messenger = { workspace = true }
 messages = { path = "../messages" }
 interfaces = { path = "../interfaces" }

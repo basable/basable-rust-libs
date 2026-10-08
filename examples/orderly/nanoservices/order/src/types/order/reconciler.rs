@@ -71,8 +71,9 @@ where
     }
 }
 
-/// The worker `main.rs` registers for this type: one per replica, identical
-/// policy everywhere. The app runs it and joins it on shutdown.
+/// The worker this nanoservice's `loops()` (lib.rs) runs for this type: one
+/// per replica, identical policy everywhere. The app starts it and joins it
+/// on shutdown.
 pub fn worker<R>(router: &'static R, this: &'static Order) -> Worker<Spec, Status, Adapter, Reconciler<R>, NoAfterComplete>
 where
     R: interfaces::OrderRoutes + Send + Sync + 'static,

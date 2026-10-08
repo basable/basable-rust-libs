@@ -32,6 +32,11 @@ impl Notifier {
     }
 }
 
+/// This nanoservice runs no loop of its own (no processing-object type, no
+/// schedule): it answers messages. A type or a schedule it gains brings a
+/// `loops()` here.
+impl<R: 'static> basable_app::Component<R> for Notifier {}
+
 /// The error a step not filled in yet answers with, so the skeleton deploys
 /// green instead of panicking. `regex_search unimplemented_step` lists what
 /// is left.

@@ -1,9 +1,11 @@
 //! The orderly topology over the generated crates: a 1:1 request chain
 //! through three nanoservices, a void fan-out in declaration order, an
-//! error crossing a route, and the composition root's accessors.
+//! error crossing a route, the composition root's accessors, and every
+//! component's loops through the generated `Components` impl.
 
 use std::sync::{Arc, Mutex};
 
+use basable_app::Components;
 use basable_core::{Code, Ctx};
 use interfaces::ApiSender;
 use messages::*;
@@ -86,4 +88,25 @@ async fn the_router_is_shared_by_concurrent_requests() {
     ids.sort_unstable();
     assert_eq!(ids, (1..=32).collect::<Vec<_>>());
     assert_eq!(trace.lock().unwrap().len(), 32 * 4);
+}
+
+#[test]
+fn every_component_hands_over_its_loops_under_its_routing_name() {
+    let (router, _) = router();
+    let loops: Vec<(&str, String)> = router
+        .loops()
+        .into_iter()
+        .map(|(name, loops)| (name, format!("{loops:?}")))
+        .collect();
+    // Every component in routing.yaml order, the sends-only api included;
+    // only order owns a loop, the others take the default.
+    assert_eq!(
+        loops,
+        vec![
+            ("catalog", "[]".to_string()),
+            ("order", r#"["sweep_abandoned"]"#.to_string()),
+            ("notifier", "[]".to_string()),
+            ("api", "[]".to_string()),
+        ]
+    );
 }

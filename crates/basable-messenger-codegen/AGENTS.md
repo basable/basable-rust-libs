@@ -8,7 +8,8 @@ and `messenger` crates and a topology page out. The Go generators'
 semantics are the specification: a typed `response` is a strict 1:1
 request with exactly one handler, `response: error` is a sequential
 fail-fast fan-out, no `response` is a void fan-out to 0..N handlers in
-declaration order (`docs/porting-notes.md` 55–62 lists what Rust changed).
+declaration order (`docs/porting-notes.md` 55–62 lists what Rust changed,
+83 the `Components` impl).
 The Directive (`docs/DIRECTIVE.md` in every tenant repository,
 `golang/controller/lib/scaffold/directive.md` in the monorepo) is the
 contract this crate serves: section 7, the cross-nanoservice rules the
@@ -47,15 +48,38 @@ the corpus at `spec/routing/VERSION`.
   msg, s: XSender<'_, R>) -> impl Future<Output = Resp> + Send` per handled
   message (absent for a sends-only nanoservice).
 
-`messenger` (depends on every nanoservice crate): `pub struct
-AppMessenger { x: x::X, … }` with private fields, `new(..)` in declaration
-order, one accessor per component (for the composition root only —
-nanoservice crates cannot name this crate), a `Send + Sync` assertion per
-component, and one `impl Route<M, Resp, source::S, Ctx> for AppMessenger`
-per declared `(source, message)` pair: an `async fn route` calling the
-handler(s), or, on a route the cycle analysis chose, `fn route<'a>(&'a
-self, ctx: &'a Ctx, msg) -> impl Future + Send + 'a { boxed(async move {
-..}) }`.
+`messenger` (depends on every nanoservice crate and `basable-app`): `pub
+struct AppMessenger { x: x::X, … }` with private fields, `new(..)` in
+declaration order, one accessor per component (for the composition root
+only — nanoservice crates cannot name this crate), the `Components` impl,
+a `Send + Sync` assertion per component, and one `impl Route<M, Resp,
+source::S, Ctx> for AppMessenger` per declared `(source, message)` pair: an
+`async fn route` calling the handler(s), or, on a route the cycle analysis
+chose, `fn route<'a>(&'a self, ctx: &'a Ctx, msg) -> impl Future + Send +
+'a { boxed(async move { ..}) }`.
+
+The `Components` impl is the Go controller's `server.CollectWorkers` over
+the canonical component list, derived from `routing.yaml`: every
+component, sends-only ones included (one may own tickers), in declaration
+order and named as there:
+
+```rust
+impl ::basable_app::Components for AppMessenger {
+    fn loops(&'static self) -> Vec<(&'static str, ::basable_app::Loops)> {
+        Vec::from([
+            ("catalog", ::basable_app::Component::<Self>::loops(&self.catalog, self)),
+            ("api", ::basable_app::Component::<Self>::loops(&self.api, self)),
+        ])
+    }
+}
+```
+
+Rust cannot ask at run time whether a component owns loops, so every
+component implements `basable_app::Component<R>` (the default is none) and
+a component that does not is a build error in this crate naming it. The
+generator only writes the text: this crate depends on nothing in the
+workspace, the generated crate depends on `basable-app`. An array rather
+than `vec!`, because prettyplease prints a macro's tokens unformatted.
 
 Names: `snake` and `pascal` in `names.rs` are byte-for-byte the
 scaffolder's template functions, because the scaffold writes
@@ -79,14 +103,17 @@ boxed hidden type nameable.
 ## Testing
 
 - `basable_messenger_codegen_test`: the tree, the names, every rule, the
-  cycle cases, and the emitted-text assertions of `error_fanout_test.go`
-  (declaration order, one `?` per handler, `Ok(())`).
+  cycle cases, the emitted-text assertions of `error_fanout_test.go`
+  (declaration order, one `?` per handler, `Ok(())`), and the `Components`
+  impl (every component, sends-only included, in declaration order).
 - `corpus`: every fixture under `spec/routing/fixtures`; the orderly
   goldens (`spec/routing/golden/`), re-blessed with the CLI when an emitter
   change is intended (the module doc of `tests/corpus.rs` has the command).
 - `//tests/messenger/orderly` and `//tests/messenger/cyclic`: the generated
-  crates compiled against stub components through `tools/messenger.bzl`,
-  the routes driven under tokio (chain, fan-out order, error crossing,
-  re-entrancy `a → b → a` with 64 concurrent requests), and the
-  `compile_fail` doctests (unboxed cycle: E0733; a `MutexGuard` across a
-  send: E0277).
+  crates compiled against stub components through `tools/messenger.bzl`
+  (every stub implements `Component`; orderly's `order` owns a ticker that
+  sends through the router), the routes driven under tokio (chain, fan-out
+  order, error crossing, re-entrancy `a → b → a` with 64 concurrent
+  requests), the loops listed through `Components` in declaration order,
+  and the `compile_fail` doctests (unboxed cycle: E0733; a `MutexGuard`
+  across a send: E0277; a component without a `Component` impl: E0277).

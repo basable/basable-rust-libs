@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use basable_app::Component;
 use basable_core::{AppError, Ctx};
 use interfaces::{BHandler, BRoutes, BSender};
 use messages::*;
@@ -42,3 +43,6 @@ impl<R: BRoutes> BHandler<R> for B {
         Ok(())
     }
 }
+
+/// No loops: the default.
+impl<R> Component<R> for B {}

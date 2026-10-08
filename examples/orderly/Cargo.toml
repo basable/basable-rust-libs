@@ -28,21 +28,21 @@ publish = false
 
 [workspace.dependencies]
 # The basable frameworks, released in lockstep and pinned exactly.
-basable-core = "=0.2.0"
-basable-publicid = "=0.2.0"
-basable-db = "=0.2.0"
-basable-processingobject = "=0.2.0"
-basable-processingobject-testkit = "=0.2.0"
-basable-externaleffect = "=0.2.0"
-basable-effecttest = "=0.2.0"
-basable-config = "=0.2.0"
-basable-messenger = "=0.2.0"
-basable-messenger-gen = "=0.2.0"
-basable-connect = "=0.2.0"
-basable-auth = "=0.2.0"
-basable-pubsub = "=0.2.0"
-basable-app = "=0.2.0"
-basable-testkit = "=0.2.0"
+basable-core = "=0.3.0"
+basable-publicid = "=0.3.0"
+basable-db = "=0.3.0"
+basable-processingobject = "=0.3.0"
+basable-processingobject-testkit = "=0.3.0"
+basable-externaleffect = "=0.3.0"
+basable-effecttest = "=0.3.0"
+basable-config = "=0.3.0"
+basable-messenger = "=0.3.0"
+basable-messenger-gen = "=0.3.0"
+basable-connect = "=0.3.0"
+basable-auth = "=0.3.0"
+basable-pubsub = "=0.3.0"
+basable-app = "=0.3.0"
+basable-testkit = "=0.3.0"
 
 # Protobuf and Connect (pre-1.0: pinned to the minor). The two protoc plugins
 # are build-time binaries (crate_universe gen_binaries in MODULE.bazel):
@@ -51,7 +51,7 @@ buffa = { version = "0.9", features = ["json"] }
 buffa-types = "0.9"
 connectrpc = { version = "0.9", features = ["axum", "json"] }
 connectrpc-codegen = "0.9"
-basable-protoc-gen-buffa = "=0.2.0"
+basable-protoc-gen-buffa = "=0.3.0"
 
 # The curated baseline. Never openssl, never a crate that needs a system
 # library (docs/adding-a-dependency.md).

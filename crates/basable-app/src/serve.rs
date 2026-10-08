@@ -1,11 +1,10 @@
 //! Wiring and running: one axum server carrying the application's routes
-//! and the probes, the pubsub bus, every processing-object worker and
-//! ticker on its own task, and a shutdown that cancels the root context,
+//! and the probes, the pubsub bus, every component's workers and tickers
+//! on their own tasks, and a shutdown that cancels the root context,
 //! drains everything within the grace, and names what did not drain.
 
-use std::future::Future;
+use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -17,31 +16,23 @@ use axum::routing::get;
 use basable_auth::Validator;
 use basable_connect::ConnectRouter;
 use basable_core::Ctx;
-use basable_processingobject::{Adapter, AfterComplete, Reconciler, Worker};
 use basable_pubsub::Bus;
 use sqlx::PgPool;
 use tokio::task::JoinHandle;
 
 use crate::boot::App;
+use crate::component::{Components, Loop};
 use crate::error::Error;
-use crate::ticker::Ticker;
 
 /// Bounds the readiness probe's database check.
 const READY_DB_TIMEOUT: Duration = Duration::from_secs(2);
-
-type Run = Box<dyn FnOnce(Ctx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
-
-struct Registered {
-    name: String,
-    run: Run,
-}
 
 /// The wiring step.
 pub struct Serve {
     app: App,
     router: Router,
     auth: Option<Validator>,
-    loops: Vec<Registered>,
+    loops: Vec<Loop>,
 }
 
 impl Serve {
@@ -80,37 +71,27 @@ impl Serve {
         self
     }
 
-    /// Registers a processing-object worker. It runs on its own task under
-    /// the root context, woken by writes through the store it was built
-    /// with, and is drained on shutdown.
-    pub fn worker<S, T, A, R, F>(mut self, name: &str, worker: Worker<S, T, A, R, F>) -> Serve
-    where
-        S: Clone + Send + Sync + 'static,
-        T: Clone + Send + Sync + 'static,
-        A: Adapter<S, T>,
-        R: Reconciler<S, T, A>,
-        F: AfterComplete<S, T>,
-    {
-        self.loops.push(Registered {
-            name: format!("{name}/{}", worker.type_name()),
-            run: Box::new(move |ctx| Box::pin(worker.run(ctx))),
-        });
-        self
-    }
-
-    /// Registers a nanoservice's tickers, each on its own task.
-    pub fn ticker(mut self, name: &str, tickers: impl IntoIterator<Item = Ticker>) -> Serve {
-        for t in tickers {
-            self.loops.push(Registered {
-                name: format!("{name}/{}", t.name()),
-                run: Box::new(move |ctx| Box::pin(t.run(ctx))),
-            });
+    /// Registers every loop of every component, each under
+    /// `<component>/<worker type or ticker>`: the generated messenger lists
+    /// the components (named as in `routing.yaml`) and each builds its own
+    /// loops. Every loop runs on its own task under the root context and is
+    /// drained on shutdown. A name registered twice fails
+    /// [`Serve::start`].
+    pub fn components<C: Components>(mut self, components: &'static C) -> Serve {
+        for (component, loops) in components.loops() {
+            self.loops
+                .extend(loops.into_inner().into_iter().map(|l| Loop {
+                    name: format!("{component}/{}", l.name),
+                    run: l.run,
+                }));
         }
         self
     }
 
     /// Binds the listen address, starts the server, the pubsub bus and
     /// every loop, and returns once the readiness probe would answer 200.
+    /// Two loops under one name are `Error::DuplicateLoop`, before anything
+    /// is bound or spawned: the name is what readiness and shutdown report.
     pub async fn start(self) -> Result<Running, Error> {
         let Serve {
             app,
@@ -118,6 +99,10 @@ impl Serve {
             auth,
             loops,
         } = self;
+        let mut seen = HashSet::new();
+        if let Some(l) = loops.iter().find(|l| !seen.insert(l.name.as_str())) {
+            return Err(Error::DuplicateLoop(l.name.clone()));
+        }
         let (cfg, pool, bus) = app.into_parts();
         let addr = cfg.listen_addr();
         let listener = tokio::net::TcpListener::bind(addr)

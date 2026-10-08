@@ -25,6 +25,10 @@ pub mod webhooks;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Api;
 
+/// The API runs no loop of its own: it serves requests. (Every component
+/// implements `Component`; the app starts the loops of all of them.)
+impl<R: 'static> basable_app::Component<R> for Api {}
+
 impl Api {
     pub fn new() -> Self {
         Api

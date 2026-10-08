@@ -1,13 +1,17 @@
-# basable-app, basable-db, basable-connect, basable-auth, basable-pubsub, basable-testkit (crates 0.2.0)
+# basable-app, basable-db, basable-connect, basable-auth, basable-pubsub, basable-testkit (crates 0.3.0)
 
 - **`basable-app`** — `App::new(config).connect().await` opens one
   `NanoPool<N>` per stateful nanoservice (`SET ROLE nano_<name>`,
   `search_path` pinned), verifies the migration ledger holds every embedded
-  version (missing ⇒ exit 3 naming it). `app.serve(router).connect(..).raw(..).auth(..)
-  .worker(name, w).ticker(name, t).run()` mounts the Connect router and the
-  raw routes on one axum server, registers workers and tickers, serves
+  version (missing ⇒ exit 3 naming it). `app.serve().connect(..).raw(..)
+  .auth(..).components(router).run()` mounts the Connect router and the raw
+  routes on one axum server, starts every component's loops, serves
   `/healthz` and `/readyz`, and joins every loop on SIGTERM (naming stuck
-  workers). Tracing is JSON to stdout.
+  ones, `<component>/<loop>`). A component's loops are its own: it
+  implements `basable_app::Component` and lists its workers and tickers in
+  `loops()` (a plain executor keeps the default, none); the generated
+  messenger implements `Components` over every component in `routing.yaml`.
+  Tracing is JSON to stdout.
 - **`basable-db`** — `Nanoservice`/`Stateful` markers, `NanoPool<N>` (a pool
   for a nanoservice that owns nothing is a compile error), `MigratorPool`
   (tests and local bootstrap only), the dbmate-format migration runner the

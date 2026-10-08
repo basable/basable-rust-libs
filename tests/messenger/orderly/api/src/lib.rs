@@ -1,6 +1,7 @@
 //! The sends-only boundary: it holds nothing and sends through the router
 //! it is handed per call.
 
+use basable_app::Component;
 use basable_core::{AppError, Ctx};
 use interfaces::{ApiRoutes, ApiSender};
 use messages::*;
@@ -29,3 +30,6 @@ impl Api {
             .await
     }
 }
+
+/// Sends-only and no loops: the default.
+impl<R> Component<R> for Api {}

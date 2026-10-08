@@ -26,7 +26,7 @@ Plain tables (schema `nano_order`): `order_audit`.
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | The `Order` struct, its constructor (pools, providers, calls), the schema marker. |
+| `src/lib.rs` | The `Order` struct, its constructor (pools, providers, calls), the schema marker, and its `basable_app::Component` impl: `loops()` lists every worker and ticker it runs (none for a plain executor). |
 | `src/handlers.rs` | `impl OrderHandler<R>`: one `handle_<snake_message>` per handled message. Intent only — `create` / `update_spec` / `mark_deleted` / `nudge`; never a status write. |
 | `src/types/<type>/type.rs` | The `ProcessingObjectType` declaration: spec/status structs, `TYPE_KEY`, `PUBLIC_ID_PREFIX`. |
 | `src/types/<type>/adapter.rs` | The dumb column mapper: every column in BOTH `write_spec` and `read_rows`. |
@@ -35,7 +35,7 @@ Plain tables (schema `nano_order`): `order_audit`.
 | `src/effects.rs` | One `Call` per external call with its strategy literal; `send` is the only dispatch path. |
 | `src/provider.rs` / `src/simulator.rs` | The provider trait, the HTTP client (a parsed 4xx is `SendError::Refused`), the noop; the in-memory simulator the audit and the tests drive. |
 | `tests/effects_audit.rs` | One `audit!` per adapter — the audit index. Green on day one; the first thing a real provider must keep green. |
-| `src/worker.rs` | The ticker workers (`sweep_abandoned` every 15m), registered in `app/src/main.rs`, joined on shutdown. |
+| `src/worker.rs` | The ticker workers (`sweep_abandoned` every 15m), listed in this nanoservice's `loops()` (`src/lib.rs`), started by the app and joined on shutdown. |
 | `tests/integration.rs` | Integration tests on the testkit (a database per test). |
 | `flows.md` | State machines, sequences, edge cases. |
 

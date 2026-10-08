@@ -1,6 +1,7 @@
-//! The two compile-fail pins of the messenger design, as `compile_fail`
+//! The compile-fail pins of the messenger design, as `compile_fail`
 //! doctests over the generated `interfaces` crate of the cyclic topology
-//! (`rust_doc_test` in the BUILD file runs them).
+//! and the fixture components (`rust_doc_test` in the BUILD file runs
+//! them).
 //!
 //! # A cycle without boxing does not compile
 //!
@@ -104,5 +105,75 @@
 //!     async fn handle_event(&self, _ctx: &Ctx, _msg: Event, _s: ASender<'_, R>) -> Result<(), AppError> {
 //!         Ok(())
 //!     }
+//! }
+//! ```
+//!
+//! # A component without a `Component` impl does not compile
+//!
+//! Rust cannot ask at run time whether a component owns loops, so the
+//! generated `Components` impl asks every component, and one that does not
+//! implement `basable_app::Component` fails the messenger's build naming it
+//! (E0277), never a loop silently missing at run time. Here as the
+//! generator writes it, with `Forgetful` implementing nothing:
+//!
+//! ```compile_fail,E0277
+//! use std::sync::{Arc, Mutex};
+//! use basable_app::{Component, Components, Loops};
+//!
+//! pub struct Forgetful;
+//!
+//! pub struct Router {
+//!     a: a::A,
+//!     forgetful: Forgetful,
+//! }
+//!
+//! impl Components for Router {
+//!     fn loops(&'static self) -> Vec<(&'static str, Loops)> {
+//!         Vec::from([
+//!             ("a", Component::<Self>::loops(&self.a, self)),
+//!             ("forgetful", Component::<Self>::loops(&self.forgetful, self)),
+//!         ])
+//!     }
+//! }
+//!
+//! fn main() {
+//!     let router: &'static Router = Box::leak(Box::new(Router {
+//!         a: a::A::new(Arc::new(Mutex::new(Vec::new()))),
+//!         forgetful: Forgetful,
+//!     }));
+//!     let _ = router.loops();
+//! }
+//! ```
+//!
+//! The same router with the default impl compiles:
+//!
+//! ```
+//! use std::sync::{Arc, Mutex};
+//! use basable_app::{Component, Components, Loops};
+//!
+//! pub struct Forgetful;
+//!
+//! impl<R> Component<R> for Forgetful {}
+//!
+//! pub struct Router {
+//!     a: a::A,
+//!     forgetful: Forgetful,
+//! }
+//!
+//! impl Components for Router {
+//!     fn loops(&'static self) -> Vec<(&'static str, Loops)> {
+//!         Vec::from([
+//!             ("a", Component::<Self>::loops(&self.a, self)),
+//!             ("forgetful", Component::<Self>::loops(&self.forgetful, self)),
+//!         ])
+//!     }
+//! }
+//!
+//! fn main() {
+//!     let router: &'static Router = Box::leak(Box::new(Router {
+//!         a: a::A::new(Arc::new(Mutex::new(Vec::new()))),
+//!         forgetful: Forgetful,
+//!     }));
+//!     assert_eq!(router.loops().len(), 2);
 //! }
 //! ```

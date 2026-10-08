@@ -23,6 +23,10 @@ together so a boxed route's hidden type is nameable from the one opaque
 return type; two independent borrows leave the box's lifetime an
 intersection the opaque type cannot express (E0700).
 
+The generated router also implements `basable_app::Components` (every
+component's loops, porting note 83), so a tenant's generated `messenger` crate
+depends on `basable-app`; this crate and the generator depend on nothing.
+
 ## Rules the design fixes (B2, B2b)
 
 - Handlers take `&self` and receive their nanoservice's sender per message;
@@ -39,7 +43,8 @@ intersection the opaque type cannot express (E0700).
 
 The crate's own unit tests pin that a boxed route is a `Send` future with
 the declared output. The generated crates are exercised in
-`tests/messenger/orderly` (the reference topology) and
-`tests/messenger/cyclic` (the boxed back-edge, re-entrancy, and the two
-`compile_fail` doctests: an unboxed cycle is E0733, a `MutexGuard` across
-a send is E0277).
+`tests/messenger/orderly` (the reference topology, and its loops through
+`Components`) and `tests/messenger/cyclic` (the boxed back-edge,
+re-entrancy, and the `compile_fail` doctests: an unboxed cycle is E0733, a
+`MutexGuard` across a send is E0277, a component without a
+`basable_app::Component` impl is E0277).

@@ -5,7 +5,7 @@
 use ::basable_messenger::{boxed, Route};
 use ::interfaces::source;
 use messages::*;
-/// The router: every nanoservice's component, and one `Route` impl per declared `(source, message)` pair. Fields are private, so a handler holding `&AppMessenger` reaches only its own sender.
+/// The router: every nanoservice's component, one `Route` impl per declared `(source, message)` pair, and the `basable_app::Components` impl that hands the app every component's loops. Fields are private, so a handler holding `&AppMessenger` reaches only its own sender.
 pub struct AppMessenger {
     catalog: catalog::Catalog,
     order: order::Order,
@@ -27,21 +27,32 @@ impl AppMessenger {
             api,
         }
     }
-    /// The `catalog` component (for the composition root: workers, the Connect server).
+    /// The `catalog` component (for the composition root: the Connect server, the raw routes).
     pub fn catalog(&self) -> &catalog::Catalog {
         &self.catalog
     }
-    /// The `order` component (for the composition root: workers, the Connect server).
+    /// The `order` component (for the composition root: the Connect server, the raw routes).
     pub fn order(&self) -> &order::Order {
         &self.order
     }
-    /// The `notifier` component (for the composition root: workers, the Connect server).
+    /// The `notifier` component (for the composition root: the Connect server, the raw routes).
     pub fn notifier(&self) -> &notifier::Notifier {
         &self.notifier
     }
-    /// The `api` component (for the composition root: workers, the Connect server).
+    /// The `api` component (for the composition root: the Connect server, the raw routes).
     pub fn api(&self) -> &api::Api {
         &self.api
+    }
+}
+/// Every component's loops, one entry per nanoservice in `routing.yaml` order and named as there: what `basable_app::Serve::components` registers, each loop as `<name>/<loop>`. A component that owns no loops takes `Component`'s default.
+impl ::basable_app::Components for AppMessenger {
+    fn loops(&'static self) -> Vec<(&'static str, ::basable_app::Loops)> {
+        Vec::from([
+            ("catalog", ::basable_app::Component::<Self>::loops(&self.catalog, self)),
+            ("order", ::basable_app::Component::<Self>::loops(&self.order, self)),
+            ("notifier", ::basable_app::Component::<Self>::loops(&self.notifier, self)),
+            ("api", ::basable_app::Component::<Self>::loops(&self.api, self)),
+        ])
     }
 }
 #[allow(dead_code)]

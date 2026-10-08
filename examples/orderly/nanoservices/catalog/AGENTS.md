@@ -17,7 +17,7 @@ Config catalogs: `pricing_rule` (`config/base/pricing_rule.json`).
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | The `Catalog` struct, its constructor (pools, providers, calls), the schema marker. |
+| `src/lib.rs` | The `Catalog` struct, its constructor (pools, providers, calls), the schema marker, and its `basable_app::Component` impl: `loops()` lists every worker and ticker it runs (none for a plain executor). |
 | `src/handlers.rs` | `impl CatalogHandler<R>`: one `handle_<snake_message>` per handled message. Intent only — `create` / `update_spec` / `mark_deleted` / `nudge`; never a status write. |
 | `src/repository.rs` / `src/model.rs` | Typed sqlx queries over this nanoservice's pool; the row structs. |
 | `src/config.rs` | The config type declarations and their readers. |

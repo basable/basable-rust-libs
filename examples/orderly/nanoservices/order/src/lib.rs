@@ -58,6 +58,24 @@ impl Order {
     }
 }
 
+impl<R> basable_app::Component<R> for Order
+where
+    R: interfaces::OrderRoutes + Send + Sync + 'static,
+{
+    /// Every loop this nanoservice runs: a worker per processing-object
+    /// type, then its schedules. The app starts every component's loops
+    /// (`app/src/main.rs`: `.components(router)`) and joins them on
+    /// shutdown, so a type or a schedule this nanoservice gains is added
+    /// here and nowhere else.
+    fn loops(&'static self, router: &'static R) -> basable_app::Loops {
+        let sender = interfaces::OrderSender::new(router);
+        basable_app::Loops::new()
+            .worker(types::order::worker(router, self))
+            .worker(types::shipment::worker(router, self))
+            .ticker(basable_app::Ticker::new("sweep_abandoned", std::time::Duration::from_secs(900), move |ctx| Box::pin(self.tick_sweep_abandoned(ctx, sender))))
+    }
+}
+
 /// The error a step not filled in yet answers with, so the skeleton deploys
 /// green instead of panicking. `regex_search unimplemented_step` lists what
 /// is left.

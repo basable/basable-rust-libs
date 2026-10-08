@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use basable_app::Component;
 use basable_core::{AppError, Ctx};
 use interfaces::{NotifierHandler, NotifierRoutes, NotifierSender};
 use messages::*;
@@ -37,3 +38,6 @@ impl<R: NotifierRoutes> NotifierHandler<R> for Notifier {
             .push(format!("notifier:event:{}", msg.order));
     }
 }
+
+/// No loops: the default.
+impl<R> Component<R> for Notifier {}

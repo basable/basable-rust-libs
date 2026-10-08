@@ -13,7 +13,7 @@ tenant tree the scaffolder renders pins the same rules and toolchain, so a
 crate release and a template bump move together.
 """
 
-module(name = "basable_rust_libs", version = "0.2.0")
+module(name = "basable_rust_libs", version = "0.3.0")
 
 bazel_dep(name = "rules_rust", version = "0.74.0")
 bazel_dep(name = "platforms", version = "1.1.0")

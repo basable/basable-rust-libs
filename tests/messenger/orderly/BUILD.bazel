@@ -2,7 +2,9 @@
 # orderly.yaml) compiled against stub components, exactly as a tenant
 # project's BUILD files do it (tools/messenger.bzl): the genrule runs the
 # in-tree basable-messenger-gen, the two rust_library targets are the
-# generated crates, and the test drives the routes.
+# generated crates (the messenger implements basable_app::Components over
+# the components, so it and they depend on basable-app), and the test drives
+# the routes and lists the loops.
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 load("//tools:messenger.bzl", "messenger_generated")
 
@@ -52,6 +54,7 @@ rust_library(
         deps = [
             ":interfaces",
             ":messages",
+            "//crates/basable-app:basable_app",
             "//crates/basable-core:basable_core",
             "@crates//:tokio",
         ],
@@ -76,6 +79,7 @@ rust_library(
         ":messages",
         ":notifier",
         ":order",
+        "//crates/basable-app:basable_app",
         "//crates/basable-core:basable_core",
         "//crates/basable-messenger:basable_messenger",
     ],
@@ -93,6 +97,7 @@ rust_test(
         ":messenger",
         ":notifier",
         ":order",
+        "//crates/basable-app:basable_app",
         "//crates/basable-core:basable_core",
         "@crates//:tokio",
     ],

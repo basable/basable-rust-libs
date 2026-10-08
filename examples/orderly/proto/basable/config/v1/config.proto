@@ -3,7 +3,7 @@ syntax = "proto3";
 package basable.config.v1;
 
 // The header every configuration message embeds (basable-config
-// 0.2.0). In a seed file `namespace` is a
+// 0.3.0). In a seed file `namespace` is a
 // #{NamespaceConfiguration:<name>} reference the loader resolves to the
 // namespace's id before the message decodes; `external_id` is read back
 // only; `labels` land on the object's base row.

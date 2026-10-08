@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 basable-core = { workspace = true }
+basable-app = { workspace = true }
 basable-connect = { workspace = true }
 basable-auth = { workspace = true }
 basable-messenger = { workspace = true }

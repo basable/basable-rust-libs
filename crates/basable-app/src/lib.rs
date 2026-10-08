@@ -11,8 +11,7 @@
 //!     .connect(api.connect_router(router))
 //!     .raw(api.raw_routes(router))
 //!     .auth(Validator::kratos(&cfg.kratos_public_url))
-//!     .worker("catalog", catalog::types::product::worker(router, router.catalog()))
-//!     .ticker("catalog", catalog::worker::tickers(router, router.catalog()))
+//!     .components(router)
 //!     .run()
 //!     .await
 //! ```
@@ -22,10 +21,14 @@
 //!   wait, the migration-ledger gate, the pubsub bus. [`App::pool`] opens one
 //!   [`basable_db::NanoPool`] per stateful nanoservice under the connection
 //!   budget.
-//! - [`App::serve`] → [`Serve`]: routes, processing-object workers (each
-//!   woken in process by writes through its store), [`Ticker`]s;
-//!   [`Serve::start`] returns a [`Running`] app, [`Serve::run`] waits for
-//!   SIGTERM and drains.
+//! - [`App::serve`] → [`Serve`]: routes, and every component's loops through
+//!   [`Serve::components`]; [`Serve::start`] returns a [`Running`] app,
+//!   [`Serve::run`] waits for SIGTERM and drains.
+//! - [`Component`]: what each component implements, the analogue of a Go
+//!   component's `Run`. Its [`Loops`] are processing-object workers (each
+//!   woken in process by writes through its store) and [`Ticker`]s; the
+//!   default is none. [`Components`] is the list of them, which the
+//!   generated messenger implements from `routing.yaml`.
 //! - `/healthz` answers while the process lives; `/readyz` once wiring is
 //!   done, the database answers and every loop is alive.
 //! - [`basable_pubsub::Bus`] through [`App::bus`], for cross-replica
@@ -35,6 +38,7 @@
 #![warn(missing_docs)]
 
 mod boot;
+mod component;
 mod config;
 mod error;
 mod serve;
@@ -45,6 +49,7 @@ mod ticker;
 pub mod tracing;
 
 pub use boot::{APP_POOL_CONNECTIONS, App, Unbooted};
+pub use component::{Component, Components, Loops};
 pub use config::{Config, ConfigError, var};
 pub use error::Error;
 pub use serve::{Running, Serve};

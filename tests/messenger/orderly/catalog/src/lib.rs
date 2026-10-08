@@ -3,6 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use basable_app::Component;
 use basable_core::{AppError, Ctx};
 use interfaces::{CatalogHandler, CatalogRoutes, CatalogSender};
 use messages::*;
@@ -57,3 +58,6 @@ impl<R: CatalogRoutes> CatalogHandler<R> for Catalog {
             .push(format!("catalog:event:{}", msg.order));
     }
 }
+
+/// No loops: the default.
+impl<R> Component<R> for Catalog {}

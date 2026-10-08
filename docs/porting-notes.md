@@ -421,10 +421,11 @@ here.
     wired through `SetSendable`). Here `AppMessenger::new` takes every
     nanoservice in `routing.yaml` order and exposes one accessor per
     component for the composition root (`main` leaks the router and hands
-    `router.api()` to the Connect server; workers get their component the
-    same way). Nanoservice crates depend on `interfaces` only, so they
-    cannot name the router or reach another component; the accessors are
-    the app's.
+    `router.api()` to the Connect server; through 0.2.0 workers got their
+    component the same way, and since note 83 the router hands the app
+    every component's loops itself). Nanoservice crates depend on
+    `interfaces` only, so they cannot name the router or reach another
+    component; the accessors are the app's.
 60. **Diagnostics carry a code and the YAML line; structure is a JSON
     Schema.** Go's `Validate` returned one `fmt.Errorf` at a time with an
     index (`component 2, sends[1]`). Here the file is read through
@@ -493,13 +494,18 @@ here.
     `DATABASE_CONNECTION_BUDGET` (default 100, the template's
     `max_connections`) is `Error::ConnectionBudget` before it opens. Go
     sized pools by convention.
-67. **Workers and tickers are joined by name.** `Serve::worker` and
-    `Serve::ticker` register loops under `<nanoservice>/<type or ticker>`;
-    shutdown flips readiness off, cancels the root `Ctx`, joins every loop
-    within `SHUTDOWN_GRACE_SECS`, and returns `Error::Stuck(names)` for
-    what did not drain (abandoned to lease expiry). An in-flight attempt
-    completes as a retry with `last_error = "attempt cancelled"`, which
-    `tests/app.rs` pins over the conformance type. A ticker is the
+67. **Workers and tickers are joined by name.** Every loop is registered
+    under `<component>/<worker type or ticker>`: since 2026-10-08 through
+    `Serve::components`, the component name coming from `routing.yaml`
+    (note 83; through 0.2.0 `Serve::worker` and `Serve::ticker` took the
+    prefix from `main.rs`), and a name registered twice is
+    `Error::DuplicateLoop` at `start`. Shutdown flips readiness off,
+    cancels the root `Ctx`, joins every loop within
+    `SHUTDOWN_GRACE_SECS`, and returns `Error::Stuck(names)` for what did
+    not drain (abandoned to lease expiry), which `tests/app.rs` pins with a
+    tick that ignores its context. An in-flight attempt completes as a
+    retry with `last_error = "attempt cancelled"`, which `tests/app.rs`
+    pins over the conformance type. A ticker is the
     `gitoperator/worker.go` shape (immediate first tick, then per
     interval, a failing or panicking tick logged and retried) and its
     tick borrows a child context cancelled with the app.
@@ -720,3 +726,59 @@ of it changed, in the crates and in the templates:
     moved `FrameworkVersion`, `TemplateTag` and `DirectiveVersion` to it in
     the same piece of work (the Directive's invariant 2 changed wording),
     and `examples/orderly` is rendered from that.
+
+## After 0.2.0
+
+83. **Loops belong to the component, and the messenger lists the
+    components (2026-10-08).** Go's `main.go` hands one canonical
+    component list, the one wired into the messenger, to
+    `server.CollectWorkers`, which keeps the components implementing
+    `Worker` (a `Run` loop); each builds and joins its own workers and
+    tickers, and `main` never names a component's types. Through 0.2.0 a
+    tenant's `main.rs` registered every loop itself
+    (`.worker("order_order", order::types::order::worker(router,
+    router.order())).ticker("order", order::worker::tickers(..))`), so it
+    knew every component's processing-object types, and a new loop was an
+    edit in two crates. Now `basable_app::Component<R>` is the `Run`:
+    `fn loops(&'static self, router: &'static R) -> Loops`, with `Loops`
+    collecting named, type-erased workers (named by their type) and
+    tickers (by their name). Rust cannot ask at run time whether a value
+    implements a trait, so there is no subset to collect: every component
+    implements `Component`, a plain executor takes the default (no loops),
+    and one that does not is a build error in the messenger crate naming
+    it (E0277, pinned in `tests/messenger/cyclic`). The list is the
+    generated messenger, which already held every nanoservice as a field
+    (note 59): `basable-messenger-codegen` emits `impl
+    basable_app::Components for AppMessenger`, one entry per component in
+    `routing.yaml` order, sends-only ones included (one may own tickers),
+    each named as there. A loop's name `<component>/<loop>` therefore
+    comes from `routing.yaml`, not from a string in `main.rs` (the
+    reference project's `order/order` and `order/shipment` were
+    `order_order/order` and `order_shipment/shipment` under 0.2.0), and
+    `main.rs` calls `.components(router)` once. The generator still emits
+    only text; the generated crate depends on basable-app.
+    `Serve::start` refuses a name registered twice (the components
+    registered twice, or two loops of one name in one component) with
+    `Error::DuplicateLoop(name)` before it binds or spawns anything;
+    readiness and the shutdown drain are note 67's, unchanged. Removed, a
+    break against the published 0.2.0: `Serve::worker` and
+    `Serve::ticker`, so a loop has one way in. Added: `Component`,
+    `Components`, `Loops`, `Serve::components`, and the
+    `Error::DuplicateLoop` variant, which an exhaustive match on
+    `basable_app::Error` must now name.
+
+## 0.3.0
+
+84. **0.3.0 is note 83 (2026-10-08).** The minor bump is the break note 83
+    lists: `Serve::worker` and `Serve::ticker` are gone, a component lists
+    its loops in `Component::loops`, and the generated messenger hands
+    them all to `Serve::components`. Released as 0.2.0 was (note 82): the
+    package dry run with the Bazel-pinned cargo 1.98.1, `cargo publish
+    --workspace --locked`, then the `v0.3.0` tag. The monorepo's scaffold
+    renders each nanoservice's `impl Component` in its `lib.rs` (every
+    type's worker and every schedule's ticker, or the empty default), an
+    empty one for the API, and `.components(router)` in `main.rs`; its
+    drift check names a declared type or schedule missing from `loops()`,
+    which compiles and would never run. `FrameworkVersion` and
+    `TemplateTag` moved to 0.3.0; the Directive did not change, so
+    `DirectiveVersion` stays 0.2.0.

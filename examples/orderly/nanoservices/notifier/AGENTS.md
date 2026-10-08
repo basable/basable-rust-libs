@@ -21,7 +21,7 @@ recovery.
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | The `Notifier` struct, its constructor (pools, providers, calls), the schema marker. |
+| `src/lib.rs` | The `Notifier` struct, its constructor (pools, providers, calls), the schema marker, and its `basable_app::Component` impl: `loops()` lists every worker and ticker it runs (none for a plain executor). |
 | `src/handlers.rs` | `impl NotifierHandler<R>`: one `handle_<snake_message>` per handled message. Intent only — `create` / `update_spec` / `mark_deleted` / `nudge`; never a status write. |
 | `src/effects.rs` | One `Call` per external call with its strategy literal; `send` is the only dispatch path. |
 | `src/provider.rs` / `src/simulator.rs` | The provider trait, the HTTP client (a parsed 4xx is `SendError::Refused`), the noop; the in-memory simulator the audit and the tests drive. |

@@ -1,7 +1,8 @@
 # The cyclic topology (routing.yaml here): the generated crates compile
 # WITH the boxed back-edge, the re-entrancy test drives `a → b → a → …`
 # under a multi-thread runtime, and the compile-fail doctests pin that the
-# unboxed form and a MutexGuard across a send do not compile.
+# unboxed form, a MutexGuard across a send, and a component without a
+# basable_app::Component impl do not compile.
 load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library", "rust_test")
 load("//tools:messenger.bzl", "messenger_generated")
 
@@ -49,6 +50,7 @@ rust_library(
         deps = [
             ":interfaces",
             ":messages",
+            "//crates/basable-app:basable_app",
             "//crates/basable-core:basable_core",
         ],
     )
@@ -70,6 +72,7 @@ rust_library(
         ":b",
         ":interfaces",
         ":messages",
+        "//crates/basable-app:basable_app",
         "//crates/basable-core:basable_core",
         "//crates/basable-messenger:basable_messenger",
     ],
@@ -101,6 +104,7 @@ rust_library(
         ":b",
         ":interfaces",
         ":messages",
+        "//crates/basable-app:basable_app",
         "//crates/basable-core:basable_core",
         "//crates/basable-messenger:basable_messenger",
     ],

@@ -59,7 +59,9 @@ async fn run() -> Result<(), BootError> {
     // The router is passed by shared reference into every handler and
     // reconciler (static dispatch, no Arc<dyn>); leaking one value per
     // process is the price, and it is negligible. Every component lives in
-    // it: workers and the Connect server take theirs from its accessors.
+    // it: the Connect server takes its component from an accessor, and
+    // `.components(router)` starts every component's loops (its workers and
+    // tickers, which each component lists itself).
     let router: &'static AppMessenger = Box::leak(Box::new(AppMessenger::new(
         api,
         // basable:router-args-begin
@@ -74,11 +76,7 @@ async fn run() -> Result<(), BootError> {
         .connect(api.connect_router(router))
         .raw(api.raw_routes(router))
         .auth(Validator::kratos(&cfg.kratos_public_url).public_prefixes(["/api/webhooks/"]))
-        // basable:workers-begin
-        .worker("order_order", order::types::order::worker(router, router.order()))
-        .worker("order_shipment", order::types::shipment::worker(router, router.order()))
-        .ticker("order", order::worker::tickers(router, router.order()))
-        // basable:workers-end
+        .components(router)
         .run()
         .await
         .map_err(BootError::Serve)

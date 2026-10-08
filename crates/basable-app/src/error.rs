@@ -45,6 +45,10 @@ pub enum Error {
     },
     /// The server failed while running.
     Server(std::io::Error),
+    /// Two loops were registered under one `<component>/<loop>` name (the
+    /// components registered twice, or one component with two loops of one
+    /// name). Nothing was started.
+    DuplicateLoop(String),
     /// Workers still running when the shutdown grace ran out, by name.
     /// They were abandoned; the framework's lease expiry recovers their
     /// claims.
@@ -83,6 +87,10 @@ impl fmt::Display for Error {
             ),
             Error::Bind { addr, source } => write!(f, "binding {addr}: {source}"),
             Error::Server(e) => write!(f, "the server failed: {e}"),
+            Error::DuplicateLoop(name) => write!(
+                f,
+                "two loops are registered as {name}; a loop name must be unique"
+            ),
             Error::Stuck(names) => write!(
                 f,
                 "{} worker(s) did not drain within the shutdown grace: {}",
@@ -102,7 +110,7 @@ impl std::error::Error for Error {
             Error::Migrations(e) => Some(e),
             Error::Bind { source, .. } => Some(source),
             Error::Server(e) => Some(e),
-            Error::ConnectionBudget { .. } | Error::Stuck(_) => None,
+            Error::ConnectionBudget { .. } | Error::DuplicateLoop(_) | Error::Stuck(_) => None,
         }
     }
 }

@@ -1,15 +1,18 @@
 //! The Phase 8 verification: the boot gate on the migration ledger, two
 //! nanoservice pools that cannot read each other's schema, the connection
-//! budget, readiness over a live server, a write through a registered
-//! worker's store waking it, and a shutdown that drains an in-flight
-//! attempt as a retry.
+//! budget, readiness over a live server, a write through the store of a
+//! component's worker waking it, a shutdown that drains an in-flight
+//! attempt as a retry and names a loop that does not drain, a component
+//! taking the default running nothing, and a duplicate loop name refused
+//! before anything runs.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use basable_app::{APP_POOL_CONNECTIONS, App, Config, Error};
+use basable_app::{APP_POOL_CONNECTIONS, App, Component, Components, Config, Error, Loops, Ticker};
 use basable_db::{Nanoservice, Stateful};
-use basable_processingobject::{NoAfterComplete, Ref, TypedStore, Worker};
+use basable_processingobject::{NoAfterComplete, Ref, TypedStore, Worker, WorkerConfig};
 use basable_processingobject_testkit::{
     Conformance, ConformanceStore, ExampleReconciler, Gate, Hook, Spec, Status, WidgetSim,
     apply_schema, conformance_type, fast_config, hook, reconciled,
@@ -17,6 +20,83 @@ use basable_processingobject_testkit::{
 use basable_testkit::TestDb;
 use sqlx::Row;
 use uuid::Uuid;
+
+/// The test's router, shaped like the generated messenger: the components
+/// by name, and the `Components` impl listing each with its loops in
+/// declaration order.
+struct Messenger(Vec<Named>);
+
+type Named = (&'static str, Box<dyn Component<Messenger>>);
+
+impl Components for Messenger {
+    fn loops(&'static self) -> Vec<(&'static str, Loops)> {
+        self.0
+            .iter()
+            .map(|(name, component)| (*name, component.loops(self)))
+            .collect()
+    }
+}
+
+/// Leaks the router, as a tenant's `main` does.
+fn messenger(components: Vec<Named>) -> &'static Messenger {
+    Box::leak(Box::new(Messenger(components)))
+}
+
+/// A component owning one processing-object worker over the conformance
+/// type, built when the app asks for its loops. The gate holds only the
+/// object whose content is `held`.
+struct Reconciling {
+    store: ConformanceStore,
+    sim: Arc<WidgetSim>,
+    gate: Gate,
+    cfg: WorkerConfig,
+}
+
+impl<R> Component<R> for Reconciling {
+    fn loops(&'static self, _router: &'static R) -> Loops {
+        let rec = ExampleReconciler::new(self.sim.clone()).before(hook(move |ctx, claim| {
+            Box::pin(async move {
+                if claim.object.spec.content == "held" {
+                    self.gate.call(ctx, claim).await
+                } else {
+                    Ok(())
+                }
+            })
+        }));
+        let worker = Worker::new(self.store.clone(), self.cfg.clone(), rec, NoAfterComplete)
+            .expect("a valid worker config");
+        Loops::new().worker(worker)
+    }
+}
+
+/// A component owning one hourly ticker per name, each tick counted; with
+/// `stall`, a tick ignores its context and does not end.
+struct Ticking {
+    names: &'static [&'static str],
+    stall: bool,
+    ticks: Arc<AtomicU32>,
+}
+
+impl<R> Component<R> for Ticking {
+    fn loops(&'static self, _router: &'static R) -> Loops {
+        self.names.iter().fold(Loops::new(), |loops, name| {
+            loops.ticker(Ticker::new(*name, Duration::from_secs(3600), move |_ctx| {
+                Box::pin(async move {
+                    self.ticks.fetch_add(1, Ordering::SeqCst);
+                    if self.stall {
+                        tokio::time::sleep(Duration::from_secs(3600)).await;
+                    }
+                    Ok(())
+                })
+            }))
+        })
+    }
+}
+
+/// A plain executor: it takes the default.
+struct Idle;
+
+impl<R> Component<R> for Idle {}
 
 struct Orders;
 impl Nanoservice for Orders {
@@ -203,24 +283,17 @@ async fn a_write_through_its_store_wakes_the_worker_and_shutdown_drains_the_atte
     let pool = app.pool::<Conformance>().await.unwrap();
     let store: ConformanceStore = TypedStore::bind(&pool, conformance_type()).await.unwrap();
 
-    let sim = Arc::new(WidgetSim::start().await);
     // The gate holds only the object created once the worker is running.
     let gate = Gate::new();
-    let held = gate.clone();
-    let rec = ExampleReconciler::new(sim.clone()).before(hook(move |ctx, claim| {
-        let gate = held.clone();
-        Box::pin(async move {
-            if claim.object.spec.content == "held" {
-                gate.call(ctx, claim).await
-            } else {
-                Ok(())
-            }
-        })
-    }));
     let mut cfg = fast_config();
     // A long poll: only a wake can pick an object up quickly.
     cfg.poll_interval = Duration::from_secs(30);
-    let worker = Worker::new(store.clone(), cfg, rec, NoAfterComplete).unwrap();
+    let component = Reconciling {
+        store: store.clone(),
+        sim: Arc::new(WidgetSim::start().await),
+        gate: gate.clone(),
+        cfg,
+    };
 
     // The first object is there before the app starts, so the worker's
     // first scan drives it: once it converged, the worker is registered on
@@ -228,7 +301,7 @@ async fn a_write_through_its_store_wakes_the_worker_and_shutdown_drains_the_atte
     let first = create(&store, "first").await;
     let running = app
         .serve()
-        .worker("conformance", worker)
+        .components(messenger(vec![("conformance", Box::new(component))]))
         .start()
         .await
         .unwrap();
@@ -282,5 +355,176 @@ async fn a_write_through_its_store_wakes_the_worker_and_shutdown_drains_the_atte
         "a cancelled attempt is a retry, not a convergence"
     );
     pool.close().await;
+    db.finish().await;
+}
+
+async fn connect(db: &TestDb, cfg: Config) -> App {
+    App::new(cfg)
+        .connect_options(db.app_options())
+        .connect()
+        .await
+        .unwrap()
+}
+
+async fn readyz(running: &basable_app::Running) -> String {
+    reqwest::get(format!("http://{}/readyz", running.addr()))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap()
+}
+
+async fn wait_for_ticks(ticks: &AtomicU32, n: u32) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while ticks.load(Ordering::SeqCst) < n {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{n} tick(s) within 5 s"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_component_taking_the_default_runs_nothing() {
+    let Some(db) = test_db().await else { return };
+    let ticks = Arc::new(AtomicU32::new(0));
+    let router = messenger(vec![
+        ("api", Box::new(Idle)),
+        (
+            "sweeper",
+            Box::new(Ticking {
+                names: &["sweep"],
+                stall: false,
+                ticks: ticks.clone(),
+            }),
+        ),
+    ]);
+    let running = connect(&db, local_config())
+        .await
+        .serve()
+        .components(router)
+        .start()
+        .await
+        .unwrap();
+    wait_for_ticks(&ticks, 1).await;
+    // The ticker is the one loop: the default contributed none.
+    assert_eq!(
+        readyz(&running).await,
+        "ready: database ok, 1 worker loop(s) alive\n"
+    );
+    running.shutdown().await.unwrap();
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn a_duplicate_loop_name_fails_start_before_anything_runs() {
+    let Some(db) = test_db().await else { return };
+
+    // The components registered twice.
+    let ticks = Arc::new(AtomicU32::new(0));
+    let router = messenger(vec![(
+        "sweeper",
+        Box::new(Ticking {
+            names: &["sweep"],
+            stall: false,
+            ticks: ticks.clone(),
+        }),
+    )]);
+    let err = connect(&db, local_config())
+        .await
+        .serve()
+        .components(router)
+        .components(router)
+        .start()
+        .await
+        .map(|_| ())
+        .expect_err("a loop registered twice");
+    assert!(
+        matches!(&err, Error::DuplicateLoop(name) if name == "sweeper/sweep"),
+        "{err}"
+    );
+    assert!(err.to_string().contains("sweeper/sweep"), "{err}");
+
+    // One component with two loops of one name.
+    let twice = messenger(vec![(
+        "sweeper",
+        Box::new(Ticking {
+            names: &["sweep", "sweep"],
+            stall: false,
+            ticks: ticks.clone(),
+        }),
+    )]);
+    let err = connect(&db, local_config())
+        .await
+        .serve()
+        .components(twice)
+        .start()
+        .await
+        .map(|_| ())
+        .expect_err("two loops of one name");
+    assert!(
+        matches!(&err, Error::DuplicateLoop(name) if name == "sweeper/sweep"),
+        "{err}"
+    );
+
+    // A ticker's first tick is immediate: none ran, so nothing was spawned.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(ticks.load(Ordering::SeqCst), 0);
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn shutdown_names_a_loop_that_does_not_drain_under_its_component() {
+    let Some(db) = test_db().await else { return };
+    let mut cfg = local_config();
+    cfg.shutdown_grace_secs = 1;
+    let ticks = Arc::new(AtomicU32::new(0));
+    let router = messenger(vec![
+        (
+            "sweeper",
+            Box::new(Ticking {
+                names: &["sweep"],
+                stall: false,
+                ticks: ticks.clone(),
+            }),
+        ),
+        (
+            "stuck",
+            Box::new(Ticking {
+                names: &["stall"],
+                stall: true,
+                ticks: ticks.clone(),
+            }),
+        ),
+    ]);
+    let running = connect(&db, cfg)
+        .await
+        .serve()
+        .components(router)
+        .start()
+        .await
+        .unwrap();
+    wait_for_ticks(&ticks, 2).await;
+    assert_eq!(
+        readyz(&running).await,
+        "ready: database ok, 2 worker loop(s) alive\n"
+    );
+
+    // The stalled tick ignores the cancelled context; the other drains.
+    let started = std::time::Instant::now();
+    let err = running
+        .shutdown()
+        .await
+        .expect_err("a loop that does not drain");
+    assert!(
+        matches!(&err, Error::Stuck(names) if names == &["stuck/stall".to_string()]),
+        "{err}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "abandoned at the grace"
+    );
     db.finish().await;
 }

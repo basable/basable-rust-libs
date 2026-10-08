@@ -10,11 +10,14 @@
 //!   handles anything, a `<Pascal>Handler<R: <Pascal>Routes>` trait with one
 //!   `handle_<snake message>` per handled message; and `source::<Pascal>`,
 //!   the marker that keys the routes of each nanoservice.
-//! - `messenger` (depends on every nanoservice crate): the concrete router
-//!   holding every nanoservice's component (`<name>::<Pascal>`) as a
-//!   private field, `new` in declaration order, one accessor per field, and
-//!   one `Route` impl per declared `(source, message)` pair, boxed on the
-//!   routes the cycle analysis chose.
+//! - `messenger` (depends on every nanoservice crate and `basable-app`):
+//!   the concrete router holding every nanoservice's component
+//!   (`<name>::<Pascal>`) as a private field, `new` in declaration order,
+//!   one accessor per field, the `basable_app::Components` impl listing
+//!   every component's loops under its name, and one `Route` impl per
+//!   declared `(source, message)` pair, boxed on the routes the cycle
+//!   analysis chose. This crate only emits the text: it depends on nothing
+//!   in the workspace.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -332,7 +335,7 @@ fn messenger(a: &Analysis<'_>) -> TokenStream {
     let accessors = a.spec.nanoservices.iter().map(|n| {
         let (field, ty) = component(n);
         let d = doc(format!(
-            " The `{}` component (for the composition root: workers, the Connect server).",
+            " The `{}` component (for the composition root: the Connect server, the raw routes).",
             n.name
         ));
         quote! {
@@ -341,6 +344,15 @@ fn messenger(a: &Analysis<'_>) -> TokenStream {
                 &self.#field
             }
         }
+    });
+    // Every component, sends-only ones included: one may own tickers, and
+    // Rust cannot ask at run time whether it does, so each implements
+    // `Component` and the default is no loops. An array, not `vec!`:
+    // prettyplease prints a macro's tokens unformatted.
+    let component_loops = a.spec.nanoservices.iter().map(|n| {
+        let (field, _) = component(n);
+        let label = &n.name;
+        quote!((#label, ::basable_app::Component::<Self>::loops(&self.#field, self)),)
     });
     let sync_checks = a.spec.nanoservices.iter().map(|n| {
         let (_, ty) = component(n);
@@ -353,7 +365,7 @@ fn messenger(a: &Analysis<'_>) -> TokenStream {
         .map(|key| route_impl(a, &types, &name, &key));
 
     let struct_doc = doc(format!(
-        " The router: every nanoservice's component, and one `Route` impl per declared `(source, message)` pair. Fields are private, so a handler holding `&{}` reaches only its own sender.",
+        " The router: every nanoservice's component, one `Route` impl per declared `(source, message)` pair, and the `basable_app::Components` impl that hands the app every component's loops. Fields are private, so a handler holding `&{}` reaches only its own sender.",
         a.spec.messenger.name
     ));
 
@@ -375,6 +387,13 @@ fn messenger(a: &Analysis<'_>) -> TokenStream {
             }
 
             #(#accessors)*
+        }
+
+        /// Every component's loops, one entry per nanoservice in `routing.yaml` order and named as there: what `basable_app::Serve::components` registers, each loop as `<name>/<loop>`. A component that owns no loops takes `Component`'s default.
+        impl ::basable_app::Components for #name {
+            fn loops(&'static self) -> Vec<(&'static str, ::basable_app::Loops)> {
+                Vec::from([#(#component_loops)*])
+            }
         }
 
         // Every component is shared by reference between concurrent
@@ -611,6 +630,34 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("check::<a::A>();"), "{text}");
+    }
+
+    #[test]
+    fn the_messenger_lists_every_component_with_its_loops_in_declaration_order() {
+        let text = emitted(
+            "nanoservices:\n  - name: api\n    sends:\n      - { message: Ping, response: R }\n  - name: catalog\n    handles:\n      - { message: Ping, response: R }\n  - name: order_ops\n    handles:\n      - { message: Event }\n",
+            Crate::Messenger,
+        );
+        assert!(
+            text.contains("impl ::basable_app::Components for Messenger {"),
+            "{text}"
+        );
+        assert!(
+            text.contains("fn loops(&'static self) -> Vec<(&'static str, ::basable_app::Loops)>"),
+            "{text}"
+        );
+        // Every component, the sends-only `api` and the one nobody sends to
+        // included, in declaration order.
+        let entries: Vec<usize> = ["api", "catalog", "order_ops"]
+            .iter()
+            .map(|n| {
+                text.find(&format!(
+                    "(\"{n}\", ::basable_app::Component::<Self>::loops(&self.{n}, self))"
+                ))
+                .unwrap_or_else(|| panic!("no entry for {n}:\n{text}"))
+            })
+            .collect();
+        assert!(entries.is_sorted(), "{entries:?}\n{text}");
     }
 
     #[test]
