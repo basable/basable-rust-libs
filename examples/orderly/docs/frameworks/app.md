@@ -1,4 +1,4 @@
-# basable-app, basable-db, basable-connect, basable-auth, basable-pubsub, basable-testkit (crates 0.1.0)
+# basable-app, basable-db, basable-connect, basable-auth, basable-pubsub, basable-testkit (crates 0.2.0)
 
 - **`basable-app`** — `App::new(config).connect().await` opens one
   `NanoPool<N>` per stateful nanoservice (`SET ROLE nano_<name>`,

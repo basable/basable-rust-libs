@@ -1,4 +1,4 @@
-# basable-externaleffect and basable-effecttest (crates 0.1.0)
+# basable-externaleffect and basable-effecttest (crates 0.2.0)
 
 Every call that leaves the application's state domain is one
 `Adapter<Args, ResolveArgs, Result>` held as a `Call`, whose `strategy`

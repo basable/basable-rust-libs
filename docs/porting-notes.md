@@ -708,3 +708,15 @@ of it changed, in the crates and in the templates:
     `Running::wake_bus`; and `APP_POOL_CONNECTIONS` is 3, not 4, because
     one of the four was the wake listener. Added: the `next_pass` field on
     `Completion::Committed`, which a hand-built `Committed` must now name.
+
+## 0.2.0
+
+82. **0.2.0 is note 81 (2026-10-08).** The minor bump is the break note 81
+    lists; nothing else changed for a consumer. The release ran the same
+    way as 0.1.0: `cargo package --workspace --locked` with the
+    Bazel-pinned cargo 1.98.1 (all seventeen crates built from their
+    tarballs), then `cargo publish --workspace --locked` from a logged-in
+    machine, then the `v0.2.0` tag. The monorepo's `lib/scaffold/pins.go`
+    moved `FrameworkVersion`, `TemplateTag` and `DirectiveVersion` to it in
+    the same piece of work (the Directive's invariant 2 changed wording),
+    and `examples/orderly` is rendered from that.

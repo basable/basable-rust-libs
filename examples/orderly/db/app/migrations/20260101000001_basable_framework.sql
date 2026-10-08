@@ -1,7 +1,7 @@
 -- migrate:up
 
 -- The basable framework schemas, vendored verbatim from the crates at
--- 0.1.0. Never edit an applied migration; the frameworks
+-- 0.2.0. Never edit an applied migration; the frameworks
 -- ship their own follow-ups with the crate version.
 --
 -- `basable` holds the processing-object type registry and the envelope

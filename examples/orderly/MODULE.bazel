@@ -1,7 +1,7 @@
 """Shop — a basable nanoservice application.
 
-Rendered by the basable scaffolder (crates 0.1.0, template
-v0.1.0). Bazel + rules_rust is the only build; the Cargo.toml
+Rendered by the basable scaffolder (crates 0.2.0, template
+v0.2.0). Bazel + rules_rust is the only build; the Cargo.toml
 files are package metadata for crate_universe. Dependencies are declared in the
 workspace Cargo.toml and repinned with `CARGO_BAZEL_REPIN=1 bazel sync`
 (docs/adding-a-dependency.md).

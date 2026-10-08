@@ -1,4 +1,4 @@
-# basable-config (crates 0.1.0)
+# basable-config (crates 0.2.0)
 
 Declarative catalogs: a person edits JSON under `config/base/`, the app
 loads it at boot. The storage, the files and the loader are the basable
