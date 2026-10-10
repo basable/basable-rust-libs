@@ -36,3 +36,18 @@ file under `k8s/` and `.github/workflows/` must keep.
 - **Sizing** is `.basable/config.yaml`, per environment, at the free-tier
   maximum for the organisation's first month; above it, a payment method is
   required.
+- **Object storage** is `objectStorage: {}` beside an environment's
+  `virtual-cluster` block in `.basable/config.yaml`: the platform creates
+  that environment's two S3-compatible buckets, a private and a public
+  one, and writes their key into the `object-storage` Secret in the
+  `default` namespace (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+  `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, `AWS_DEFAULT_REGION`, `S3_BUCKET`
+  for the private bucket, `S3_PUBLIC_BUCKET`, and the browser-facing
+  `S3_PUBLIC_URL` and `S3_PRIVATE_URL`), read with `envFrom`. Files and
+  blobs go there, never on a pod's filesystem or in a PVC. Every object
+  in the public bucket is at `$S3_PUBLIC_URL/<key>` (no upload sets an
+  ACL: the bucket alone decides what is public); a private one
+  reaches a browser as a virtual-hosted presigned URL whose origin is
+  replaced with `S3_PRIVATE_URL`, or through the app. The platform owns the
+  buckets' configuration. The block's removal deletes the buckets only when
+  they are empty or an earlier deploy carried `forceDestroy: true`.
