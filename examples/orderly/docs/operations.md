@@ -40,9 +40,15 @@
 ## Database
 
 One CNPG cluster, 1 instance(s), 5Gi. The PVC is the only
-copy until a backup to object storage is configured (`backup.barmanObjectStore`
-+ a `ScheduledBackup`, needing an S3 credential). HA is `instances: 3` in
-`k8s/postgres/cluster.yaml` within a paid quota; nothing else changes.
+copy until the cluster backs up to the environment's private bucket: declare
+`objectStorage` for the environment in `.basable/config.yaml`, then add a
+`backup.barmanObjectStore` (destination
+`s3://OBJECT_STORAGE_BUCKET_PLACEHOLDER/cnpg/<cluster>`, endpoint
+`OBJECT_STORAGE_ENDPOINT_PLACEHOLDER`, both filled in by the deploy per
+environment; credentials from the `object-storage` Secret; a
+`retentionPolicy`) and a `ScheduledBackup` to `k8s/postgres/cluster.yaml`.
+Base backups and the WAL archive then go to the bucket. HA is `instances: 3`
+in `k8s/postgres/cluster.yaml` within a paid quota; nothing else changes.
 
 Preview sleep stops the pods; the PVC and the CNPG Secrets survive.
 
