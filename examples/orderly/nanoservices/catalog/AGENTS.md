@@ -2,7 +2,7 @@
 
 Owns the product catalogue.
 
-Rendered by `scaffold_nanoservice` from `docs/01-shop/manifest.yaml`.
+Rendered by the scaffold from `docs/01-shop/manifest.yaml`.
 The Directive sections that bind this nanoservice: §2 (table ownership), §7
 (cross-nanoservice rules for every message it sends), §10 (this file and
 `flows.md` must stay true).

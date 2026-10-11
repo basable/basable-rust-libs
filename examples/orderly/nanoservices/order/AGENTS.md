@@ -2,7 +2,7 @@
 
 Drives an order to paid and fulfilled.
 
-Rendered by `scaffold_nanoservice` from `docs/01-shop/manifest.yaml`.
+Rendered by the scaffold from `docs/01-shop/manifest.yaml`.
 The Directive sections that bind this nanoservice: §2 (table ownership), §3–§5
 (the invariants, the author obligations, the adapter and outcome contract — it
 owns processing-object types), §6 (external-effect admission — it owns adapters), §7
