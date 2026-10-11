@@ -10,6 +10,8 @@ command -v bazel >/dev/null 2>&1 || npm install -g @bazel/bazelisk
 # must reach both locks.
 export CARGO_BAZEL_REPIN=workspace
 bazel mod tidy
+# Builds every target, the images included (built, not pushed: the deploy
+# workflow builds and pushes them with --config=ci), and runs the tests. One
+# configuration only: a second one, such as `bazel build --config=ci //:push`
+# after this, compiles the whole graph again, every crate included.
 bazel test //...
-# The images, built and not pushed: the deploy workflow pushes them.
-bazel build --config=ci //:push

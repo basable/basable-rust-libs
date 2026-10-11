@@ -44,6 +44,14 @@ a Dockerfile step: the images are `oci_image` targets.
   updating while the sources keep changing.
 - **A later step never recomputes what an earlier one pushed**: the Render
   step uses the digests the build step reported, never a rebuild.
+- **The platform's verified builds keep caches of their own.** The
+  platform's `basable-builder.yaml` runs `.basable/verify.sh` from the
+  default branch and saves its Bazel caches there under `basable-builder-`
+  keys, so every verified build starts from the last one's. This
+  workflow's cleanup deletes only `disk-cache-` and `repo-cache-` entries
+  and leaves those alone. `.basable/verify.sh` builds in one configuration
+  (`bazel test //...` builds the images too); a second `--config=ci` build
+  there would compile the whole graph twice.
 
 ## Cold and warm
 

@@ -2,8 +2,9 @@
 # this run uploads and nothing else: lint k8s/, build and test with Bazel,
 # push the images by commit SHA, pin every built image to its digest, render
 # k8s/ with kustomize, upload. Plan commits (docs/** only) start no run and,
-# by the platform's rule, create no deployment. See docs/ci.md for the cache
-# hygiene rules — they exist because the naive shape ran out of disk.
+# by the platform's rule, create no deployment; neither does the platform's
+# commit of its own builder workflow to the default branch. See docs/ci.md for
+# the cache hygiene rules — they exist because the naive shape ran out of disk.
 name: Build
 
 on:
@@ -11,6 +12,7 @@ on:
     branches: [dev, main]
     paths-ignore:
       - "docs/**"
+      - ".github/workflows/basable-builder.yaml"
 
 env:
   REGISTRY: registry.test.local
