@@ -3,11 +3,14 @@
 Rendered by the basable scaffolder (crates 0.3.0, template
 v0.3.0). Bazel + rules_rust is the only build; the Cargo.toml
 files are package metadata for crate_universe. Dependencies are declared in the
-workspace Cargo.toml and repinned with `CARGO_BAZEL_REPIN=1 bazel sync`
-(docs/adding-a-dependency.md).
+workspace Cargo.toml and repinned with `CARGO_BAZEL_REPIN=workspace`, which
+.basable/verify.sh and the CI export (docs/adding-a-dependency.md).
 """
 
-module(name = "shop", version = "0.1.0")
+module(
+    name = "shop",
+    version = "0.1.0",
+)
 
 bazel_dep(name = "rules_rust", version = "0.74.0")
 bazel_dep(name = "rules_oci", version = "2.3.0")
@@ -16,6 +19,7 @@ bazel_dep(name = "rules_multirun", version = "0.14.0")
 bazel_dep(name = "rules_buf", version = "0.5.4")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
+
 # protoc comes prebuilt from this module's own toolchains (.bazelrc sets
 # prefer_prebuilt_protoc): nothing compiles protobuf's C++.
 bazel_dep(name = "protobuf", version = "36.2")
@@ -24,10 +28,11 @@ bazel_dep(name = "protobuf", version = "36.2")
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2024",
-    versions = ["1.98.1"],
     extra_target_triples = ["x86_64-unknown-linux-gnu"],
+    versions = ["1.98.1"],
 )
 use_repo(rust, "rust_toolchains")
+
 register_toolchains("@rust_toolchains//:all")
 
 # --- Crates (crate_universe from the workspace Cargo.toml) ------------------
@@ -55,19 +60,30 @@ crate.from_cargo(
 # The codegen binaries the genrules run: the messenger generator over
 # routing.yaml and the two protoc plugins (buffa messages and views, the
 # connect-rust service stubs).
-crate.annotation(crate = "basable-messenger-gen", gen_binaries = ["basable-messenger-gen"])
-crate.annotation(crate = "basable-protoc-gen-buffa", gen_binaries = ["protoc-gen-buffa"])
-crate.annotation(crate = "connectrpc-codegen", gen_binaries = ["protoc-gen-connect-rust"])
+crate.annotation(
+    crate = "basable-messenger-gen",
+    gen_binaries = ["basable-messenger-gen"],
+)
+crate.annotation(
+    crate = "basable-protoc-gen-buffa",
+    gen_binaries = ["protoc-gen-buffa"],
+)
+crate.annotation(
+    crate = "connectrpc-codegen",
+    gen_binaries = ["protoc-gen-connect-rust"],
+)
 use_repo(crate, "crates")
 
 # --- buf (lint and breaking checks; codegen is protoc's) --------------------
 buf = use_extension("@rules_buf//buf:extensions.bzl", "buf")
 buf.toolchains(version = "v1.73.0")
 use_repo(buf, "rules_buf_toolchains")
+
 register_toolchains("@rules_buf_toolchains//:all")
 
 # --- Base images (digest-pinned; a tag would move under the project) --------
 oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
+
 # gcr.io/distroless/cc-debian12:nonroot
 oci.pull(
     name = "distroless_cc",
@@ -75,6 +91,7 @@ oci.pull(
     image = "gcr.io/distroless/cc-debian12",
     platforms = ["linux/amd64"],
 )
+
 # ghcr.io/amacneil/dbmate:2.36.0
 oci.pull(
     name = "dbmate",
@@ -82,6 +99,7 @@ oci.pull(
     image = "ghcr.io/amacneil/dbmate",
     platforms = ["linux/amd64"],
 )
+
 # docker.io/nginxinc/nginx-unprivileged:stable-alpine
 oci.pull(
     name = "nginx_unprivileged",
@@ -89,4 +107,4 @@ oci.pull(
     image = "docker.io/nginxinc/nginx-unprivileged",
     platforms = ["linux/amd64"],
 )
-use_repo(oci, "distroless_cc", "distroless_cc_linux_amd64", "dbmate", "dbmate_linux_amd64", "nginx_unprivileged", "nginx_unprivileged_linux_amd64")
+use_repo(oci, "dbmate", "dbmate_linux_amd64", "distroless_cc", "distroless_cc_linux_amd64", "nginx_unprivileged", "nginx_unprivileged_linux_amd64")

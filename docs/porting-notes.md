@@ -21,8 +21,8 @@ here.
    Go passes one `error` value everywhere and recovers its meaning with
    `errors.As`. The port lets the seam decide: where a consumer acts on the
    kind of failure the error is an enum (`InvalidName`, `InvalidLabel`,
-   `DecodeError`, `RegistryError`; the effect framework's `SendError` and
-   `DispatchError`), and where nobody inspects it (a reconciler's retry
+   `DecodeError`, `RegistryError`; the effect framework's `DispatchError`
+   and `Verdict`), and where nobody inspects it (a reconciler's retry
    cause, an `AppError`'s source) it is `BoxError`, the standard library's
    own boxed error, which `?` converts any error, `String` or `&str` into.
    No `anyhow` and no `thiserror`: the `Display` and `Error` impls are

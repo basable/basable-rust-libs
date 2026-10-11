@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
 
 use basable_core::{BoxError, Ctx};
-use basable_externaleffect::definitive;
+use basable_externaleffect::{TransportError, definitive};
 
 use crate::effects::*;
 use crate::provider::Provider;
@@ -27,8 +27,8 @@ struct Inner {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Fault {
-    /// A transport failure after the write landed (ack loss): an ambiguous
-    /// error.
+    /// A transport failure after the write landed (ack loss): a
+    /// `TransportError`, which every classifier holds ambiguous.
     AckLoss,
     /// A structured refusal before anything landed: `definitive(..)`.
     Refused,
@@ -73,7 +73,7 @@ impl Simulator {
         }
         inner.landed.entry(op).or_default().insert(key.to_owned());
         if let Some(Fault::AckLoss) = fault {
-            return Err(format!("{op}: connection reset after the write").into());
+            return Err(TransportError::wrap(format!("{op}: connection reset after the write")));
         }
         Ok(())
     }

@@ -3,9 +3,12 @@
 //! provider answers with a `BoxError` that carries its own verdict on its
 //! own call: `definitive(..)` for a parsed 4xx — the receiver's structured
 //! answer, and the proof of non-execution an irreversible adapter needs —
-//! and a plain error for everything whose outcome is unknowable (a
-//! transport error, a 5xx, a timeout), which the classifier treats as
-//! ambiguous.
+//! and `TransportError::wrap(..)` for everything whose outcome is
+//! unknowable (a transport error, a 5xx, a timeout), which every classifier
+//! holds ambiguous. A plain error is neither: the reversible classifier
+//! (`Classifier::transport`) takes it as the receiver's answer, the
+//! irreversible one (`Classifier::fail_closed_on_definitive`) holds it
+//! ambiguous, so never return one for an outcome you cannot know.
 
 use std::future::Future;
 
@@ -33,7 +36,8 @@ pub struct HttpProvider {
 impl Provider for HttpProvider {
     async fn capture_payment(&self, _ctx: Ctx, _args: CapturePaymentArgs) -> Result<CapturePaymentResult, BoxError> {
         // TODO: the request. A parsed 4xx is `Err(definitive(..))`; a
-        // transport error, a 5xx or a timeout is a plain `Err(..)`.
+        // transport error, a 5xx or a timeout is
+        // `Err(TransportError::wrap(..))`.
         Err("order.capture_payment: provider not implemented".into())
     }
 

@@ -52,12 +52,18 @@ plan is the design record, this tree is reality.
 
 ## Build and test
 
-Bazel only (`.bazelversion` pins it). `.basable/verify.sh` is what the platform's verify build runs on every AI turn (gazelle, `bazel mod tidy`, `bazel test //...`, the images without push); keep it the gate. `bazel test //...` runs unit tests,
+Bazel only (`.bazelversion` pins it). `.basable/verify.sh` is what the platform's verify build runs on every AI turn (the crate repin, `bazel mod tidy`, `bazel test //...`, the images without push); keep it the gate. `bazel test //...` runs unit tests,
 the clippy aspect and, with `TEST_DATABASE_URL` set, the integration suites
 on a per-test database. Protobuf and the messenger are generated at build
 from `proto/` and `routing.yaml`; nothing generated is committed. A new
 crate dependency is one line in the workspace `Cargo.toml`
-(`docs/adding-a-dependency.md`); the CI repins.
+(`docs/adding-a-dependency.md`); `.basable/verify.sh` and the CI repin.
+
+On macOS, Bazel compiles and links the C inside crates such as `aws-lc-sys`
+with the developer directory `xcode-select -p` names. With only the Command
+Line Tools selected the link can fail against a newer SDK: select Xcode
+(`sudo xcode-select -s /Applications/Xcode.app`) or export
+`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` before building.
 
 ## Deploy
 

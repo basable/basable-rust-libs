@@ -4,9 +4,11 @@
    version. That list is the ONLY place versions live.
 2. Reference it from the crate that uses it: `name = { workspace = true }`
    in that crate's `Cargo.toml`.
-3. Nothing else: BUILD files use `all_crate_deps()`, and the CI exports
-   `CARGO_BAZEL_REPIN=workspace`, so the lockfiles are repinned on the
-   runner. Locally: `CARGO_BAZEL_REPIN=1 bazel sync`.
+3. Nothing else: BUILD files use `all_crate_deps()`, and both
+   `.basable/verify.sh` and the CI export `CARGO_BAZEL_REPIN=workspace`, so
+   every build repins `Cargo.lock` and `Cargo.Bazel.lock`; commit both.
+   Locally, `.basable/verify.sh` does it, or on its own:
+   `CARGO_BAZEL_REPIN=workspace bazel mod tidy`.
 
 Rules: never `openssl` (rustls everywhere), never a crate that needs a
 system library (the image is distroless), never a second async runtime, and
