@@ -1,7 +1,7 @@
 # basable-auth — Kratos session validation
 
 The port of the monorepo's `golang/lib/auth` (`AuthMiddleware`: the
-cookie-to-`/sessions/whoami` check, `WithSessionHook`, the public paths,
+session-to-`/sessions/whoami` check by cookie or session token, `WithSessionHook`, the public paths,
 `WithTestBypass`), reduced to one shape: a layer on the app's axum router.
 Go had three (gRPC unary and stream interceptors and an HTTP middleware)
 reading the cookie from metadata or the header; a tenant's API is Connect
@@ -15,16 +15,17 @@ travels on `Ctx`; a handler never re-authenticates.
 
 | Item | What it does |
 |---|---|
-| `Validator::kratos(url)` | Asks `<url>/sessions/whoami` with the request's `Cookie`, bounded by `KRATOS_TIMEOUT` (3 s). `/healthz` and `/readyz` are public from the start |
+| `Validator::kratos(url)` | Asks `<url>/sessions/whoami` with the request's credential, bounded by `KRATOS_TIMEOUT` (3 s). `/healthz` and `/readyz` are public from the start |
+| `Credential`, `SESSION_TOKEN_HEADER` | What a request presents: `Token` (a native app's Kratos session token, `X-Session-Token`, from an API login flow) or `Cookie` (a browser's `Cookie` header). `Credential::from_headers` reads it; the token decides when both are sent, as in Kratos, so a refused token is never rescued by a cookie. Its `Debug` prints no secret |
 | `.public_paths([..])`, `.public_prefixes([..])` | Exact paths and prefixes that bypass validation (`is_public`); the scaffold adds `/api/webhooks/` |
 | `.session_hook(\|identity\| ..)` | Fires after every successful validation, on the request path: the seam for first-touch user provisioning. It cannot fail the request and must be quick |
-| `Arc<Validator>::apply(router)` | The axum layer (`from_fn_with_state`): a non-public request without a cookie Kratos accepts is answered `401 {"code":"unauthenticated","message":"invalid session"}`; Kratos unreachable, timing out or answering an unexpected status is `503 unavailable`, never a silent allow |
-| `authenticate(cookie)` | The check itself, for a caller that is not an axum layer |
+| `Arc<Validator>::apply(router)` | The axum layer (`from_fn_with_state`): a non-public request without a session Kratos accepts is answered `401 {"code":"unauthenticated","message":"invalid session"}`; Kratos unreachable, timing out or answering an unexpected status is `503 unavailable`, never a silent allow |
+| `authenticate(Option<&Credential>)` | The check itself, for a caller that is not an axum layer |
 | `Identity { id, email }` | Put in the request extensions on success (`identity_of(&extensions)`), from where `basable-connect`'s `request_ctx` places it on `Ctx` |
 | `AuthCtx` | `identity()` / `user_id()` on `Ctx`: how a handler reads the caller |
-| `AuthError` | `Unauthenticated` → 401, `Unavailable(why)` → 503; `status()`, `code()`, `message()`, and an `IntoResponse` in Connect's JSON error shape |
+| `AuthError` | `NoSession` (neither a token nor a cookie) and `Rejected(why)` → 401, `Unavailable(why)` → 503; `status()`, `code()`, `message()`, and an `IntoResponse` in Connect's JSON error shape |
 | `KratosSession`, `KratosIdentity`, `KratosTraits` | The `whoami` wire shape (`traits.email`) |
-| `NEGATIVE_WINDOW` (5 s) | A rejected cookie stays rejected without re-asking Kratos for this long; the cache is bounded (4096 entries) and cleared when full |
+| `NEGATIVE_WINDOW` (5 s) | A rejected credential stays rejected without re-asking Kratos for this long, keyed by kind and value; the cache is bounded (4096 entries) and cleared when full |
 
 ## The test bypass
 
@@ -49,10 +50,14 @@ mechanical is that it is a distinct, grep-able name the scaffold's
 
 ## Tests
 
-Unit tests in `src/lib.rs`: public paths and prefixes bypass; a missing
-cookie is unauthenticated without asking Kratos; an unreachable Kratos is
-unavailable, never allowed; the bypass authenticates everything and fires
-the hook; the negative cache expires and bounds itself. `tests/connect`
+Unit tests in `src/lib.rs`: public paths and prefixes bypass; the token
+decides over the cookie, a blank token is none, split cookie headers join;
+a credential never prints its secret; a missing session is unauthenticated
+without asking Kratos; an unreachable Kratos is unavailable, never allowed;
+the bypass authenticates everything and fires the hook; the negative cache
+expires, bounds itself and tells a token from a cookie. `tests/connect`
 (the Phase 9 verification) drives the layer on a running app against a
 Kratos simulator: valid cookie, missing, expired and malformed, the public
-path, Kratos down.
+path, Kratos down; and a native app's session token through the generated
+client, the token deciding over a cookie either way round, a rejected token
+held by the negative cache, an inactive or blank one.

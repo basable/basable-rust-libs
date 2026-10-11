@@ -1,10 +1,11 @@
 //! The Phase 9 verification over the generated EchoService: a Connect
 //! client in both codecs over HTTP/1.1 and h2c, plain JSON over reqwest,
 //! error codes round-tripping, a server stream, and the auth layer against
-//! a Kratos simulator: a valid cookie reaches the handler as its identity,
-//! a missing, rejected or inactive session is 401 with no leak, a public
-//! path bypasses entirely, the hook fires once per validation, and an
-//! unreachable Kratos is 503, never a silent allow.
+//! a Kratos simulator: a valid cookie or session token reaches the handler
+//! as its identity, a missing, rejected or inactive session is 401 with no
+//! leak, the token decides over a cookie beside it, a public path bypasses
+//! entirely, the hook fires once per validation, and an unreachable Kratos
+//! is 503, never a silent allow.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -84,7 +85,8 @@ impl EchoService for Echo {
     }
 }
 
-/// A Kratos simulator: `GET /sessions/whoami` by cookie.
+/// A Kratos simulator: `GET /sessions/whoami` by session token, else by
+/// cookie, the order Kratos itself reads them in.
 struct Kratos {
     addr: std::net::SocketAddr,
     calls: Arc<AtomicU32>,
@@ -107,12 +109,17 @@ async fn kratos() -> Kratos {
                     return (StatusCode::INTERNAL_SERVER_ERROR, [(header::CONTENT_TYPE, "text/plain")], "boom".to_string());
                 }
                 let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()).unwrap_or("");
-                let (status, body) = if cookie.contains("ory_kratos_session=good") {
-                    (StatusCode::OK, r#"{"id":"s-1","active":true,"identity":{"id":"user-1","traits":{"email":"u@example.com"}}}"#)
-                } else if cookie.contains("ory_kratos_session=inactive") {
-                    (StatusCode::OK, r#"{"id":"s-2","active":false,"identity":{"id":"user-2","traits":{"email":"i@example.com"}}}"#)
-                } else {
-                    (StatusCode::UNAUTHORIZED, r#"{"error":{"code":401,"message":"no session"}}"#)
+                let session = match headers.get("x-session-token").and_then(|v| v.to_str().ok()) {
+                    Some(token) => token,
+                    None => cookie
+                        .split(';')
+                        .find_map(|c| c.trim().strip_prefix("ory_kratos_session="))
+                        .unwrap_or(""),
+                };
+                let (status, body) = match session {
+                    "good" => (StatusCode::OK, r#"{"id":"s-1","active":true,"identity":{"id":"user-1","traits":{"email":"u@example.com"}}}"#),
+                    "inactive" => (StatusCode::OK, r#"{"id":"s-2","active":false,"identity":{"id":"user-2","traits":{"email":"i@example.com"}}}"#),
+                    _ => (StatusCode::UNAUTHORIZED, r#"{"error":{"code":401,"message":"no session"}}"#),
                 };
                 (status, [(header::CONTENT_TYPE, "application/json")], body.to_string())
             },
@@ -381,6 +388,74 @@ async fn the_auth_layer_rejects_and_bypasses_as_the_go_middleware_did() {
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(body["userId"], "user-1");
     assert_eq!(s.hook_calls.load(Ordering::SeqCst), hooks + 1);
+    s.finish().await;
+}
+
+#[tokio::test]
+async fn a_native_app_authenticates_with_its_session_token() {
+    let Some(s) = stack().await else { return };
+
+    // The generated client, as a connect-kotlin or connect-swift app sends
+    // it: the token from Kratos's API login flow in a default header.
+    let config = ClientConfig::new(s.base().parse().unwrap())
+        .proto()
+        .with_default_header("x-session-token", "good");
+    let client = EchoServiceClient::new(HttpClient::plaintext(), config);
+    let hooks = s.hook_calls.load(Ordering::SeqCst);
+    let me = client
+        .who_am_i(WhoAmIRequest::default())
+        .await
+        .unwrap()
+        .into_owned();
+    assert_eq!(me.user_id, "user-1");
+    assert_eq!(s.hook_calls.load(Ordering::SeqCst), hooks + 1);
+
+    let http = reqwest::Client::new();
+    let base = s.base();
+    let who_am_i = |token: Option<&str>, cookie: Option<&str>| {
+        let mut req = http
+            .post(format!("{base}/basable.connecttest.v1.EchoService/WhoAmI"))
+            .header("content-type", "application/json")
+            .body("{}");
+        if let Some(t) = token {
+            req = req.header("x-session-token", t);
+        }
+        if let Some(c) = cookie {
+            req = req.header("cookie", c);
+        }
+        req.send()
+    };
+
+    // The token decides over a cookie beside it, either way round: a
+    // refused token is not rescued by a good cookie.
+    let r = who_am_i(Some("good"), Some("ory_kratos_session=bad"))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["userId"], "user-1");
+    let r = who_am_i(Some("stale"), Some(GOOD)).await.unwrap();
+    assert_eq!(r.status(), 401);
+
+    // A rejected token: 401, no detail leaks; the second try within the
+    // negative window does not reach Kratos again.
+    let r = who_am_i(Some("bad"), None).await.unwrap();
+    assert_eq!(r.status(), 401);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["message"], "invalid session");
+    let after_first = s.kratos.calls.load(Ordering::SeqCst);
+    let r = who_am_i(Some("bad"), None).await.unwrap();
+    assert_eq!(r.status(), 401);
+    assert_eq!(s.kratos.calls.load(Ordering::SeqCst), after_first);
+
+    // An inactive session's token: 401. A blank token is no credential:
+    // 401 without asking Kratos.
+    let r = who_am_i(Some("inactive"), None).await.unwrap();
+    assert_eq!(r.status(), 401);
+    let before = s.kratos.calls.load(Ordering::SeqCst);
+    let r = who_am_i(Some(" "), None).await.unwrap();
+    assert_eq!(r.status(), 401);
+    assert_eq!(s.kratos.calls.load(Ordering::SeqCst), before);
     s.finish().await;
 }
 

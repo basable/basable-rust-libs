@@ -782,3 +782,35 @@ of it changed, in the crates and in the templates:
     which compiles and would never run. `FrameworkVersion` and
     `TemplateTag` moved to 0.3.0; the Directive did not change, so
     `DirectiveVersion` stays 0.2.0.
+
+## After 0.3.0
+
+85. **A session is a cookie or a session token, in Go and Rust alike
+    (2026-10-11).** A native app (the monorepo's
+    `docs/todo/native-apps-plan.md`, Phase 2) logs in through Kratos's API
+    flow, which hands out a session token instead of setting a cookie, and
+    sends it as `X-Session-Token`; Kratos's `/sessions/whoami` takes either.
+    Note 70's "must carry a `Cookie`" therefore became "must carry a
+    session": `Credential` is `Token` or `Cookie`,
+    `Credential::from_headers` reads it (a blank token is none; split
+    `Cookie` headers are joined as before), and the validator passes it to
+    `whoami` in the header it came in. The token decides when both are
+    sent, as it does in Kratos itself, so a refused or stale token is never
+    rescued by a cookie beside it. The negative cache is keyed by kind and
+    value, and `Credential`'s `Debug` prints no secret. Breaks against the
+    published 0.3.0: `AuthError::NoCookie` is `NoSession` (an exhaustive
+    match must say so), and `Validator::authenticate` takes
+    `Option<&Credential>` instead of the cookie's `Option<&str>`. The plan
+    had Go's `lib/auth` stay cookie-only until the Go path renders apps;
+    it changed in the same piece of work instead (monorepo 03b7d2ab), so
+    the two do not differ here: Go reads the token in all three of its
+    shapes (the HTTP middleware, and the unary and stream interceptors
+    from the `x-session-token` metadata key), and its gateway forwards the
+    header for the one route it dials (`StreamEvents`). `Authorization: Bearer`
+    is not a session token on either side: on Go it belongs to the
+    platform's OAuth-protected resources (the MCP endpoint), where neither
+    a cookie nor a session token counts. Go's unused
+    `AuthMiddleware.ExtractUserID`, a fourth way of reading the cookie, was
+    removed rather than taught the token. Unreleased: a minor bump, and the
+    scaffold's `docs/frameworks/app.md` line describing the crate moves
+    with the pin.

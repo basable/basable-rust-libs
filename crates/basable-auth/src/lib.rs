@@ -1,8 +1,10 @@
 //! Ory Kratos session validation, the port of the monorepo's
 //! `golang/lib/auth`. A [`Validator`] is applied to the app's axum router
 //! ([`Validator::apply`]); every request that is not on a public path must
-//! carry a session cookie Kratos accepts, or it is answered with a
-//! Connect-shaped `401 unauthenticated`. Kratos being unreachable is a
+//! carry a session Kratos accepts, or it is answered with a Connect-shaped
+//! `401 unauthenticated`. The session is the cookie a browser holds or the
+//! session token a native app holds after an API login flow, sent in
+//! [`SESSION_TOKEN_HEADER`] ([`Credential`]). Kratos being unreachable is a
 //! `503 unavailable`, never a silent allow. A validated request carries
 //! its [`Identity`] in the request extensions, from where
 //! `basable-connect` puts it on the handler's `Ctx` ([`AuthCtx`]).
@@ -33,12 +35,63 @@ use serde::Deserialize;
 /// Bounds one call to Kratos.
 pub const KRATOS_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// How long a rejected cookie stays rejected without asking Kratos again.
+/// How long a rejected credential stays rejected without asking Kratos
+/// again.
 /// Small: a session that just became valid waits at most this long.
 pub const NEGATIVE_WINDOW: Duration = Duration::from_secs(5);
 
 /// The negative cache's size bound; it is cleared when full.
 const NEGATIVE_CAPACITY: usize = 4096;
+
+/// The header a native app sends its Kratos session token in
+/// (`X-Session-Token`): what an API (native) login flow hands out where a
+/// browser flow sets the cookie. Kratos's `/sessions/whoami` takes either.
+pub const SESSION_TOKEN_HEADER: &str = "x-session-token";
+
+/// What a request presents for its session, passed to Kratos in the header
+/// it came in. Its `Debug` never prints the secret.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum Credential {
+    /// A Kratos session token ([`SESSION_TOKEN_HEADER`]), what a native app
+    /// holds.
+    Token(String),
+    /// The `Cookie` header, what a browser holds.
+    Cookie(String),
+}
+
+impl Credential {
+    /// The credential `headers` carry: the session token when there is one,
+    /// the cookie otherwise. The token decides when both are sent, as it
+    /// does in Kratos itself, so a refused token is never rescued by a
+    /// cookie beside it. `None` when there is neither (a blank token counts
+    /// as none).
+    pub fn from_headers(headers: &http::HeaderMap) -> Option<Credential> {
+        let token = headers
+            .get(SESSION_TOKEN_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|t| !t.is_empty());
+        if let Some(token) = token {
+            return Some(Credential::Token(token.to_string()));
+        }
+        let cookie = headers
+            .get_all(header::COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect::<Vec<_>>()
+            .join("; ");
+        (!cookie.is_empty()).then_some(Credential::Cookie(cookie))
+    }
+}
+
+impl fmt::Debug for Credential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Credential::Token(_) => f.write_str("Token(..)"),
+            Credential::Cookie(_) => f.write_str("Cookie(..)"),
+        }
+    }
+}
 
 /// The authenticated caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,8 +139,8 @@ pub type SessionHook = Arc<dyn Fn(&Identity) + Send + Sync>;
 /// Why a request was not authenticated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthError {
-    /// No `Cookie` header.
-    NoCookie,
+    /// Neither a session token nor a cookie.
+    NoSession,
     /// Kratos rejected the session (401), or it is inactive or empty.
     Rejected(String),
     /// Kratos could not be asked: transport failure, timeout, or an
@@ -100,7 +153,7 @@ impl AuthError {
     /// Kratos could not be asked.
     pub fn status(&self) -> StatusCode {
         match self {
-            AuthError::NoCookie | AuthError::Rejected(_) => StatusCode::UNAUTHORIZED,
+            AuthError::NoSession | AuthError::Rejected(_) => StatusCode::UNAUTHORIZED,
             AuthError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
@@ -108,7 +161,7 @@ impl AuthError {
     /// The Connect error code name.
     pub fn code(&self) -> &'static str {
         match self {
-            AuthError::NoCookie | AuthError::Rejected(_) => "unauthenticated",
+            AuthError::NoSession | AuthError::Rejected(_) => "unauthenticated",
             AuthError::Unavailable(_) => "unavailable",
         }
     }
@@ -117,7 +170,7 @@ impl AuthError {
     /// about the session.
     pub fn message(&self) -> &'static str {
         match self {
-            AuthError::NoCookie => "authentication required",
+            AuthError::NoSession => "authentication required",
             AuthError::Rejected(_) => "invalid session",
             AuthError::Unavailable(_) => "authentication unavailable",
         }
@@ -127,7 +180,7 @@ impl AuthError {
 impl fmt::Display for AuthError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AuthError::NoCookie => f.write_str("no session cookie"),
+            AuthError::NoSession => f.write_str("no session token or cookie"),
             AuthError::Rejected(why) => write!(f, "session rejected: {why}"),
             AuthError::Unavailable(why) => write!(f, "kratos unavailable: {why}"),
         }
@@ -250,21 +303,24 @@ impl Validator {
         self.public_paths.contains(path) || self.public_prefixes.iter().any(|p| path.starts_with(p))
     }
 
-    /// Validates a request's `Cookie` header value. On success the hook
-    /// has fired.
-    pub async fn authenticate(&self, cookie: Option<&str>) -> Result<Identity, AuthError> {
+    /// Validates a request's credential ([`Credential::from_headers`]). On
+    /// success the hook has fired.
+    pub async fn authenticate(
+        &self,
+        credential: Option<&Credential>,
+    ) -> Result<Identity, AuthError> {
         let identity = match &self.mode {
             #[cfg(feature = "test-bypass")]
             Mode::Bypass(identity) => identity.clone(),
             Mode::Kratos { whoami, client } => {
-                let cookie = cookie.ok_or(AuthError::NoCookie)?;
-                if self.recently_rejected(cookie) {
+                let credential = credential.ok_or(AuthError::NoSession)?;
+                if self.recently_rejected(credential) {
                     return Err(AuthError::Rejected("recently rejected".to_string()));
                 }
-                match whoami_call(client, whoami, cookie).await {
+                match whoami_call(client, whoami, credential).await {
                     Ok(identity) => identity,
                     Err(e @ AuthError::Rejected(_)) => {
-                        self.remember_rejected(cookie);
+                        self.remember_rejected(credential);
                         return Err(e);
                     }
                     Err(e) => return Err(e),
@@ -277,8 +333,8 @@ impl Validator {
         Ok(identity)
     }
 
-    fn recently_rejected(&self, cookie: &str) -> bool {
-        let key = cookie_key(cookie);
+    fn recently_rejected(&self, credential: &Credential) -> bool {
+        let key = credential_key(credential);
         let mut negative = self.negative.lock().expect("negative cache lock");
         match negative.get(&key) {
             Some(at) if at.elapsed() < NEGATIVE_WINDOW => true,
@@ -290,12 +346,12 @@ impl Validator {
         }
     }
 
-    fn remember_rejected(&self, cookie: &str) {
+    fn remember_rejected(&self, credential: &Credential) {
         let mut negative = self.negative.lock().expect("negative cache lock");
         if negative.len() >= NEGATIVE_CAPACITY {
             negative.clear();
         }
-        negative.insert(cookie_key(cookie), Instant::now());
+        negative.insert(credential_key(credential), Instant::now());
     }
 
     /// Wraps every route of `router` with this validator: public paths
@@ -306,20 +362,24 @@ impl Validator {
     }
 }
 
-fn cookie_key(cookie: &str) -> u64 {
+/// The negative cache's key: the credential's kind and value, so a token
+/// and a cookie of the same text are different entries.
+fn credential_key(credential: &Credential) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    cookie.hash(&mut h);
+    credential.hash(&mut h);
     h.finish()
 }
 
 async fn whoami_call(
     client: &reqwest::Client,
     whoami: &str,
-    cookie: &str,
+    credential: &Credential,
 ) -> Result<Identity, AuthError> {
-    let resp = client
-        .get(whoami)
-        .header(header::COOKIE, cookie)
+    let req = match credential {
+        Credential::Token(token) => client.get(whoami).header(SESSION_TOKEN_HEADER, token),
+        Credential::Cookie(cookie) => client.get(whoami).header(header::COOKIE, cookie),
+    };
+    let resp = req
         .header(header::ACCEPT, "application/json")
         .send()
         .await
@@ -363,19 +423,8 @@ async fn authenticate(
     if validator.is_public(&path) {
         return next.run(req).await;
     }
-    let cookie = req
-        .headers()
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .collect::<Vec<_>>()
-        .join("; ");
-    let cookie = if cookie.is_empty() {
-        None
-    } else {
-        Some(cookie.as_str())
-    };
-    match validator.authenticate(cookie).await {
+    let credential = Credential::from_headers(req.headers());
+    match validator.authenticate(credential.as_ref()).await {
         Ok(identity) => {
             req.extensions_mut().insert(identity);
             next.run(req).await
@@ -428,23 +477,78 @@ mod tests {
         }
     }
 
+    fn headers(pairs: &[(&str, &str)]) -> http::HeaderMap {
+        let mut h = http::HeaderMap::new();
+        for (k, v) in pairs {
+            let name = http::HeaderName::from_bytes(k.as_bytes()).unwrap();
+            h.append(name, v.parse().unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn the_token_decides_over_the_cookie() {
+        let token = || Credential::Token("t-1".into());
+        assert_eq!(
+            Credential::from_headers(&headers(&[("x-session-token", "t-1")])),
+            Some(token())
+        );
+        assert_eq!(
+            Credential::from_headers(&headers(&[
+                ("cookie", "ory_kratos_session=c"),
+                ("X-Session-Token", " t-1 "),
+            ])),
+            Some(token()),
+            "the token wins, trimmed, whatever the header's case"
+        );
+        assert_eq!(
+            Credential::from_headers(&headers(&[("cookie", "a=1"), ("cookie", "b=2")])),
+            Some(Credential::Cookie("a=1; b=2".into())),
+            "split cookie headers are joined"
+        );
+        assert_eq!(
+            Credential::from_headers(&headers(&[("x-session-token", "  "), ("cookie", "a=1")])),
+            Some(Credential::Cookie("a=1".into())),
+            "a blank token is no token"
+        );
+        assert_eq!(
+            Credential::from_headers(&headers(&[("x-session-token", "")])),
+            None
+        );
+        assert_eq!(Credential::from_headers(&http::HeaderMap::new()), None);
+    }
+
+    #[test]
+    fn a_credential_never_prints_its_secret() {
+        assert_eq!(
+            format!("{:?}", Credential::Token("secret".into())),
+            "Token(..)"
+        );
+        assert_eq!(
+            format!("{:?}", Credential::Cookie("secret".into())),
+            "Cookie(..)"
+        );
+    }
+
     #[tokio::test]
-    async fn a_missing_cookie_is_unauthenticated_without_asking_kratos() {
+    async fn a_missing_session_is_unauthenticated_without_asking_kratos() {
         let v = Validator::kratos("http://127.0.0.1:1");
-        assert_eq!(v.authenticate(None).await, Err(AuthError::NoCookie));
-        assert_eq!(AuthError::NoCookie.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(AuthError::NoCookie.code(), "unauthenticated");
+        assert_eq!(v.authenticate(None).await, Err(AuthError::NoSession));
+        assert_eq!(AuthError::NoSession.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(AuthError::NoSession.code(), "unauthenticated");
     }
 
     #[tokio::test]
     async fn an_unreachable_kratos_is_unavailable_never_allowed() {
         let v = Validator::kratos("http://127.0.0.1:1");
-        let err = v
-            .authenticate(Some("ory_kratos_session=x"))
-            .await
-            .unwrap_err();
-        assert!(matches!(err, AuthError::Unavailable(_)), "{err}");
-        assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
+        for credential in [
+            Credential::Cookie("ory_kratos_session=x".into()),
+            Credential::Token("x".into()),
+        ] {
+            let err = v.authenticate(Some(&credential)).await.unwrap_err();
+            assert!(matches!(err, AuthError::Unavailable(_)), "{err}");
+            assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
+        }
     }
 
     #[tokio::test]
@@ -466,20 +570,25 @@ mod tests {
     #[test]
     fn the_negative_cache_expires_and_bounds_itself() {
         let v = Validator::kratos("http://127.0.0.1:1");
-        assert!(!v.recently_rejected("a"));
-        v.remember_rejected("a");
-        assert!(v.recently_rejected("a"));
-        assert!(!v.recently_rejected("b"));
+        let cookie = |s: &str| Credential::Cookie(s.into());
+        assert!(!v.recently_rejected(&cookie("a")));
+        v.remember_rejected(&cookie("a"));
+        assert!(v.recently_rejected(&cookie("a")));
+        assert!(!v.recently_rejected(&cookie("b")));
+        assert!(
+            !v.recently_rejected(&Credential::Token("a".into())),
+            "a token is not the cookie of the same text"
+        );
         v.negative.lock().unwrap().insert(
-            cookie_key("a"),
+            credential_key(&cookie("a")),
             Instant::now() - NEGATIVE_WINDOW - Duration::from_secs(1),
         );
-        assert!(!v.recently_rejected("a"));
+        assert!(!v.recently_rejected(&cookie("a")));
         for i in 0..NEGATIVE_CAPACITY {
-            v.remember_rejected(&i.to_string());
+            v.remember_rejected(&cookie(&i.to_string()));
         }
         assert!(v.negative.lock().unwrap().len() <= NEGATIVE_CAPACITY);
-        v.remember_rejected("overflow");
+        v.remember_rejected(&cookie("overflow"));
         assert_eq!(v.negative.lock().unwrap().len(), 1);
     }
 }
