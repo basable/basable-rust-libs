@@ -22,7 +22,7 @@ here.
    `errors.As`. The port lets the seam decide: where a consumer acts on the
    kind of failure the error is an enum (`InvalidName`, `InvalidLabel`,
    `DecodeError`, `RegistryError`; the effect framework's `DispatchError`
-   and `Verdict`), and where nobody inspects it (a reconciler's retry
+   and `ResolveError`), and where nobody inspects it (a reconciler's retry
    cause, an `AppError`'s source) it is `BoxError`, the standard library's
    own boxed error, which `?` converts any error, `String` or `&str` into.
    No `anyhow` and no `thiserror`: the `Display` and `Error` impls are
@@ -225,10 +225,11 @@ here.
     variant.** Go's sealed interface with four struct types and nil-checked
     function fields becomes `Strategy::{Idempotent, LookBeforeAct {
     lookup }, KeyedReplay { window, intent_age, provider_id, resolve },
-    Declared { slot_identity, resolution: Resolve(f) | Hold }}`. A missing
-    send, strategy, late-call policy, lookup, intent age, provider id,
-    resolver or slot identity, and a resolver beside `Hold`, cannot be
-    written; `Call::new` still checks the operation name, the timeout, the
+    Declared { slot_identity, resolution: Resolve(f) | Compensate {
+    resolve, compensation } | Hold }}` (`Compensate` since note 86). A
+    missing send, strategy, late-call policy, lookup, intent age, provider
+    id, resolver, compensation or slot identity, and a resolver or a
+    compensation beside `Hold`, cannot be written; `Call::new` still checks the operation name, the timeout, the
     key rules, the window, `classify: None` iff `Hold`, and the
     irreversible restriction. The validation matrix test shrank by exactly
     those rows.
@@ -272,7 +273,7 @@ here.
     the DATABASE clock remains the caller's.
 42. **`Resolution<R>` is an enum.** Go's struct carried a `Result` field
     meaningful only under `AttemptSucceeded`; here `Succeeded(R)` is the
-    only variant holding one, and the other three carry their detail.
+    only variant holding one, and the others carry their detail.
     `AttemptState` stays as the stored vocabulary (with `FromStr` for the
     status column).
 43. **Metrics are tracing events.** Go's three labelled counters on the
@@ -814,3 +815,36 @@ of it changed, in the crates and in the templates:
     removed rather than taught the token. Unreleased: a minor bump, and the
     scaffold's `docs/frameworks/app.md` line describing the crate moves
     with the pin.
+86. **A Declared slot can be settled by compensation, in Go and Rust
+    alike (2026-10-12).** A receiver that offers no lookup but a void (an
+    ISO 8583 reversal such as Amex 1420/1421 or a 0400, a processor's
+    technical cancel by the merchant's reference) could not be expressed:
+    a resolver that voided returned `Failed`, `Superseded` or `Succeeded`
+    after a landed send, and the audit rejects each (`Failed` is a lie,
+    `Superseded` is fatal for an irreversible effect, `Succeeded` credits
+    work that was reversed). `DeclaredResolution::Compensate { resolve,
+    compensation }` is the third way to settle a slot: `compensate_with`
+    wraps the void's own validated `Arc<Call>` (`Idempotent`,
+    `LookBeforeAct` or `KeyedReplay`; `Call::new` refuses a `Declared`
+    one, since every pass that finds the slot sends it again) and the
+    mapping from the resolve args and slot to its args; `Call::compensate`
+    runs it under the void's own fence, timeout and classifier and answers
+    the new `Resolution::Compensated` / `AttemptState::Compensated` (not
+    in force, identity spent), `Unknown` for an ambiguous void, or
+    `CompensateError::{OwnershipLost, Refused, Failed}`. The optional
+    `resolve` lets the reconciler read first and compensate what stays
+    unknown; without one, `resolve` panics. Four effecttest probes judge
+    the ORIGINAL's `landed_count`, which for such an adapter counts effects
+    in force, and the one that rules receivers out is
+    `compensation_dominates_late_original`: an original dispatched after
+    its compensation must stay out of force (a cancel that answers "no
+    such payment" and keeps no record fails it, and needs
+    `LateCall::Compensated`'s sweep instead); `tests/compensation.rs` pins
+    that. Where the two differ on purpose: Go's `Declared` has independent
+    `Resolve` and `Compensate` fields (at least one, neither with `Hold`)
+    where Rust has one variant with an optional resolver, and Go signals a
+    refused void by wrapping `ErrCompensationRefused` where Rust has the
+    `Refused` variant. Breaks against the published 0.3.0: the new
+    variants of `DeclaredResolution`, `Resolution` and `AttemptState` (an
+    exhaustive match must name them). Unreleased: a minor bump, and the
+    scaffold's `docs/frameworks/externaleffect.md` moves with the pin.

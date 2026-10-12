@@ -63,16 +63,18 @@ impl Credential {
     /// The credential `headers` carry: the session token when there is one,
     /// the cookie otherwise. The token decides when both are sent, as it
     /// does in Kratos itself, so a refused token is never rescued by a
-    /// cookie beside it. `None` when there is neither (a blank token counts
-    /// as none).
+    /// cookie beside it; a token that is not even text (bytes above ASCII,
+    /// which a header may carry) is still the token presented, and Kratos
+    /// refuses it, as Go's `Header.Get` handed it on. `None` when there is
+    /// neither (a blank token counts as none).
     pub fn from_headers(headers: &http::HeaderMap) -> Option<Credential> {
         let token = headers
             .get(SESSION_TOKEN_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .map(str::trim)
+            .map(|v| String::from_utf8_lossy(v.as_bytes()))
+            .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty());
         if let Some(token) = token {
-            return Some(Credential::Token(token.to_string()));
+            return Some(Credential::Token(token));
         }
         let cookie = headers
             .get_all(header::COOKIE)
@@ -375,11 +377,13 @@ async fn whoami_call(
     whoami: &str,
     credential: &Credential,
 ) -> Result<Identity, AuthError> {
-    let req = match credential {
-        Credential::Token(token) => client.get(whoami).header(SESSION_TOKEN_HEADER, token),
-        Credential::Cookie(cookie) => client.get(whoami).header(header::COOKIE, cookie),
+    let (name, value) = match credential {
+        Credential::Token(token) => (SESSION_TOKEN_HEADER, token),
+        Credential::Cookie(cookie) => (header::COOKIE.as_str(), cookie),
     };
-    let resp = req
+    let resp = client
+        .get(whoami)
+        .header(name, value)
         .header(header::ACCEPT, "application/json")
         .send()
         .await
@@ -516,6 +520,18 @@ mod tests {
             None
         );
         assert_eq!(Credential::from_headers(&http::HeaderMap::new()), None);
+
+        // A token that is not text is still the token presented: it goes to
+        // Kratos (which refuses it) rather than letting the cookie decide.
+        let mut h = headers(&[("cookie", "ory_kratos_session=c")]);
+        h.insert(
+            SESSION_TOKEN_HEADER,
+            http::HeaderValue::from_bytes(b"t\xff1").unwrap(),
+        );
+        assert!(
+            matches!(Credential::from_headers(&h), Some(Credential::Token(_))),
+            "a non-text token is not rescued by the cookie"
+        );
     }
 
     #[test]

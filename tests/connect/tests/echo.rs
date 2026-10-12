@@ -186,18 +186,42 @@ impl Stack {
         format!("http://{}", self.running.addr())
     }
 
+    /// The generated client, with `credential` (a header name and value: a
+    /// browser's cookie or a native app's session token) sent on every call.
     fn client(
         &self,
         transport: HttpClient,
         json: bool,
-        cookie: Option<&str>,
+        credential: Option<(&str, &str)>,
     ) -> EchoServiceClient<HttpClient> {
         let mut config = ClientConfig::new(self.base().parse().unwrap());
         config = if json { config.json() } else { config.proto() };
-        if let Some(c) = cookie {
-            config = config.with_default_header("cookie", c);
+        if let Some((name, value)) = credential {
+            config = config.with_default_header(name, value);
         }
         EchoServiceClient::new(transport, config)
+    }
+
+    /// A plain JSON call to `method` over reqwest with `headers`, as curl
+    /// would send it: what the auth cases drive, below the generated client.
+    async fn raw(
+        &self,
+        http: &reqwest::Client,
+        method: &str,
+        body: &'static str,
+        headers: &[(&str, &str)],
+    ) -> reqwest::Result<reqwest::Response> {
+        let mut req = http
+            .post(format!(
+                "{}/basable.connecttest.v1.EchoService/{method}",
+                self.base()
+            ))
+            .header("content-type", "application/json")
+            .body(body);
+        for (name, value) in headers {
+            req = req.header(*name, *value);
+        }
+        req.send().await
     }
 
     async fn finish(self) {
@@ -207,6 +231,7 @@ impl Stack {
 }
 
 const GOOD: &str = "ory_kratos_session=good";
+const COOKIE: Option<(&str, &str)> = Some(("cookie", GOOD));
 
 #[tokio::test]
 async fn the_generated_client_round_trips_in_both_codecs_over_h1_and_h2c() {
@@ -217,7 +242,7 @@ async fn the_generated_client_round_trips_in_both_codecs_over_h1_and_h2c() {
         ("proto/h2c", HttpClient::plaintext_http2_only(), false),
         ("json/h2c", HttpClient::plaintext_http2_only(), true),
     ] {
-        let client = s.client(transport, json, Some(GOOD));
+        let client = s.client(transport, json, COOKIE);
         let resp = client
             .echo(EchoRequest {
                 text: format!("hello {name}"),
@@ -261,7 +286,7 @@ async fn the_generated_client_round_trips_in_both_codecs_over_h1_and_h2c() {
 #[tokio::test]
 async fn a_server_stream_arrives_in_order() {
     let Some(s) = stack().await else { return };
-    let client = s.client(HttpClient::plaintext(), false, Some(GOOD));
+    let client = s.client(HttpClient::plaintext(), false, COOKIE);
     let mut stream = client
         .count(CountRequest {
             upto: 5,
@@ -281,14 +306,13 @@ async fn a_server_stream_arrives_in_order() {
 async fn plain_json_over_http1_sees_the_connect_error_shape_and_the_request_id() {
     let Some(s) = stack().await else { return };
     let http = reqwest::Client::new();
-    let base = s.base();
-    let r = http
-        .post(format!("{base}/basable.connecttest.v1.EchoService/Echo"))
-        .header("content-type", "application/json")
-        .header("cookie", GOOD)
-        .header("x-request-id", "req-42")
-        .body(r#"{"text":"plain"}"#)
-        .send()
+    let r = s
+        .raw(
+            &http,
+            "Echo",
+            r#"{"text":"plain"}"#,
+            &[("cookie", GOOD), ("x-request-id", "req-42")],
+        )
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
@@ -297,12 +321,13 @@ async fn plain_json_over_http1_sees_the_connect_error_shape_and_the_request_id()
     assert_eq!(body["text"], "plain");
     assert_eq!(body["requestId"], "req-42");
 
-    let r = http
-        .post(format!("{base}/basable.connecttest.v1.EchoService/Fail"))
-        .header("content-type", "application/json")
-        .header("cookie", GOOD)
-        .body(r#"{"code":"failed_precondition","message":"not yet"}"#)
-        .send()
+    let r = s
+        .raw(
+            &http,
+            "Fail",
+            r#"{"code":"failed_precondition","message":"not yet"}"#,
+            &[("cookie", GOOD)],
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -321,15 +346,10 @@ async fn the_auth_layer_rejects_and_bypasses_as_the_go_middleware_did() {
     let Some(s) = stack().await else { return };
     let http = reqwest::Client::new();
     let base = s.base();
-    let echo = |cookie: Option<&str>| {
-        let mut req = http
-            .post(format!("{base}/basable.connecttest.v1.EchoService/Echo"))
-            .header("content-type", "application/json")
-            .body(r#"{"text":"x"}"#);
-        if let Some(c) = cookie {
-            req = req.header("cookie", c);
-        }
-        req.send()
+    let (stack, http) = (&s, &http);
+    let echo = |cookie: Option<&'static str>| {
+        let headers: Vec<(&str, &str)> = cookie.map(|c| ("cookie", c)).into_iter().collect();
+        async move { stack.raw(http, "Echo", r#"{"text":"x"}"#, &headers).await }
     };
 
     // No cookie: 401, and Kratos was not asked.
@@ -376,12 +396,8 @@ async fn the_auth_layer_rejects_and_bypasses_as_the_go_middleware_did() {
     // The good cookie: the handler sees the identity; the hook fired once
     // per validation.
     let hooks = s.hook_calls.load(Ordering::SeqCst);
-    let r = http
-        .post(format!("{base}/basable.connecttest.v1.EchoService/WhoAmI"))
-        .header("content-type", "application/json")
-        .header("cookie", GOOD)
-        .body("{}")
-        .send()
+    let r = s
+        .raw(http, "WhoAmI", "{}", &[("cookie", GOOD)])
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
@@ -397,10 +413,11 @@ async fn a_native_app_authenticates_with_its_session_token() {
 
     // The generated client, as a connect-kotlin or connect-swift app sends
     // it: the token from Kratos's API login flow in a default header.
-    let config = ClientConfig::new(s.base().parse().unwrap())
-        .proto()
-        .with_default_header("x-session-token", "good");
-    let client = EchoServiceClient::new(HttpClient::plaintext(), config);
+    let client = s.client(
+        HttpClient::plaintext(),
+        false,
+        Some(("x-session-token", "good")),
+    );
     let hooks = s.hook_calls.load(Ordering::SeqCst);
     let me = client
         .who_am_i(WhoAmIRequest::default())
@@ -411,19 +428,14 @@ async fn a_native_app_authenticates_with_its_session_token() {
     assert_eq!(s.hook_calls.load(Ordering::SeqCst), hooks + 1);
 
     let http = reqwest::Client::new();
-    let base = s.base();
-    let who_am_i = |token: Option<&str>, cookie: Option<&str>| {
-        let mut req = http
-            .post(format!("{base}/basable.connecttest.v1.EchoService/WhoAmI"))
-            .header("content-type", "application/json")
-            .body("{}");
-        if let Some(t) = token {
-            req = req.header("x-session-token", t);
-        }
-        if let Some(c) = cookie {
-            req = req.header("cookie", c);
-        }
-        req.send()
+    let (stack, http) = (&s, &http);
+    let who_am_i = |token: Option<&'static str>, cookie: Option<&'static str>| {
+        let headers: Vec<(&str, &str)> = token
+            .map(|t| ("x-session-token", t))
+            .into_iter()
+            .chain(cookie.map(|c| ("cookie", c)))
+            .collect();
+        async move { stack.raw(http, "WhoAmI", "{}", &headers).await }
     };
 
     // The token decides over a cookie beside it, either way round: a
