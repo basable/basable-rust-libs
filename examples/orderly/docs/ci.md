@@ -52,6 +52,14 @@ a Dockerfile step: the images are `oci_image` targets.
   and leaves those alone. `.basable/verify.sh` builds in one configuration
   (`bazel test //...` builds the images too); a second `--config=ci` build
   there would compile the whole graph twice.
+- **The two share their entries on the default branch.** The builder runs
+  `.basable/verify.sh` with `--config=ci` (from the runner's `~/.bazelrc`;
+  on a laptop the script builds in the default configuration), so its
+  entries hold what this workflow builds, and each restores the other's as
+  a fallback. A run reads its own branch's entries before the default
+  branch's, so this only matters on `main`: a dev run's cleanup deletes
+  `main`'s `disk-cache-` entry, and the live deploy then starts from the
+  newest verified build's.
 
 ## Cold and warm
 

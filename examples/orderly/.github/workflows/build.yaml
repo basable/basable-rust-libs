@@ -79,6 +79,9 @@ jobs:
       # Two caches, keyed by how often they change: the repository cache and
       # bazelisk by the lockfiles (they change only with a dependency), the
       # disk cache per SHA with a prefix restore (it changes every commit).
+      # The fallback is the platform's verified builds' (basable-builder-),
+      # saved on the default branch with --config=ci too: a run on main whose
+      # own entry the last dev run's cleanup deleted starts from those.
       - name: Restore repository cache
         uses: actions/cache/restore@v4
         with:
@@ -86,14 +89,18 @@ jobs:
             ~/.cache/bazel-repo
             ~/.cache/bazelisk
           key: repo-cache-${{ hashFiles('MODULE.bazel.lock', 'Cargo.Bazel.lock') }}
-          restore-keys: repo-cache-
+          restore-keys: |
+            repo-cache-
+            basable-builder-repo-
 
       - name: Restore disk cache
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/bazel-disk
           key: disk-cache-${{ github.sha }}
-          restore-keys: disk-cache-
+          restore-keys: |
+            disk-cache-
+            basable-builder-disk-
 
       # Every disk-cache entry this build USES has its mtime refreshed (Bazel
       # touches an entry on a hit); anything still older than this marker at

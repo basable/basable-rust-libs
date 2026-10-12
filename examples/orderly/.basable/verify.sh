@@ -13,5 +13,8 @@ bazel mod tidy
 # Builds every target, the images included (built, not pushed: the deploy
 # workflow builds and pushes them with --config=ci), and runs the tests. One
 # configuration only: a second one, such as `bazel build --config=ci //:push`
-# after this, compiles the whole graph again, every crate included.
+# after this, compiles the whole graph again, every crate included. On the
+# platform's runner this builds with --config=ci (the runner's ~/.bazelrc),
+# so the verified build's cache serves the deploy; on a laptop, in the faster
+# default configuration.
 bazel test //...
