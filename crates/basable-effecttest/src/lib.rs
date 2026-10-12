@@ -5,7 +5,8 @@
 //! adapter declares — identity determinism, the ownership fence, the
 //! classifier floor, and the strategy's safety property
 //! (send-twice-lands-once, look-then-adopt, same-key replay,
-//! resolve-never-resends). There is deliberately no registry to enumerate:
+//! resolve-never-resends, a compensation that dominates the original).
+//! There is deliberately no registry to enumerate:
 //! the component's test file calling `run` per adapter IS the audit index.
 //! A port of the monorepo's `lib/externaleffect/effecttest`.
 //!

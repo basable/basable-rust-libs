@@ -42,7 +42,10 @@ where
     /// determinism. `landed_count` is the audit's ground truth: how many
     /// real side effects of this operation the RECEIVER now holds — the
     /// simulator, or a fake that models the receiver's own store. It must
-    /// observe that store, never the component's own bookkeeping.
+    /// observe that store, never the component's own bookkeeping. For an
+    /// adapter that declares `Compensate` it counts the effects IN FORCE:
+    /// one its compensation reversed, or refused on a late arrival, no
+    /// longer counts.
     /// `inject_definitive` arms exactly one structured rejection that lands
     /// nothing (a simulator fault).
     pub fn new<LF, LFut, DF, DFut>(

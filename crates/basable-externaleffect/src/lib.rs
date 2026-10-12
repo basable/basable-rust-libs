@@ -42,7 +42,7 @@
 //! | `Idempotent` | nothing — the receiver converges/dedupes | re-send is the resolution |
 //! | `LookBeforeAct` | `lookup` returned verified absence | look again; found ⇒ adopt, never re-send |
 //! | `KeyedReplay` | durable key committed (caller's row) | same-key replay within `window` — `dispatch` refuses an intent at or past it; once the provider id is persisted, `resolve_keyed` forever |
-//! | `Declared` | slot written through the claim first | the slot resolver, or `Hold` forever when no receiver postcondition exists |
+//! | `Declared` | slot written through the claim first | the slot resolver, a compensating effect (`Compensate`, alone or beside a resolver), or `Hold` forever when no receiver postcondition exists |
 //!
 //! The claim an adapter makes is readable from its literal — `strategy:
 //! Strategy::Declared { .. }` in a diff IS the admission argument.
@@ -57,11 +57,12 @@ mod slot;
 mod verdict;
 
 pub use adapter::{
-    Adapter, BoxFuture, DeclaredResolution, IntentAgeFn, InvalidAdapter, KeyFn, LateCall, LookupFn,
-    ProviderIdFn, ResolveFn, ResolveKeyedFn, SendFn, SlotIdentity, Strategy, intent_age_fn, key_fn,
-    lookup_fn, provider_id_fn, resolve_by_lookup, resolve_fn, resolve_keyed_fn, send_fn,
+    Adapter, BoxFuture, Compensation, DeclaredResolution, IntentAgeFn, InvalidAdapter, KeyFn,
+    LateCall, LookupFn, ProviderIdFn, ResolveFn, ResolveKeyedFn, SendFn, SlotIdentity, Strategy,
+    compensate_with, intent_age_fn, key_fn, lookup_fn, provider_id_fn, resolve_by_lookup,
+    resolve_fn, resolve_keyed_fn, send_fn,
 };
-pub use call::{Call, DispatchError, METRICS_TARGET, ResolveError};
+pub use call::{Call, CompensateError, DispatchError, METRICS_TARGET, ResolveError};
 pub use owner::{Owner, OwnershipLost, Unfenced, check_ownership};
 pub use slot::{AttemptState, EffectSlot, Resolution, UnknownAttemptState};
 pub use verdict::{

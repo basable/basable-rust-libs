@@ -40,7 +40,7 @@ admission argument, made here where its validation rules and probes live:
 | `Idempotent` | nothing — the receiver converges/dedupes | re-send is the resolution |
 | `LookBeforeAct { lookup }` | `lookup` returned verified absence | look again; found ⇒ adopt, never re-send |
 | `KeyedReplay { window, intent_age, provider_id, resolve }` | durable key committed (caller's row) | same-key replay within `window` — `dispatch` refuses an intent whose age is at or past it (`DispatchError::ReplayWindowElapsed`: hold, never re-POST); once the provider id is persisted, `resolve_keyed` forever |
-| `Declared { slot_identity, resolution: Resolve(..) \| Hold }` | slot written via `Claim::write_status` first | the resolver, or `Hold` forever when no receiver postcondition exists |
+| `Declared { slot_identity, resolution: Resolve(..) \| Compensate { resolve, compensation } \| Hold }` | slot written via `Claim::write_status` first | the resolver, a compensating effect (alone, or after an optional resolver), or `Hold` forever when no receiver postcondition exists |
 
 `A` is the dispatch payload, `RA` the resolve identity; name one type twice
 when they coincide. The remaining clauses are plain fields: `key`,
@@ -64,7 +64,10 @@ named). On the handle:
   database clock). The reconciler places it on its WORKING status and
   writes it through the claim itself.
 - `resolve(ctx, proof, args, slot)` — settles a slot found on claim, never
-  sends; `Hold` answers `Unknown` with zero I/O.
+  sends; `Hold` answers `Unknown` with zero I/O; a `Compensate` adapter with
+  no resolver panics (its slots settle through `compensate`).
+- `compensate(ctx, proof, args, slot)` — settles a slot by sending a
+  DIFFERENT effect, the adapter's compensation (below).
 - `lookup` / `resolve_keyed` / `provider_id` — the LookBeforeAct gate and
   the KeyedReplay resolve-by-persisted-id path. `ResolveError::{
   OwnershipLost, Failed(e)}`.
@@ -85,6 +88,27 @@ provider wrapped with `definitive()` as proof of non-execution (a parsed
 `Classifier::fail_closed(pred)` to refine the predicate. `Declared { Hold }`
 adapters have no classifier at all (`classify: None`).
 
+**Compensation.** `DeclaredResolution::Compensate` is the third way to
+settle a slot, for a receiver that offers no lookup but a void: make the
+outcome definitive by sending a different, safe-to-repeat effect that
+DOMINATES the original — once it has landed the original is not in force,
+whether it never landed, landed already, or arrives late (an ISO 8583
+reversal, a processor's technical cancel by the merchant's reference).
+`compensate_with(call, args)` builds it from the compensating effect's own
+validated `Arc<Call>` — `Idempotent`, `LookBeforeAct` (look for the void,
+send on verified absence) or `KeyedReplay`, never `Declared`, because every
+pass that finds the slot unsettled sends it again — and the mapping from
+the resolve args and slot to that call's args. `resolve: Some(..)` beside
+it lets the reconciler read first and compensate what stays `Unknown` past
+its grace. `compensate` answers `Ok(Compensated)` (the identity is spent: a
+fresh intent needs a fresh one), `Ok(Unknown)` with the compensation's
+ambiguity as detail (keep the slot, compensate again), or
+`CompensateError::{OwnershipLost, Refused(e), Failed(e)}` — refused means
+escalate (a refund, a human), failed means it could not run (its lookup
+failed, its replay window elapsed). This is not `LateCall::Compensated`,
+clause 3's sweep over a late call's residue; a receiver whose void cannot
+dominate a late original needs that sweep instead.
+
 Strategy-mismatched helper calls panic: wrong wiring is a construction bug,
 not data. Call sites that hold no claim (request-path handlers) pass
 `&Unfenced` — explicit and greppable.
@@ -100,7 +124,11 @@ identity when `A == RA`). Universal probes: identity determinism, the
 ownership fence, the classifier floor, definitive honesty. Per strategy:
 send-twice-lands-once and the ack-loss retry; look-then-adopt; same-key
 replay, resolve by id, the past-window refusal; slot shape, resolver never
-sends, landed-never-judged-resend-safe (clean and ack-lost). Per late-call
+sends, landed-never-judged-resend-safe (clean and ack-lost); for a
+`Compensate` adapter, compensating a never-sent, a landed (twice) and an
+ack-lost original leaves nothing in force, and an original dispatched after
+its compensation stays out of force (`landed_count` counts effects in
+force for such an adapter). Per late-call
 policy: a `KeyScoped` advance changes the key; a `Convergent` stale
 dispatch lands nothing new; a `Compensated` adapter's probe runs. Ack-loss
 probes skip LOUDLY without `inject_ambiguity` and are REQUIRED for
@@ -121,6 +149,10 @@ Keyed }`, irreversible, resolved by the receipt under the key, with
 `RA = String`) — and pins that a misclassified irreversible adapter fails
 its audit and that a reversible adapter without injection skips loudly.
 They are what a component's own audit file looks like.
+`tests/compensation.rs` audits a compensated pair over an in-process
+issuer — an authorization settled by compensation alone, and its reversal —
+and pins that a reversal which keeps no record fails exactly the dominance
+probe.
 
 ## File map
 
@@ -129,8 +161,8 @@ They are what a component's own audit file looks like.
 | `src/verdict.rs` | `Verdict`, `Classifier` (`transport`, `fail_closed`, `fail_closed_on_definitive`, `new`), `TransportError`, `DefinitiveError`/`definitive`/`is_definitive`, `TimedOut`, `Cancelled`, `is_transport` |
 | `src/owner.rs` | `Owner`, `Unfenced`, `OwnershipLost`, `check_ownership` |
 | `src/slot.rs` | `EffectSlot`, `AttemptState` (the stored vocabulary), `Resolution<R>` (the typed verdict) |
-| `src/adapter.rs` | `Strategy`, `DeclaredResolution`, `LateCall`, `SlotIdentity`, `Adapter`, the boxed fn aliases and their `*_fn` constructors, `Call::new` validation, `resolve_by_lookup` |
-| `src/call.rs` | `Call`: `declare`/`dispatch`/`resolve`/`lookup`/`resolve_keyed`/`provider_id` + accessors, `DispatchError`, `ResolveError`, the verdict tracing events (`METRICS_TARGET`) |
+| `src/adapter.rs` | `Strategy`, `DeclaredResolution`, `Compensation`/`compensate_with`, `LateCall`, `SlotIdentity`, `Adapter`, the boxed fn aliases and their `*_fn` constructors, `Call::new` validation, `resolve_by_lookup` |
+| `src/call.rs` | `Call`: `declare`/`dispatch`/`resolve`/`compensate`/`lookup`/`resolve_keyed`/`provider_id` + accessors, `DispatchError`, `ResolveError`, `CompensateError`, the verdict tracing events (`METRICS_TARGET`) |
 | `../basable-effecttest/src/harness.rs` | `Harness`, `FixedOwner`, `live_owner`, `expired_owner` |
 | `../basable-effecttest/src/probes.rs` | `run`, `try_run`, `ProbeReport`, the probes |
 | `../basable-effecttest/src/proxy.rs` | `AckLossProxy`, `RequestHead` |

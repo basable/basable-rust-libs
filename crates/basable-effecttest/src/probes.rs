@@ -7,8 +7,8 @@ use std::future::Future;
 
 use basable_core::{BoxError, Ctx};
 use basable_externaleffect::{
-    Cancelled, DeclaredResolution, DispatchError, LateCall, Resolution, SlotIdentity, Strategy,
-    TimedOut, TransportError, Verdict, definitive,
+    Cancelled, CompensateError, DeclaredResolution, DispatchError, EffectSlot, LateCall,
+    Resolution, SlotIdentity, Strategy, TimedOut, TransportError, Verdict, definitive,
 };
 use chrono::Utc;
 
@@ -123,6 +123,14 @@ where
         Strategy::Declared { .. } => "declared",
     };
     let holds = shape.call.strategy().holds();
+    let (resolves, compensates) = match shape.call.strategy() {
+        Strategy::Declared { resolution, .. } => match resolution {
+            DeclaredResolution::Resolve(_) => (true, false),
+            DeclaredResolution::Hold => (false, false),
+            DeclaredResolution::Compensate { resolve, .. } => (resolve.is_some(), true),
+        },
+        _ => (false, false),
+    };
     drop(shape);
 
     let mut results: Vec<(&'static str, ProbeResult)> = Vec::new();
@@ -173,7 +181,26 @@ where
                     "hold_resolves_unknown_without_io",
                     hold_resolves_unknown_without_io
                 );
-            } else {
+            }
+            if compensates {
+                probe!(
+                    "compensation_settles_never_sent",
+                    compensation_settles_never_sent
+                );
+                probe!(
+                    "compensation_dominates_late_original",
+                    compensation_dominates_late_original
+                );
+                probe!(
+                    "compensation_reverses_landed_and_repeats",
+                    compensation_reverses_landed_and_repeats
+                );
+                probe!(
+                    "compensation_reverses_ack_lost",
+                    compensation_reverses_ack_lost
+                );
+            }
+            if resolves {
                 probe!("resolver_never_sends", resolver_never_sends);
                 probe!(
                     "landed_never_judged_resend_safe",
@@ -332,20 +359,37 @@ where
                 r.as_ref().err()
             );
         }
-        Strategy::Declared {
-            resolution: DeclaredResolution::Resolve(_),
-            ..
-        } => {
+        Strategy::Declared { resolution, .. } => {
             let slot = h.call.declare(&args, Utc::now());
-            let r = h
-                .call
-                .resolve(&bg(), &expired, resolve_args_of(&h, args), &slot)
-                .await;
-            ensure!(
-                matches!(r, Err(basable_externaleffect::ResolveError::OwnershipLost)),
-                "resolve under an expired proof: got {:?}, want OwnershipLost",
-                r.as_ref().err()
-            );
+            if matches!(
+                resolution,
+                DeclaredResolution::Resolve(_)
+                    | DeclaredResolution::Compensate {
+                        resolve: Some(_),
+                        ..
+                    }
+            ) {
+                let r = h
+                    .call
+                    .resolve(&bg(), &expired, resolve_args_of(&h, args.clone()), &slot)
+                    .await;
+                ensure!(
+                    matches!(r, Err(basable_externaleffect::ResolveError::OwnershipLost)),
+                    "resolve under an expired proof: got {:?}, want OwnershipLost",
+                    r.as_ref().err()
+                );
+            }
+            if matches!(resolution, DeclaredResolution::Compensate { .. }) {
+                let r = h
+                    .call
+                    .compensate(&bg(), &expired, resolve_args_of(&h, args), &slot)
+                    .await;
+                ensure!(
+                    matches!(r, Err(CompensateError::OwnershipLost)),
+                    "compensate under an expired proof: got {:?}, want OwnershipLost",
+                    r.as_ref().err()
+                );
+            }
         }
         _ => {}
     }
@@ -744,6 +788,110 @@ async fn ack_loss_never_judged_resend_safe<A: Clone, RA, R>(h: Harness<A, RA, R>
     assert_landed_resolution(&h, resolve_args_of(&h, args), &slot, "ack-lost send").await
 }
 
+// --- Declared { Compensate } ------------------------------------------
+//
+// A compensation is audited by its effect on the ORIGINAL: whatever happened
+// to the original — nothing, a clean send, an ack-lost send, a send that
+// arrives only after the compensation — once `compensate` answers
+// `Compensated`, the receiver holds nothing of it in force (`landed_count`).
+// The compensation's own safety (it repeats, it survives its own ack loss)
+// is its own call's audit: run the suite on it as well.
+
+/// Compensates `slot` and requires the `Compensated` verdict: the fixture
+/// is healthy, so anything else is a finding.
+async fn compensate_ok<A, RA, R>(
+    h: &Harness<A, RA, R>,
+    args: A,
+    slot: &EffectSlot,
+    mode: &str,
+) -> Result<(), String> {
+    match h
+        .call
+        .compensate(&bg(), &live_owner(), resolve_args_of(h, args), slot)
+        .await
+    {
+        Ok(Resolution::Compensated { .. }) => Ok(()),
+        Ok(other) => Err(format!(
+            "compensate ({mode}) answered {} ({:?}), want compensated — the fixture is healthy",
+            other.state(),
+            other.detail()
+        )),
+        Err(e) => Err(format!("compensate ({mode}): {e}")),
+    }
+}
+
+async fn not_in_force<A, RA, R>(h: &Harness<A, RA, R>, mode: &str) -> Result<(), String> {
+    let in_force = (h.landed_count)().await;
+    ensure!(
+        in_force == 0,
+        "{mode}: {in_force} effects still in force after a compensated verdict"
+    );
+    Ok(())
+}
+
+async fn compensation_settles_never_sent<A, RA, R>(h: Harness<A, RA, R>) -> ProbeResult {
+    let args = (h.args)();
+    let slot = h.call.declare(&args, Utc::now());
+    compensate_ok(&h, args, &slot, "never sent").await?;
+    not_in_force(&h, "never sent").await?;
+    Ok(ProbeOutcome::Passed)
+}
+
+/// The send a stalled attempt still has on the wire arrives AFTER the
+/// compensation settled the slot. The receiver must refuse it, or reverse
+/// it on arrival; a cancel that answers "no such original" and keeps no
+/// record lets it land live, and that receiver needs a sweep
+/// (`LateCall::Compensated`), not `Compensate`.
+async fn compensation_dominates_late_original<A: Clone, RA, R>(
+    h: Harness<A, RA, R>,
+) -> ProbeResult {
+    let args = (h.args)();
+    let slot = h.call.declare(&args, Utc::now());
+    compensate_ok(&h, args.clone(), &slot, "before the original").await?;
+    let _ = h.call.dispatch(&bg(), &live_owner(), args).await;
+    not_in_force(&h, "the original arriving after its compensation").await?;
+    Ok(ProbeOutcome::Passed)
+}
+
+async fn compensation_reverses_landed_and_repeats<A: Clone, RA, R>(
+    h: Harness<A, RA, R>,
+) -> ProbeResult {
+    let args = (h.args)();
+    let slot = h.call.declare(&args, Utc::now());
+    if let Err(e) = h.call.dispatch(&bg(), &live_owner(), args.clone()).await {
+        return Err(format!("dispatch: {e}"));
+    }
+    let landed = (h.landed_count)().await;
+    ensure!(landed == 1, "landed {landed} effects, want 1");
+    compensate_ok(&h, args.clone(), &slot, "after a clean send").await?;
+    not_in_force(&h, "after a clean send").await?;
+    // The pass whose answer was lost runs again.
+    compensate_ok(&h, args, &slot, "repeated").await?;
+    not_in_force(&h, "repeated").await?;
+    Ok(ProbeOutcome::Passed)
+}
+
+async fn compensation_reverses_ack_lost<A: Clone, RA, R>(h: Harness<A, RA, R>) -> ProbeResult {
+    if let Err(skip) = ack_loss(&h) {
+        return Ok(skip);
+    }
+    let args = (h.args)();
+    let slot = h.call.declare(&args, Utc::now());
+    inject_ambiguity(&h).await;
+    let err = h
+        .call
+        .dispatch(&bg(), &live_owner(), args.clone())
+        .await
+        .err();
+    ensure!(
+        err.as_ref().is_some_and(|e| e.is_ambiguous()),
+        "armed ack loss did not surface ambiguous: {err:?}"
+    );
+    compensate_ok(&h, args, &slot, "after an ack-lost send").await?;
+    not_in_force(&h, "after an ack-lost send").await?;
+    Ok(ProbeOutcome::Passed)
+}
+
 /// The core irreversibility audit: after a send that LANDED, the resolver
 /// may report succeeded (it found the receipt) or unknown (a grace-based
 /// resolver still waiting). Superseded — the verdict that authorizes a
@@ -779,6 +927,9 @@ async fn assert_landed_resolution<A, RA, R>(
         }
         Resolution::Failed { detail } => Err(format!(
             "resolver judged a landed effect ({mode}) failed: {detail}"
+        )),
+        Resolution::Compensated { detail } => Err(format!(
+            "resolver answered compensated ({mode}): {detail} — only compensate may"
         )),
     }
 }

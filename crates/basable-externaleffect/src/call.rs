@@ -12,7 +12,9 @@ use std::time::Duration;
 use basable_core::{BoxError, Ctx, Deadline};
 use chrono::{DateTime, Utc};
 
-use crate::adapter::{Adapter, BoxFuture, DeclaredResolution, LateCall, SlotIdentity, Strategy};
+use crate::adapter::{
+    Adapter, BoxFuture, CompensationFailure, DeclaredResolution, LateCall, SlotIdentity, Strategy,
+};
 use crate::owner::{Owner, OwnershipLost, check_ownership};
 use crate::slot::{EffectSlot, Resolution};
 use crate::verdict::{Cancelled, TimedOut, Verdict};
@@ -136,6 +138,51 @@ impl From<OwnershipLost> for ResolveError {
     }
 }
 
+/// Why a compensation did not settle the slot. An ambiguous compensation is
+/// not an error: [`Call::compensate`] answers `Resolution::Unknown` and the
+/// next pass compensates again.
+#[derive(Debug)]
+pub enum CompensateError {
+    /// Nothing was sent; a plain retry is the whole story.
+    OwnershipLost,
+    /// The receiver definitively refused the compensation — the original
+    /// moved past where it can be voided (captured, settled), or the
+    /// receiver knows no original and keeps no record of the void. It cannot
+    /// settle the slot, and sending it again will not either: escalate to a
+    /// different remedy (a refund) or a human. `source()` is the receiver's
+    /// answer.
+    Refused(BoxError),
+    /// The compensation could not run — its look-before-act observation
+    /// failed, or its replay window elapsed. Nothing is proven; the slot
+    /// stays. `Display` is the cause's text verbatim.
+    Failed(BoxError),
+}
+
+impl fmt::Display for CompensateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CompensateError::OwnershipLost => fmt::Display::fmt(&OwnershipLost, f),
+            CompensateError::Refused(e) => write!(f, "compensation refused: {e}"),
+            CompensateError::Failed(e) => fmt::Display::fmt(e, f),
+        }
+    }
+}
+
+impl Error for CompensateError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            CompensateError::Refused(e) | CompensateError::Failed(e) => Some(&**e),
+            CompensateError::OwnershipLost => None,
+        }
+    }
+}
+
+impl From<OwnershipLost> for CompensateError {
+    fn from(_: OwnershipLost) -> CompensateError {
+        CompensateError::OwnershipLost
+    }
+}
+
 impl<A, RA, R> Call<A, RA, R> {
     pub(crate) fn from_validated(a: Adapter<A, RA, R>) -> Call<A, RA, R> {
         Call { a }
@@ -220,7 +267,8 @@ impl<A, RA, R> Call<A, RA, R> {
     /// effect. A `Hold` adapter answers `Unknown` with zero I/O (the slot's
     /// detail carried through); otherwise the strategy's resolver runs
     /// under the ownership fence and the bounded context. `Declared`-only;
-    /// panics otherwise.
+    /// panics otherwise, and on a `Compensate` adapter that declares no
+    /// resolver: its slots settle through [`Call::compensate`].
     pub async fn resolve(
         &self,
         ctx: &Ctx,
@@ -238,9 +286,17 @@ impl<A, RA, R> Call<A, RA, R> {
                 });
             }
             Strategy::Declared {
-                resolution: DeclaredResolution::Resolve(r),
+                resolution:
+                    DeclaredResolution::Resolve(r)
+                    | DeclaredResolution::Compensate {
+                        resolve: Some(r), ..
+                    },
                 ..
             } => r,
+            Strategy::Declared { .. } => panic!(
+                "externaleffect: effect {:?}: resolve on an adapter that declares no resolver — call compensate",
+                self.a.operation
+            ),
             other => self.wrong_strategy("resolve", other),
         };
         let deadline = check_ownership(proof)?;
@@ -254,6 +310,62 @@ impl<A, RA, R> Call<A, RA, R> {
         };
         tracing::debug!(target: METRICS_TARGET, operation = self.a.operation.as_str(), state, "effect resolution");
         res.map_err(ResolveError::Failed)
+    }
+
+    /// Settles a `Declared` slot by sending the adapter's compensation — a
+    /// different effect, never this one — so that its outcome becomes
+    /// definitive. The compensation runs under its own call's fence,
+    /// timeout and classifier (a `LookBeforeAct` one looks first):
+    ///
+    /// - `Ok(Compensated)`: it landed (or was found landed); the effect is
+    ///   not in force and its identity is spent — clear the slot and
+    ///   consume.
+    /// - `Ok(Unknown)`: it was ambiguous, its text in the detail — keep the
+    ///   slot; the next pass compensates again, which is safe because the
+    ///   compensation is.
+    /// - `Err(OwnershipLost)`: nothing was sent; a plain retry.
+    /// - `Err(Refused)`: the receiver refused it; it cannot settle this
+    ///   slot — escalate (a refund, a human), sending it again will not help.
+    /// - `Err(Failed)`: it could not run (its lookup failed, its replay
+    ///   window elapsed) and nothing is proven — keep the slot.
+    ///
+    /// `Declared { Compensate }`-only; panics otherwise.
+    pub async fn compensate(
+        &self,
+        ctx: &Ctx,
+        proof: &dyn Owner,
+        args: RA,
+        slot: &EffectSlot,
+    ) -> Result<Resolution<R>, CompensateError> {
+        let compensation = match &self.a.strategy {
+            Strategy::Declared {
+                resolution: DeclaredResolution::Compensate { compensation, .. },
+                ..
+            } => compensation,
+            Strategy::Declared { .. } => panic!(
+                "externaleffect: effect {:?}: compensate on an adapter that declares no compensation",
+                self.a.operation
+            ),
+            other => self.wrong_strategy("compensate", other),
+        };
+        let res = match compensation.run(ctx, proof, args, slot).await {
+            Ok(()) => Ok(Resolution::Compensated {
+                detail: format!("compensated by {}", compensation.operation()),
+            }),
+            Err(CompensationFailure::Ambiguous(e)) => Ok(Resolution::Unknown {
+                detail: format!("compensation {}: {e}", compensation.operation()),
+            }),
+            Err(CompensationFailure::Error(e)) => Err(e),
+        };
+        let state = match &res {
+            Ok(r) => Some(r.state().as_str()),
+            Err(CompensateError::OwnershipLost) => None,
+            Err(_) => Some("error"),
+        };
+        if let Some(state) = state {
+            tracing::debug!(target: METRICS_TARGET, operation = self.a.operation.as_str(), state, "effect resolution");
+        }
+        res
     }
 
     /// Runs the `LookBeforeAct` observation under the ownership fence:
@@ -402,9 +514,11 @@ mod tests {
 
     use super::*;
     use crate::adapter::{
-        intent_age_fn, key_fn, provider_id_fn, resolve_fn, resolve_keyed_fn, send_fn,
+        compensate_with, intent_age_fn, key_fn, lookup_fn, provider_id_fn, resolve_fn,
+        resolve_keyed_fn, send_fn,
     };
     use crate::owner::Unfenced;
+    use crate::slot::AttemptState;
     use crate::verdict::{Classifier, TransportError, classify_transport, is_transport};
 
     #[derive(Debug, Clone, Copy)]
@@ -819,6 +933,284 @@ mod tests {
         ] {
             let err = fut.await.unwrap_err();
             assert!(err.is_panic(), "{name} on Idempotent did not panic");
+        }
+    }
+
+    /// A compensate-only `Declared` adapter whose compensation is `void`,
+    /// addressed by the slot's key.
+    fn compensated(void: Call<String, String, String>) -> Call<String, String, String> {
+        Call::new(Adapter {
+            operation: "authorize_probe".into(),
+            key: Some(key_fn(|s: &String| format!("k/{s}"))),
+            send: send_fn(|_ctx, s: String| async move { Ok(s) }),
+            classify: Some(Classifier::fail_closed_on_definitive()),
+            call_timeout: Duration::from_secs(1),
+            irreversible: true,
+            late_call: LateCall::KeyScoped,
+            strategy: Strategy::Declared {
+                slot_identity: SlotIdentity::Keyed,
+                resolution: DeclaredResolution::Compensate {
+                    resolve: None,
+                    compensation: compensate_with(
+                        Arc::new(void),
+                        |_r: String, slot: &EffectSlot| slot.key.clone(),
+                    ),
+                },
+            },
+        })
+        .unwrap()
+    }
+
+    /// The mapping from the compensation's own dispatch onto the slot's
+    /// verdict: landed ⇒ compensated, ambiguous ⇒ unknown naming the
+    /// compensation, refused ⇒ `Refused`, fenced ⇒ `OwnershipLost` with
+    /// nothing sent.
+    #[tokio::test]
+    async fn compensate_maps_the_compensation_onto_the_slot() {
+        #[derive(Debug)]
+        struct Captured;
+        impl fmt::Display for Captured {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("cannot void: already captured")
+            }
+        }
+        impl Error for Captured {}
+
+        let mode = Arc::new(AtomicUsize::new(0));
+        let voided = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let (m, v) = (Arc::clone(&mode), Arc::clone(&voided));
+        let void = idempotent(
+            send_fn(move |_ctx, key: String| {
+                let outcome = match m.load(Ordering::SeqCst) {
+                    0 => {
+                        v.lock().unwrap().push(key.clone());
+                        Ok(key)
+                    }
+                    1 => Err(TransportError::wrap("connection reset by simulator")),
+                    _ => Err(Box::new(Captured) as BoxError),
+                };
+                async move { outcome }
+            }),
+            Classifier::transport(),
+        );
+        let call = compensated(void);
+        let slot = call.declare(&"x".into(), Utc::now());
+
+        let res = call
+            .compensate(&Ctx::background(), &live(), "x".into(), &slot)
+            .await
+            .unwrap();
+        assert_eq!(
+            res,
+            Resolution::Compensated {
+                detail: "compensated by probe".into()
+            }
+        );
+        assert_eq!(*voided.lock().unwrap(), vec!["k/x".to_owned()]);
+
+        mode.store(1, Ordering::SeqCst);
+        let res = call
+            .compensate(&Ctx::background(), &live(), "x".into(), &slot)
+            .await
+            .unwrap();
+        assert_eq!(
+            res,
+            Resolution::Unknown {
+                detail: "compensation probe: connection reset by simulator".into()
+            }
+        );
+
+        mode.store(2, Ordering::SeqCst);
+        let err = call
+            .compensate(&Ctx::background(), &live(), "x".into(), &slot)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, CompensateError::Refused(e) if e.is::<Captured>()),
+            "{err}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "compensation refused: cannot void: already captured"
+        );
+
+        mode.store(0, Ordering::SeqCst);
+        voided.lock().unwrap().clear();
+        let err = call
+            .compensate(&Ctx::background(), &expired(), "x".into(), &slot)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CompensateError::OwnershipLost), "{err}");
+        assert!(
+            voided.lock().unwrap().is_empty(),
+            "a fenced-out compensation reached the wire"
+        );
+    }
+
+    /// A `LookBeforeAct` compensation adopts a void it finds and sends only
+    /// on verified absence, a failed lookup is not a refusal, and a
+    /// `KeyedReplay` compensation past its window is stopped before the
+    /// wire, not refused by the receiver.
+    #[tokio::test]
+    async fn compensate_through_each_strategy() {
+        // 0: absent, 1: found, 2: the lookup fails.
+        let found = Arc::new(AtomicUsize::new(1));
+        let sent = Arc::new(AtomicUsize::new(0));
+        let (f, n) = (Arc::clone(&found), Arc::clone(&sent));
+        let look: Call<String, String, String> = Call::new(Adapter {
+            operation: "void_look".into(),
+            key: None,
+            send: send_fn(move |_ctx, key: String| {
+                n.fetch_add(1, Ordering::SeqCst);
+                async move { Ok(key) }
+            }),
+            classify: Some(Classifier::transport()),
+            call_timeout: Duration::from_secs(1),
+            irreversible: false,
+            late_call: LateCall::Convergent,
+            strategy: Strategy::LookBeforeAct {
+                lookup: lookup_fn(move |_ctx, key: String| {
+                    let answer = f.load(Ordering::SeqCst);
+                    async move {
+                        match answer {
+                            0 => Ok(None),
+                            1 => Ok(Some(key)),
+                            _ => Err("cannot prove either way".into()),
+                        }
+                    }
+                }),
+            },
+        })
+        .unwrap();
+        let call = compensated(look);
+        let slot = call.declare(&"x".into(), Utc::now());
+
+        let res = call
+            .compensate(&Ctx::background(), &live(), "x".into(), &slot)
+            .await
+            .unwrap();
+        assert_eq!(res.state(), AttemptState::Compensated);
+        assert_eq!(
+            sent.load(Ordering::SeqCst),
+            0,
+            "a found void was sent again"
+        );
+
+        found.store(0, Ordering::SeqCst);
+        let res = call
+            .compensate(&Ctx::background(), &live(), "x".into(), &slot)
+            .await
+            .unwrap();
+        assert_eq!(res.state(), AttemptState::Compensated);
+        assert_eq!(sent.load(Ordering::SeqCst), 1);
+
+        found.store(2, Ordering::SeqCst);
+        let err = call
+            .compensate(&Ctx::background(), &live(), "x".into(), &slot)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CompensateError::Failed(_)), "{err}");
+        assert_eq!(sent.load(Ordering::SeqCst), 1);
+
+        // The slot key's intent is a minute old, at this window's edge.
+        let (void, keyed_sent) = keyed(Duration::from_secs(60));
+        let call = compensated(void);
+        let err = call
+            .compensate(&Ctx::background(), &live(), "x".into(), &slot)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, CompensateError::Failed(e) if e.is::<DispatchError>()),
+            "{err}"
+        );
+        assert_eq!(keyed_sent.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn resolve_and_compensate_each_run_their_own_half() {
+        let unknown = || {
+            resolve_fn(|_ctx, _s: String, _slot: EffectSlot| async {
+                Ok(Resolution::Unknown {
+                    detail: "still waiting".into(),
+                })
+            })
+        };
+        let declared = |resolution| -> Arc<Call<String, String, String>> {
+            Arc::new(
+                Call::new(Adapter {
+                    operation: "declared_probe".into(),
+                    key: None,
+                    send: send_fn(|_ctx, s: String| async move { Ok(s) }),
+                    classify: Some(Classifier::transport()),
+                    call_timeout: Duration::from_secs(1),
+                    irreversible: false,
+                    late_call: LateCall::Convergent,
+                    strategy: Strategy::Declared {
+                        slot_identity: SlotIdentity::RowScoped,
+                        resolution,
+                    },
+                })
+                .unwrap(),
+            )
+        };
+        let echo_compensation =
+            || compensate_with(Arc::new(echo()), |r: String, _slot: &EffectSlot| r);
+        let slot = EffectSlot {
+            operation: "declared_probe".into(),
+            key: String::new(),
+            declared_at: Utc::now(),
+            detail: String::new(),
+        };
+
+        let both = declared(DeclaredResolution::Compensate {
+            resolve: Some(unknown()),
+            compensation: echo_compensation(),
+        });
+        let res = both
+            .resolve(&Ctx::background(), &live(), "x".into(), &slot)
+            .await
+            .unwrap();
+        assert_eq!(res.state(), AttemptState::Unknown, "the resolver's answer");
+        let res = both
+            .compensate(&Ctx::background(), &live(), "x".into(), &slot)
+            .await
+            .unwrap();
+        assert_eq!(res.state(), AttemptState::Compensated);
+
+        let compensate_only = declared(DeclaredResolution::Compensate {
+            resolve: None,
+            compensation: echo_compensation(),
+        });
+        let resolve_only = declared(DeclaredResolution::Resolve(unknown()));
+        let idem = Arc::new(echo());
+        for (name, fut) in [
+            ("resolve without a resolver", {
+                let (c, slot) = (compensate_only, slot.clone());
+                tokio::spawn(async move {
+                    let _ = c
+                        .resolve(&Ctx::background(), &Unfenced, "x".into(), &slot)
+                        .await;
+                })
+            }),
+            ("compensate without a compensation", {
+                let (c, slot) = (resolve_only, slot.clone());
+                tokio::spawn(async move {
+                    let _ = c
+                        .compensate(&Ctx::background(), &Unfenced, "x".into(), &slot)
+                        .await;
+                })
+            }),
+            ("compensate on Idempotent", {
+                let (c, slot) = (idem, slot.clone());
+                tokio::spawn(async move {
+                    let _ = c
+                        .compensate(&Ctx::background(), &Unfenced, "x".into(), &slot)
+                        .await;
+                })
+            }),
+        ] {
+            let err = fut.await.unwrap_err();
+            assert!(err.is_panic(), "{name} did not panic");
         }
     }
 }

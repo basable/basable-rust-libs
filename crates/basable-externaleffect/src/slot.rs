@@ -39,8 +39,11 @@ pub struct EffectSlot {
 /// undecidable (`Unknown`), or proven safe to (re)send (`Superseded`) —
 /// either the send verifiably never landed, or re-sending the same identity
 /// is provably harmless. `Superseded` is the ONE verdict on which a caller
-/// may dispatch again. This is the stored vocabulary; [`Resolution`] is the
+/// may dispatch again. `Compensated` is [`Call::compensate`]'s verdict,
+/// never a resolver's. This is the stored vocabulary; [`Resolution`] is the
 /// typed verdict.
+///
+/// [`Call::compensate`]: crate::Call::compensate
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AttemptState {
     /// The effect landed.
@@ -51,6 +54,9 @@ pub enum AttemptState {
     Unknown,
     /// Proven safe to (re)send.
     Superseded,
+    /// Made definitive by the adapter's compensation: not in force, and the
+    /// identity is spent.
+    Compensated,
 }
 
 impl AttemptState {
@@ -61,6 +67,7 @@ impl AttemptState {
             AttemptState::Failed => "failed",
             AttemptState::Unknown => "unknown",
             AttemptState::Superseded => "superseded",
+            AttemptState::Compensated => "compensated",
         }
     }
 }
@@ -71,7 +78,7 @@ impl fmt::Display for AttemptState {
     }
 }
 
-/// A stored attempt state that names none of the four.
+/// A stored attempt state that names none of the five.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownAttemptState(pub String);
 
@@ -92,6 +99,7 @@ impl FromStr for AttemptState {
             "failed" => Ok(AttemptState::Failed),
             "unknown" => Ok(AttemptState::Unknown),
             "superseded" => Ok(AttemptState::Superseded),
+            "compensated" => Ok(AttemptState::Compensated),
             other => Err(UnknownAttemptState(other.to_owned())),
         }
     }
@@ -100,9 +108,9 @@ impl FromStr for AttemptState {
 /// A `Declared` resolver's typed verdict. The result exists only for a
 /// landed effect, and must then identify the LANDED effect —
 /// receipt-sourced, never re-derived from current intent, so a resolver can
-/// never credit work the receiver did not do. The other three carry the
-/// resolver's reasoning — what the caller stores in the slot's `detail` or
-/// reports in its retry.
+/// never credit work the receiver did not do. The others carry the
+/// reasoning — what the caller stores in the slot's `detail` or reports in
+/// its retry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolution<R> {
     /// The effect landed; this is its receipt.
@@ -122,6 +130,18 @@ pub enum Resolution<R> {
         /// The reasoning.
         detail: String,
     },
+    /// [`Call::compensate`]'s verdict: the compensation landed, so the
+    /// effect is not in force — it never landed, it landed and was
+    /// reversed, or it will be refused when it arrives late. The caller
+    /// consumes it like `Failed`, but the receiver may have acted, and the
+    /// identity is spent: a fresh intent needs a fresh one (a new key, a
+    /// new row), never a re-send of this one.
+    ///
+    /// [`Call::compensate`]: crate::Call::compensate
+    Compensated {
+        /// Which compensation settled it.
+        detail: String,
+    },
 }
 
 impl<R> Resolution<R> {
@@ -132,6 +152,7 @@ impl<R> Resolution<R> {
             Resolution::Failed { .. } => AttemptState::Failed,
             Resolution::Unknown { .. } => AttemptState::Unknown,
             Resolution::Superseded { .. } => AttemptState::Superseded,
+            Resolution::Compensated { .. } => AttemptState::Compensated,
         }
     }
 
@@ -141,7 +162,8 @@ impl<R> Resolution<R> {
             Resolution::Succeeded(_) => "",
             Resolution::Failed { detail }
             | Resolution::Unknown { detail }
-            | Resolution::Superseded { detail } => detail,
+            | Resolution::Superseded { detail }
+            | Resolution::Compensated { detail } => detail,
         }
     }
 
@@ -165,6 +187,7 @@ mod tests {
             AttemptState::Failed,
             AttemptState::Unknown,
             AttemptState::Superseded,
+            AttemptState::Compensated,
         ] {
             assert_eq!(s.as_str().parse::<AttemptState>(), Ok(s));
         }

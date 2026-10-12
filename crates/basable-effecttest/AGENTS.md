@@ -54,6 +54,7 @@ landed nothing). Per strategy:
 | `LookBeforeAct` | look, then adopt what is found, never re-send |
 | `KeyedReplay` | same-key replay lands once; resolve by the persisted id; the past-window dispatch is refused unsent |
 | `Declared` | the slot shape; the resolver never sends; landed is never judged resend-safe, clean and ack-lost |
+| `Declared { Compensate }` | compensating a never-sent, a landed (twice) and an ack-lost original leaves nothing in force; an original dispatched after its compensation stays out of force — `landed_count` counts effects in force for such an adapter, and the compensating call gets an audit of its own |
 
 Per late-call policy: a `KeyScoped` advance changes the key; a
 `Convergent` stale dispatch lands nothing new; a `Compensated` adapter's
@@ -83,6 +84,13 @@ adapter without injection skips the ack-loss probe loudly. They are what a
 component's own audit file looks like, and they need no database: the
 simulator and the proxy are loopback servers.
 
+`tests/compensation.rs` audits a compensated pair over an in-process
+issuer: an authorization (`Declared { Keyed }`, irreversible, settled by
+`Compensate` alone — the issuer offers no lookup) and the reversal it
+compensates with (`Idempotent` + `Convergent`). It pins that an issuer
+whose reversal keeps no record of an authorization it does not hold fails
+exactly `compensation_dominates_late_original`.
+
 ## File map
 
 | File | Responsibility |
@@ -92,3 +100,4 @@ simulator and the proxy are loopback servers.
 | `src/probes.rs` | `run`, `try_run`, `ProbeReport`, `ProbeOutcome`, the probe suites |
 | `src/proxy.rs` | `AckLossProxy`, `RequestHead` |
 | `tests/reference.rs` | The three reference audits and the two kit pins |
+| `tests/compensation.rs` | The compensated pair's two audits and the dominance pin |

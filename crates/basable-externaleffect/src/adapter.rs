@@ -9,12 +9,14 @@ use std::error::Error;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use basable_core::names::validate_type_name;
 use basable_core::{BoxError, Ctx};
 
-use crate::call::Call;
+use crate::call::{Call, CompensateError, DispatchError, ResolveError};
+use crate::owner::Owner;
 use crate::slot::{EffectSlot, Resolution};
 use crate::verdict::Classifier;
 
@@ -215,8 +217,8 @@ pub enum Strategy<A, RA, R> {
     /// claim's `write_status` by the same attempt that then dispatches. The
     /// receiver offers nothing a blind retry could lean on, so the durable
     /// marker is the only fence: a slot found on claim means "may have been
-    /// sent", and the caller MUST route it through [`Call::resolve`], never
-    /// dispatch.
+    /// sent", and the caller MUST route it through [`Call::resolve`] or
+    /// [`Call::compensate`], never dispatch.
     Declared {
         /// Where the identity lives.
         slot_identity: SlotIdentity,
@@ -242,6 +244,150 @@ pub enum DeclaredResolution<RA, R> {
     /// including a structured pre-flight rejection, which is the accepted
     /// cost.
     Hold,
+    /// Settle by sending a DIFFERENT effect whose landing makes this one's
+    /// outcome definitive: not in force, whether it never landed, already
+    /// landed, or lands late (a card network's reversal, a processor's
+    /// technical cancel by the merchant's reference). [`Call::compensate`]
+    /// runs it and the reconciler decides when: on every slot it finds, or
+    /// once `resolve`, when given, still answers `Unknown` past the
+    /// component's grace (a webhook that never came).
+    Compensate {
+        /// The resolver [`Call::resolve`] runs, if the receiver offers a
+        /// read at all; `None` leaves the compensation as the only exit.
+        resolve: Option<ResolveFn<RA, R>>,
+        /// The compensating effect.
+        compensation: Compensation<RA>,
+    },
+}
+
+/// A `Declared` adapter's compensating effect, built by
+/// [`compensate_with`] over that effect's own validated [`Call`] and typed
+/// by the slot's resolve args alone, so the compensating call's own types
+/// stay out of the adapter's.
+pub struct Compensation<RA> {
+    inner: Box<dyn Compensator<RA>>,
+}
+
+/// Builds a `Declared` slot's compensation from the compensating effect's
+/// validated call and the mapping from what a later attempt holds (the
+/// resolve args and the slot, whose key names the original for a
+/// `SlotIdentity::Keyed` effect) to that call's dispatch args.
+///
+/// The compensation is sent again by every pass that finds the slot
+/// unsettled, so its call must be safe to repeat without a slot of its
+/// own: `Idempotent` (a reversal the receiver dedupes), `LookBeforeAct`
+/// (look for the void, send it only on verified absence; hence `CA:
+/// Clone`) or `KeyedReplay` (a cancel under its own idempotency key) —
+/// [`Call::new`] refuses a `Declared` one. Its effect must also DOMINATE
+/// the original: once it has landed, the original is not in force even if
+/// it arrives afterwards. `basable-effecttest` proves that against the
+/// component's simulator; a receiver that cannot promise it (a cancel that
+/// answers "no such payment" and keeps no record) needs a sweep
+/// (`LateCall::Compensated`) instead. Audit the compensating call with its
+/// own harness too: pass the same `Arc`.
+pub fn compensate_with<RA, CA, CRA, CR>(
+    call: Arc<Call<CA, CRA, CR>>,
+    args: impl Fn(RA, &EffectSlot) -> CA + Send + Sync + 'static,
+) -> Compensation<RA>
+where
+    CA: Clone + Send + 'static,
+    CRA: 'static,
+    CR: Send + 'static,
+{
+    Compensation {
+        inner: Box::new(Erased { call, args }),
+    }
+}
+
+impl<RA> Compensation<RA> {
+    pub(crate) fn operation(&self) -> &str {
+        self.inner.operation()
+    }
+
+    pub(crate) async fn run(
+        &self,
+        ctx: &Ctx,
+        proof: &dyn Owner,
+        args: RA,
+        slot: &EffectSlot,
+    ) -> Result<(), CompensationFailure> {
+        self.inner.run(ctx, proof, args, slot).await
+    }
+}
+
+/// How a compensation that did not land ended: ambiguous (the slot reads
+/// `Unknown`) or one of the caller-facing errors.
+pub(crate) enum CompensationFailure {
+    Ambiguous(BoxError),
+    Error(CompensateError),
+}
+
+trait Compensator<RA>: Send + Sync {
+    fn operation(&self) -> &str;
+    fn declared(&self) -> bool;
+    fn run<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+        proof: &'a dyn Owner,
+        args: RA,
+        slot: &'a EffectSlot,
+    ) -> BoxFuture<'a, Result<(), CompensationFailure>>;
+}
+
+struct Erased<CA, CRA, CR, F> {
+    call: Arc<Call<CA, CRA, CR>>,
+    args: F,
+}
+
+impl<RA, CA, CRA, CR, F> Compensator<RA> for Erased<CA, CRA, CR, F>
+where
+    F: Fn(RA, &EffectSlot) -> CA + Send + Sync,
+    CA: Clone + Send + 'static,
+    CRA: 'static,
+    CR: Send + 'static,
+{
+    fn operation(&self) -> &str {
+        self.call.operation()
+    }
+
+    fn declared(&self) -> bool {
+        matches!(self.call.strategy(), Strategy::Declared { .. })
+    }
+
+    /// Sends the compensation under its call's own fence, timeout and
+    /// classifier — a `LookBeforeAct` compensation looks first, and a void
+    /// already found is as good as one just sent.
+    fn run<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+        proof: &'a dyn Owner,
+        args: RA,
+        slot: &'a EffectSlot,
+    ) -> BoxFuture<'a, Result<(), CompensationFailure>> {
+        let args = (self.args)(args, slot);
+        Box::pin(async move {
+            use CompensationFailure::{Ambiguous, Error};
+            if let Strategy::LookBeforeAct { .. } = self.call.strategy() {
+                match self.call.lookup(ctx, proof, args.clone()).await {
+                    Ok(Some(_)) => return Ok(()),
+                    Ok(None) => {}
+                    Err(ResolveError::OwnershipLost) => {
+                        return Err(Error(CompensateError::OwnershipLost));
+                    }
+                    Err(ResolveError::Failed(e)) => return Err(Error(CompensateError::Failed(e))),
+                }
+            }
+            match self.call.dispatch(ctx, proof, args).await {
+                Ok(_) => Ok(()),
+                Err(DispatchError::Ambiguous(e)) => Err(Ambiguous(e)),
+                Err(DispatchError::Definitive(e)) => Err(Error(CompensateError::Refused(e))),
+                Err(DispatchError::OwnershipLost) => Err(Error(CompensateError::OwnershipLost)),
+                Err(e @ DispatchError::ReplayWindowElapsed { .. }) => {
+                    Err(Error(CompensateError::Failed(Box::new(e))))
+                }
+            }
+        })
+    }
 }
 
 impl<A, RA, R> Strategy<A, RA, R> {
@@ -285,6 +431,10 @@ impl<A, RA, R> fmt::Debug for Strategy<A, RA, R> {
                     &match resolution {
                         DeclaredResolution::Resolve(_) => "Resolve",
                         DeclaredResolution::Hold => "Hold",
+                        DeclaredResolution::Compensate { resolve: None, .. } => "Compensate",
+                        DeclaredResolution::Compensate {
+                            resolve: Some(_), ..
+                        } => "Resolve, then Compensate",
                     },
                 )
                 .finish(),
@@ -380,9 +530,20 @@ impl<A, RA, R> Adapter<A, RA, R> {
                     return Err(fail("KeyedReplay.window must be positive".into()));
                 }
             }
-            Strategy::Declared { slot_identity, .. } => {
+            Strategy::Declared {
+                slot_identity,
+                resolution,
+            } => {
                 if *slot_identity == SlotIdentity::Keyed && self.key.is_none() {
                     return Err(fail("Declared { Keyed } requires key".into()));
+                }
+                if let DeclaredResolution::Compensate { compensation, .. } = resolution
+                    && compensation.inner.declared()
+                {
+                    return Err(fail(format!(
+                        "compensation {:?} is Declared — it is re-sent by every pass that finds the slot, so it must be safe to repeat without a slot of its own (Idempotent, LookBeforeAct, KeyedReplay)",
+                        compensation.operation()
+                    )));
                 }
             }
         }
@@ -472,6 +633,29 @@ mod tests {
         }
     }
 
+    /// A compensation over a void of the given strategy (keyed, so a
+    /// `KeyedReplay` or `Declared { Keyed }` void validates).
+    fn compensation(strategy: Strategy<String, String, String>) -> Compensation<String> {
+        let mut void = base();
+        void.operation = "void_effect".into();
+        void.key = Some(key());
+        void.strategy = strategy;
+        compensate_with(
+            Arc::new(Call::new(void).expect("a valid void")),
+            |s: String, _slot: &EffectSlot| s,
+        )
+    }
+
+    fn compensate(void: Strategy<String, String, String>) -> Strategy<String, String, String> {
+        Strategy::Declared {
+            slot_identity: SlotIdentity::RowScoped,
+            resolution: DeclaredResolution::Compensate {
+                resolve: None,
+                compensation: compensation(void),
+            },
+        }
+    }
+
     fn hold() -> Strategy<String, String, String> {
         Strategy::Declared {
             slot_identity: SlotIdentity::RowScoped,
@@ -481,8 +665,8 @@ mod tests {
 
     /// The validation matrix, minus every rule the enums made
     /// unrepresentable (a missing send, strategy, late call, lookup,
-    /// intent age, provider id, resolver or slot identity; a resolver next
-    /// to Hold).
+    /// intent age, provider id, resolver, compensation or slot identity; a
+    /// resolver or a compensation next to Hold).
     #[test]
     fn new_names_the_first_violation() {
         let cases: Vec<(&str, Mutate, &str)> = vec![
@@ -538,6 +722,11 @@ mod tests {
                 "hold with classifier",
                 Box::new(|a| a.strategy = hold()),
                 "classify = None",
+            ),
+            (
+                "compensation declared",
+                Box::new(|a| a.strategy = compensate(declared(SlotIdentity::Keyed))),
+                "safe to repeat without a slot of its own",
             ),
             (
                 "irreversible idempotent",
@@ -606,6 +795,40 @@ mod tests {
                     a.classify = None;
                     a.strategy = hold();
                 }),
+            ),
+            (
+                "declared compensate irreversible",
+                Box::new(|a| {
+                    a.classify = Some(Classifier::fail_closed_on_definitive());
+                    a.irreversible = true;
+                    a.strategy = compensate(Strategy::Idempotent);
+                }),
+            ),
+            (
+                "declared resolve then compensate",
+                Box::new(|a| {
+                    a.strategy = Strategy::Declared {
+                        slot_identity: SlotIdentity::RowScoped,
+                        resolution: DeclaredResolution::Compensate {
+                            resolve: Some(resolve_fn(
+                                |_ctx, _s: String, _slot: EffectSlot| async {
+                                    Ok(Resolution::Unknown {
+                                        detail: String::new(),
+                                    })
+                                },
+                            )),
+                            compensation: compensation(Strategy::Idempotent),
+                        },
+                    };
+                }),
+            ),
+            (
+                "compensation look before act",
+                Box::new(|a| a.strategy = compensate(look_before_act())),
+            ),
+            (
+                "compensation keyed replay",
+                Box::new(|a| a.strategy = compensate(keyed_replay(Duration::from_secs(3600)))),
             ),
         ];
         for (name, mutate) in cases {
