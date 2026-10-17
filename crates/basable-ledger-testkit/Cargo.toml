@@ -1,0 +1,23 @@
+[package]
+name = "basable-ledger-testkit"
+workspace = "../.."
+description = "Test harness for basable-ledger: the invoice and payment fixture types, the scenario DSL over the in-memory store, the random-walk properties (every state balances, path independence), and the conformance suite every Store adapter runs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+basable-ledger = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true, features = ["serde", "v4", "v7"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

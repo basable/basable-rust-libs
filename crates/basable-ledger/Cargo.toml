@@ -1,0 +1,25 @@
+[package]
+name = "basable-ledger"
+workspace = "../.."
+description = "A declarative double-entry ledger: journals derived from the states business objects are in. The LedgerObject reader, the Accounting trait (allowed changes, desired state per state, balance checks), the Batches recorder, the pure engine over a Store, and the in-memory store."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+basable-core = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true, features = ["serde", "v4", "v7"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

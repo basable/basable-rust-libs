@@ -10,6 +10,8 @@ members = [
     "crates/basable-publicid",
     "crates/basable-db",
     "crates/basable-testkit",
+    "crates/basable-ledger",
+    "crates/basable-ledger-testkit",
     "crates/basable-processingobject",
     "crates/basable-processingobject-testkit",
     "crates/basable-externaleffect",
@@ -43,6 +45,8 @@ basable-core = { version = "=0.3.0", path = "crates/basable-core" }
 basable-publicid = { version = "=0.3.0", path = "crates/basable-publicid" }
 basable-db = { version = "=0.3.0", path = "crates/basable-db" }
 basable-testkit = { version = "=0.3.0", path = "crates/basable-testkit" }
+basable-ledger = { version = "=0.3.0", path = "crates/basable-ledger" }
+basable-ledger-testkit = { version = "=0.3.0", path = "crates/basable-ledger-testkit" }
 basable-processingobject = { version = "=0.3.0", path = "crates/basable-processingobject" }
 basable-processingobject-testkit = { version = "=0.3.0", path = "crates/basable-processingobject-testkit" }
 basable-externaleffect = { version = "=0.3.0", path = "crates/basable-externaleffect" }

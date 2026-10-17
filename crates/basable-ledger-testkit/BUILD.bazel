@@ -1,0 +1,37 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "basable_ledger_testkit",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "basable_ledger_testkit",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//crates/basable-ledger:basable_ledger",
+    ] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "basable_ledger_testkit_test",
+    crate = ":basable_ledger_testkit",
+    deps = all_crate_deps(normal_dev = True),
+)
+
+# The suites over the in-memory store: the invoice scenarios, the random
+# walks, and the store conformance suite run against InMemoryStore. No
+# database: the Postgres adapter runs the same suites in its own crate.
+[
+    rust_test(
+        name = "ledger_" + src[len("tests/"):-len(".rs")],
+        srcs = [src],
+        crate_root = src,
+        deps = [
+            ":basable_ledger_testkit",
+            "//crates/basable-ledger:basable_ledger",
+        ] + all_crate_deps(
+            normal = True,
+            normal_dev = True,
+        ),
+    )
+    for src in glob(["tests/*.rs"])
+]

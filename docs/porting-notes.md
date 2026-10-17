@@ -848,3 +848,19 @@ of it changed, in the crates and in the templates:
     variants of `DeclaredResolution`, `Resolution` and `AttemptState` (an
     exhaustive match must name them). Unreleased: a minor bump, and the
     scaffold's `docs/frameworks/externaleffect.md` moves with the pin.
+
+## basable-ledger and basable-ledger-testkit (no Go original)
+
+87. **The ledger has no Go counterpart, so there is nothing to keep in
+    sync.** It is Rust-first: the specification is
+    `docs/decisions/0005-declarative-ledger.md`, settled with the user on
+    2026-10-17 from the monorepo's `docs/todo/declarative-ledger-plan.md`.
+    The monorepo's rule that a behaviour change to a framework package lands
+    in its crate does not apply; a change to the ledger's model lands in the
+    decision record first and in the crates second. Three shapes the Rust
+    took that the plan's prose did not spell out: the rules version is
+    `Accounting::VERSION`, an associated constant, because the restatement
+    sweep needs the running version before it has an object to evaluate;
+    rejections reach a caller per object as an `Outcome` and a restatement's
+    as `LedgerError::Rejected`; and snapshot diffs carry the type name as the
+    `LedgerObject::TYPE` string rather than a registry integer.
