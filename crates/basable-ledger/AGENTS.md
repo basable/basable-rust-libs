@@ -26,8 +26,8 @@ that there is nothing to keep in sync.
 | `Batches` | The recorder a desired state names batches through: `open(account, id)` reuses the open batch or has the commit create it, `existing(account, id)` reuses only. Returns a `BatchRef`; two accounts on one id is a `BatchConflict` and a rejection |
 | `Desired`, `balance(batch, unit, amount)`, `desired![...]` | The positions of a state: signed amounts in the column of each batch's type. Duplicates of one key are summed |
 | `Balances`, `ObjectBalances` | What `validate_balances` and `Ledger::balances` see: per object, per batch id and unit, summed over the batch's epochs, computed from the journals |
-| `Ledger<S>`, `Builder`, `Request`, `Outcome` | `Ledger::builder(store).register::<O, A>()...build()`; `book(Request)` books any mix of registered types across processes, one `Outcome` per object: `Booked`, `AlreadyBooked`, `Stale`, `Rejected(reason)`. `balances(process)`, `restate(process)`, `preview_restatement(process)` |
-| `Store` | The persistence interface: `read`, `resolve`, `commit`, `record_version`, `batch_sum`; `ProcessRead`, `BatchRow`, `Commit`, `CommitLine`, `LineBatch`, `NewBatch`, `CommitOutcome::{Committed, SequenceTaken}` |
+| `Ledger<S>`, `Builder`, `Request`, `Outcome` | `Ledger::builder(store).register::<O, A>()...build()`; `book(Request)` books any mix of registered types across processes, one `Outcome` per object: `Booked`, `AlreadyBooked`, `Stale`, `Rejected(reason)`. `balances(process)`, `restate(process)`, `preview_restatement(process)`; the sweep after a rules bump: `sweep(limit)` restates up to `limit` processes behind per type and reports `SweepReport { processes, objects, lines, versions_recorded, remaining }`, `preview_sweep(limit, samples)` is its dry run, `SweepPreview` with the net deltas per batch and unit and the first processes' own previews |
+| `Store` | The persistence interface: `read`, `resolve`, `commit`, `record_version`, `batch_sum`, `processes_behind` (the sweep's worklist); `ProcessRead`, `BatchRow`, `Commit`, `CommitLine`, `LineBatch`, `NewBatch`, `CommitOutcome::{Committed, SequenceTaken, BatchNotOpen}` |
 | `InMemoryStore` | The reference store, for tests |
 | `Journal`, `Line`, `SnapshotDiff` | The stored shape: lines `[batch_key, object_id, unit_key, amount]`, diffs `{object_id, type, full | patch}` |
 | `jsonpatch::{diff, apply}` | RFC 7386 merge patch, how diffs are made and folded |
@@ -64,6 +64,13 @@ that there is nothing to keep in sync.
    compare-and-set; a lost race is retried, `DEFAULT_MAX_ATTEMPTS` times.
 7. **Record** the rules version per type that was missing or behind, as a
    separate converging upsert after the commit.
+
+After a rules bump, `sweep(limit)` walks `processes_behind` per registered
+type and restates each process (lines, no diffs, one journal); call it
+until `remaining` is false, from any number of workers. `preview_sweep` is
+the dry run an operator reads first. A process that booked a type but
+crashed between its commit and `record_version` has no row to find; its
+next booking restates it.
 
 ## Rules
 

@@ -269,6 +269,50 @@ pub async fn records_versions<S: Store>(store: &S) {
     assert_eq!(read.versions.get("invoice"), Some(&3));
 }
 
+/// `processes_behind` lists the processes whose recorded version of a type
+/// is below the running one, bounded by the limit.
+pub async fn lists_processes_behind<S: Store>(store: &S) {
+    let type_name = format!("conf-{}", Uuid::now_v7());
+    let p1 = process();
+    let p2 = process();
+    let p3 = process();
+    store
+        .record_version(p1, &type_name, 1)
+        .await
+        .expect("record");
+    store
+        .record_version(p2, &type_name, 2)
+        .await
+        .expect("record");
+    store
+        .record_version(p3, &type_name, 1)
+        .await
+        .expect("record");
+    let mut behind = store
+        .processes_behind(&type_name, 2, 10)
+        .await
+        .expect("behind");
+    behind.sort();
+    let mut expected = vec![p1, p3];
+    expected.sort();
+    assert_eq!(behind, expected);
+    assert_eq!(
+        store
+            .processes_behind(&type_name, 2, 1)
+            .await
+            .expect("behind")
+            .len(),
+        1
+    );
+    assert!(
+        store
+            .processes_behind(&type_name, 1, 10)
+            .await
+            .expect("behind")
+            .is_empty()
+    );
+}
+
 /// Every check, in order.
 pub async fn run_all<S: Store + Clone + 'static>(store: &S) {
     reads_empty_process(store).await;
@@ -278,4 +322,5 @@ pub async fn run_all<S: Store + Clone + 'static>(store: &S) {
     resolves_batches(store).await;
     sums_a_batch_across_processes(store).await;
     records_versions(store).await;
+    lists_processes_behind(store).await;
 }

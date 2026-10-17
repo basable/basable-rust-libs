@@ -101,4 +101,9 @@ first.
    (done 2026-10-17).
 3. Batch lifecycle, epochs and claims behind the row lock; the optional
    projector; the reports over it (done 2026-10-17).
-4. The restatement sweep over every process behind, with its dry run.
+4. The restatement sweep over every process behind, with its dry run
+   (done 2026-10-17): `Store::processes_behind` reads the version table's
+   index, `Ledger::sweep(limit)` restates per pass and reports remaining
+   work, `preview_sweep` books nothing. A process that booked a type but
+   crashed between commit and `record_version` is not on the worklist; its
+   next booking restates it first.

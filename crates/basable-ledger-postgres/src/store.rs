@@ -308,4 +308,23 @@ impl Store for PgStore {
         }
         Ok(sums)
     }
+
+    async fn processes_behind(
+        &self,
+        type_name: &str,
+        version: u32,
+        limit: u32,
+    ) -> Result<Vec<ProcessId>, StoreError> {
+        let rows: Vec<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT process_id FROM process_accounting_object_version \
+             WHERE type_name = $1 AND version < $2 ORDER BY process_id LIMIT $3",
+        )
+        .bind(type_name)
+        .bind(i32::try_from(version).map_err(|_| corrupt("version", version))?)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(rows.into_iter().map(ProcessId).collect())
+    }
 }

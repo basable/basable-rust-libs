@@ -51,6 +51,7 @@ pub use error::{LedgerError, Rejection, StoreError};
 pub use journal::{Journal, Line, SnapshotDiff};
 pub use ledger::{
     Builder, DEFAULT_MAX_ATTEMPTS, Ledger, Outcome, Request, Restated, RestatementPreview,
+    SweepPreview, SweepReport,
 };
 pub use memory::InMemoryStore;
 pub use object::LedgerObject;

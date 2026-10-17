@@ -90,6 +90,36 @@ pub struct RestatementPreview {
     pub deltas: Vec<(BatchId, UnitKey, i128)>,
 }
 
+/// What one pass of the sweep did.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct SweepReport {
+    /// Processes restated.
+    pub processes: usize,
+    /// Objects re-evaluated.
+    pub objects: usize,
+    /// Lines booked.
+    pub lines: usize,
+    /// Versions recorded.
+    pub versions_recorded: usize,
+    /// Whether a type's worklist was cut at the limit: call again.
+    pub remaining: bool,
+}
+
+/// The sweep's dry run.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct SweepPreview {
+    /// Processes that would be restated.
+    pub processes: usize,
+    /// Objects that would be re-evaluated.
+    pub objects: usize,
+    /// The net change per (batch id, unit) over every process previewed.
+    pub deltas: Vec<(BatchId, UnitKey, i128)>,
+    /// The first processes' own previews.
+    pub samples: Vec<(ProcessId, RestatementPreview)>,
+    /// Whether a type's worklist was cut at the limit.
+    pub remaining: bool,
+}
+
 /// Builds a [`Ledger`]: the store and every object type it books.
 pub struct Builder<S> {
     store: S,
@@ -264,6 +294,71 @@ impl<S: Store> Ledger<S> {
                 .map(|((id, unit), a)| (id, unit, a))
                 .collect(),
         })
+    }
+
+    /// One pass of the restatement sweep: for every registered type, up to
+    /// `limit` processes whose recorded version is behind are restated.
+    /// Level-triggered and resumable: call until `remaining` is false, from
+    /// any number of workers. A process whose desired states no longer
+    /// balance under the new rules stops the pass with `LedgerError::Rejected`,
+    /// which is what a dry run ([`preview_sweep`](Self::preview_sweep)) is for.
+    pub async fn sweep(&self, limit: u32) -> Result<SweepReport, LedgerError> {
+        let mut report = SweepReport::default();
+        for (type_name, version) in self.registry.types() {
+            let behind = self
+                .store
+                .processes_behind(type_name, version, limit)
+                .await?;
+            if behind.len() as u32 >= limit {
+                report.remaining = true;
+            }
+            for process in behind {
+                let restated = self.restate(process).await?;
+                report.processes += 1;
+                report.objects += restated.objects;
+                report.lines += restated.lines;
+                report.versions_recorded += restated.versions_recorded;
+            }
+        }
+        Ok(report)
+    }
+
+    /// The sweep's dry run over up to `limit` processes per type: what the
+    /// restatement would book, per batch and unit, with the first
+    /// `samples` processes' own previews. Books nothing.
+    pub async fn preview_sweep(
+        &self,
+        limit: u32,
+        samples: usize,
+    ) -> Result<SweepPreview, LedgerError> {
+        let mut preview = SweepPreview::default();
+        let mut deltas: BTreeMap<(BatchId, UnitKey), i128> = BTreeMap::new();
+        for (type_name, version) in self.registry.types() {
+            let behind = self
+                .store
+                .processes_behind(type_name, version, limit)
+                .await?;
+            if behind.len() as u32 >= limit {
+                preview.remaining = true;
+            }
+            for process in behind {
+                let one = self.preview_restatement(process).await?;
+                preview.processes += 1;
+                preview.objects += one.objects;
+                for (id, unit, amount) in &one.deltas {
+                    *deltas.entry((id.clone(), *unit)).or_insert(0) += amount;
+                }
+                if preview.samples.len() < samples {
+                    preview.samples.push((process, one));
+                }
+            }
+        }
+        preview.deltas = deltas
+            .into_iter()
+            .filter(|(_, a)| *a != 0)
+            .map(|((id, unit), a)| (id, unit, a))
+            .collect();
+        Ok(preview)
     }
 
     /// Books one process's submissions, retrying a lost sequence race.

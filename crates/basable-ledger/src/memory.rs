@@ -194,4 +194,22 @@ impl Store for InMemoryStore {
         }
         Ok(sums.into_iter().collect())
     }
+
+    async fn processes_behind(
+        &self,
+        type_name: &str,
+        version: u32,
+        limit: u32,
+    ) -> Result<Vec<ProcessId>, StoreError> {
+        let g = self.inner.lock().expect("store lock");
+        let mut behind: Vec<ProcessId> = g
+            .versions
+            .iter()
+            .filter(|((_, t), v)| t == type_name && **v < version)
+            .map(|((p, _), _)| *p)
+            .collect();
+        behind.sort();
+        behind.truncate(limit as usize);
+        Ok(behind)
+    }
 }
