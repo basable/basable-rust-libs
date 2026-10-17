@@ -51,6 +51,7 @@ crate.from_cargo(
         "//crates/basable-testkit:Cargo.toml",
         "//crates/basable-ledger:Cargo.toml",
         "//crates/basable-ledger-testkit:Cargo.toml",
+        "//crates/basable-ledger-postgres:Cargo.toml",
         "//crates/basable-processingobject:Cargo.toml",
         "//crates/basable-processingobject-testkit:Cargo.toml",
         "//crates/basable-externaleffect:Cargo.toml",

@@ -12,6 +12,7 @@ members = [
     "crates/basable-testkit",
     "crates/basable-ledger",
     "crates/basable-ledger-testkit",
+    "crates/basable-ledger-postgres",
     "crates/basable-processingobject",
     "crates/basable-processingobject-testkit",
     "crates/basable-externaleffect",
@@ -47,6 +48,7 @@ basable-db = { version = "=0.3.0", path = "crates/basable-db" }
 basable-testkit = { version = "=0.3.0", path = "crates/basable-testkit" }
 basable-ledger = { version = "=0.3.0", path = "crates/basable-ledger" }
 basable-ledger-testkit = { version = "=0.3.0", path = "crates/basable-ledger-testkit" }
+basable-ledger-postgres = { version = "=0.3.0", path = "crates/basable-ledger-postgres" }
 basable-processingobject = { version = "=0.3.0", path = "crates/basable-processingobject" }
 basable-processingobject-testkit = { version = "=0.3.0", path = "crates/basable-processingobject-testkit" }
 basable-externaleffect = { version = "=0.3.0", path = "crates/basable-externaleffect" }

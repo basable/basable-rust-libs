@@ -2,7 +2,7 @@
   "binary_crates": [
     "connectrpc-codegen 0.9.0"
   ],
-  "checksum": "aea820fd7b7a728c549547be2deb5fb27a56ce32ff148edf35dc7272b0391f4d",
+  "checksum": "dca10550fbbe266a0f919254c4ede9c739d449731184bc07be352e8fffde526a",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -1361,6 +1361,56 @@
         {
           "Library": {
             "crate_name": "basable_ledger",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.3.0"
+    },
+    "basable-ledger-postgres 0.3.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "chrono 0.4.45",
+            "target": "chrono"
+          },
+          {
+            "id": "serde_json 1.0.151",
+            "target": "serde_json"
+          },
+          {
+            "id": "sqlx 0.8.6",
+            "target": "sqlx"
+          },
+          {
+            "id": "tracing 0.1.44",
+            "target": "tracing"
+          },
+          {
+            "id": "uuid 1.26.1",
+            "target": "uuid"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tokio 1.53.1",
+            "target": "tokio"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "basable_ledger_postgres",
+      "license": "MIT",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "basable-ledger-postgres",
+      "package_url": "https://github.com/basable/basable-rust-libs",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "basable_ledger_postgres",
             "crate_root": "src/lib.rs"
           }
         }
@@ -18520,6 +18570,7 @@
     "basable-effecttest 0.3.0": "crates/basable-effecttest",
     "basable-externaleffect 0.3.0": "crates/basable-externaleffect",
     "basable-ledger 0.3.0": "crates/basable-ledger",
+    "basable-ledger-postgres 0.3.0": "crates/basable-ledger-postgres",
     "basable-ledger-testkit 0.3.0": "crates/basable-ledger-testkit",
     "basable-messenger 0.3.0": "crates/basable-messenger",
     "basable-messenger-codegen 0.3.0": "crates/basable-messenger-codegen",
