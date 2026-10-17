@@ -55,6 +55,13 @@ first.
   state stays pure; the engine resolves the names in one query. A consumed
   or closed batch rolls to the next epoch under the same id; a batch named
   under another ledger or type rejects.
+- A commit locks the batches it writes into `FOR SHARE` and refuses one
+  that is no longer open (`CommitOutcome::BatchNotOpen`, retried like a
+  lost sequence), so a close waits for every in-flight writer and nothing
+  lands in a batch after its close; the claim sums the moment the close
+  committed. A snapshot-based horizon wait was tried first and dropped:
+  a snapshot lists only the in-progress transactions below its `xmax`, and
+  a writer whose transaction id is assigned after the close is not in it.
 - A rules version bump restates: every process whose recorded version
   (per process and object type, `record_version`, a converging upsert
   after the commit) is behind is re-evaluated on its folded snapshots and
@@ -90,7 +97,8 @@ first.
 ## Phases
 
 1. `basable-ledger` and `basable-ledger-testkit` (done 2026-10-17).
-2. `basable-ledger-postgres` and the conformance suite against Postgres.
-3. Batch lifecycle, epochs and claims behind the horizon wait; the
-   optional projector; the reports over it.
+2. `basable-ledger-postgres` and the conformance suite against Postgres
+   (done 2026-10-17).
+3. Batch lifecycle, epochs and claims behind the row lock; the optional
+   projector; the reports over it (done 2026-10-17).
 4. The restatement sweep over every process behind, with its dry run.

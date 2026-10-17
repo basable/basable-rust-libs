@@ -115,6 +115,12 @@ pub enum CommitOutcome {
     /// Another commit to the process took the sequence first: read again,
     /// recompute.
     SequenceTaken,
+    /// A batch the lines write into is no longer open: it was closed between
+    /// the resolve and the commit. Read again, recompute; the next epoch is
+    /// resolved then. The store checks this under a `FOR SHARE` lock on the
+    /// batch row, so a close waits for every in-flight commit and nothing
+    /// lands in a batch after its close.
+    BatchNotOpen(BatchKey),
 }
 
 /// The backend behind the engine. Every adapter passes the conformance suite
@@ -136,8 +142,10 @@ pub trait Store: Send + Sync {
     ) -> impl Future<Output = Result<Vec<Option<BatchRow>>, StoreError>> + Send;
 
     /// Atomically creates the new batches (a lost race on (id, epoch) reuses
-    /// the winner's row) and appends the journal at `after_sequence + 1`.
-    /// The primary key on (process, sequence) is the compare-and-set: a
+    /// the winner's row), checks under a shared row lock that every existing
+    /// batch written into is still open ([`CommitOutcome::BatchNotOpen`]
+    /// otherwise), and appends the journal at `after_sequence + 1`. The
+    /// primary key on (process, sequence) is the compare-and-set: a
     /// violation is [`CommitOutcome::SequenceTaken`].
     fn commit(
         &self,

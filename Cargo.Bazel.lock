@@ -2,7 +2,7 @@
   "binary_crates": [
     "connectrpc-codegen 0.9.0"
   ],
-  "checksum": "dca10550fbbe266a0f919254c4ede9c739d449731184bc07be352e8fffde526a",
+  "checksum": "6554e537f30cbaa8f9d7c7577da7b55c35410b881f3f8424c16ded4fbf788b7f",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -1383,18 +1383,16 @@
             "target": "sqlx"
           },
           {
+            "id": "tokio 1.53.1",
+            "target": "tokio"
+          },
+          {
             "id": "tracing 0.1.44",
             "target": "tracing"
           },
           {
             "id": "uuid 1.26.1",
             "target": "uuid"
-          }
-        ],
-        "deps_dev": [
-          {
-            "id": "tokio 1.53.1",
-            "target": "tokio"
           }
         ],
         "edition": "2024"

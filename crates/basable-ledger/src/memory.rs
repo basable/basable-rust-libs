@@ -107,6 +107,14 @@ impl Store for InMemoryStore {
         if last != commit.after_sequence {
             return Ok(CommitOutcome::SequenceTaken);
         }
+        for l in &commit.lines {
+            if let LineBatch::Key(key) = l.batch
+                && let Some(row) = inner.batches.iter().find(|b| b.key == key)
+                && row.status != BatchStatus::Open
+            {
+                return Ok(CommitOutcome::BatchNotOpen(key));
+            }
+        }
         let mut new_keys = Vec::with_capacity(commit.new_batches.len());
         for nb in &commit.new_batches {
             let existing = inner

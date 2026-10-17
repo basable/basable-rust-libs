@@ -132,7 +132,9 @@ pub struct Ledger<S> {
 
 enum Committed {
     Journal(usize),
-    SequenceTaken,
+    /// The sequence was taken or a batch closed under the commit: read
+    /// again, recompute.
+    Retry,
     Rejected(Rejection),
 }
 
@@ -219,7 +221,7 @@ impl<S: Store> Ledger<S> {
             if !plan.is_empty() {
                 match self.commit_plan(process, &current, &plan).await? {
                     Committed::Journal(lines) => restated.lines = lines,
-                    Committed::SequenceTaken => continue,
+                    Committed::Retry => continue,
                     Committed::Rejected(rejection) => {
                         return Err(LedgerError::Rejected { process, rejection });
                     }
@@ -286,7 +288,7 @@ impl<S: Store> Ledger<S> {
             if !plan.is_empty() {
                 match self.commit_plan(process, &current, &plan).await? {
                     Committed::Journal(_) => {}
-                    Committed::SequenceTaken => continue,
+                    Committed::Retry => continue,
                     Committed::Rejected(rejection) => return Ok(rejected(rejection)),
                 }
             }
@@ -335,7 +337,7 @@ impl<S: Store> Ledger<S> {
         let lines = commit.lines.len();
         Ok(match self.store.commit(commit).await? {
             CommitOutcome::Committed => Committed::Journal(lines),
-            CommitOutcome::SequenceTaken => Committed::SequenceTaken,
+            CommitOutcome::SequenceTaken | CommitOutcome::BatchNotOpen(_) => Committed::Retry,
         })
     }
 }

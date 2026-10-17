@@ -187,6 +187,43 @@ impl Store for PgStore {
             };
             new_keys.push(key);
         }
+        // Every existing batch written into must still be open, checked under
+        // a shared row lock: a close's UPDATE waits for this transaction, and
+        // a close that already committed is seen here.
+        let mut existing: Vec<i64> = commit
+            .lines
+            .iter()
+            .filter_map(|l| match l.batch {
+                LineBatch::Key(k) => Some(k.0),
+                LineBatch::New(_) => None,
+            })
+            .collect();
+        existing.sort_unstable();
+        existing.dedup();
+        if !existing.is_empty() {
+            let rows = sqlx::query(
+                "SELECT batch_key, status FROM batch WHERE batch_key = ANY($1) FOR SHARE",
+            )
+            .bind(&existing)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(backend)?;
+            if rows.len() != existing.len() {
+                return Err(StoreError::Corrupt(format!(
+                    "commit names {} batches, {} rows exist",
+                    existing.len(),
+                    rows.len()
+                )));
+            }
+            for row in &rows {
+                let status: i16 = row.try_get("status").map_err(backend)?;
+                if status != BatchStatus::Open.as_i16() {
+                    let key: i64 = row.try_get("batch_key").map_err(backend)?;
+                    tx.rollback().await.map_err(backend)?;
+                    return Ok(CommitOutcome::BatchNotOpen(BatchKey(key)));
+                }
+            }
+        }
         let lines: Vec<Line> = commit
             .lines
             .iter()

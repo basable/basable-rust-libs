@@ -30,6 +30,9 @@ CREATE INDEX idx_journal_booked_at ON journal (booked_at);
 -- One physical batch per (batch_id, epoch). The framework knows of a batch
 -- only its ledger and its type (1 debit, 2 credit, 3 memo); what the id
 -- means is the user's. Status: 1 open, 2 closed, 3 claimed, 4 consumed.
+-- A commit locks the batches it writes into FOR SHARE and refuses one that
+-- is not open, so the close's UPDATE waits for every in-flight writer and
+-- nothing lands in a batch after its close.
 CREATE TABLE batch (
     batch_key  BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     batch_id   TEXT NOT NULL,
@@ -39,6 +42,16 @@ CREATE TABLE batch (
     status     SMALLINT NOT NULL DEFAULT 1 CHECK (status IN (1, 2, 3, 4)),
     closed_at  TIMESTAMPTZ,
     UNIQUE (batch_id, epoch)
+);
+
+-- What a claim found in a batch, per unit, recorded with the status change
+-- to claimed in one transaction so a claimant that crashes afterwards reads
+-- the same amounts again.
+CREATE TABLE batch_claim (
+    batch_key BIGINT NOT NULL REFERENCES batch (batch_key),
+    unit_key  BIGINT NOT NULL,
+    amount    NUMERIC(39, 0) NOT NULL,
+    PRIMARY KEY (batch_key, unit_key)
 );
 
 -- The desired_state version that last evaluated an object type in a
@@ -59,6 +72,7 @@ RESET ROLE;
 SET LOCAL ROLE nano_ledger;
 SET LOCAL search_path = nano_ledger;
 DROP TABLE IF EXISTS process_accounting_object_version;
+DROP TABLE IF EXISTS batch_claim;
 DROP TABLE IF EXISTS batch;
 DROP TABLE IF EXISTS journal;
 RESET ROLE;

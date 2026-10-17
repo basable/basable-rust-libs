@@ -864,3 +864,18 @@ of it changed, in the crates and in the templates:
     rejections reach a caller per object as an `Outcome` and a restatement's
     as `LedgerError::Rejected`; and snapshot diffs carry the type name as the
     `LedgerObject::TYPE` string rather than a registry integer.
+
+88. **A close waits for writers through a shared row lock, not a snapshot
+    horizon.** The plan recommended closing a batch, then waiting until
+    every transaction in progress at the close had finished, read from
+    `pg_current_snapshot()`. Built and tested, it missed two cases: a
+    snapshot's `xip` lists only in-progress transactions below its `xmax`,
+    so the newest writer (whose id *is* `xmax`) is absent, and the engine
+    resolves batches in one transaction and writes in another, so a writer
+    whose id is assigned after the close is not in any snapshot. The commit
+    now takes `FOR SHARE` on the batches it writes into and refuses one that
+    is not open (`CommitOutcome::BatchNotOpen`, retried like a lost
+    sequence); the close's `UPDATE` therefore waits for every in-flight
+    writer, and the claim sums right after it. Share locks do not contend
+    with each other, so bookings into one batch stay parallel; only the
+    close waits, once.
