@@ -66,26 +66,33 @@ first.
   (per process and object type, `record_version`, a converging upsert
   after the commit) is behind is re-evaluated on its folded snapshots and
   the difference appended as a journal with lines and no diffs. Prospective:
-  history is never rewritten. A booking into a process that is behind
-  restates it first, in the same journal.
+  history is never rewritten. A version changes only with a deployment, so
+  the new code restates once at startup (`Ledger::restate_behind`, over
+  `Store::processes_behind`, the version table's index) and a booking into
+  a process still behind restates it first, in the same journal. A replica
+  of the previous deployment may not book a process already restated:
+  `LedgerError::RulesBehind`, since its older rules would move the
+  positions back. A rules change is never rolled back; the old desired
+  state comes back as a higher version.
 
 ## Not in the write path, by design
 
-- **No balance table.** An optional projector in `basable-ledger-postgres`
-  maintains `batch_balance` by time window with a per-process sequence
-  check; a user may add a trigger instead, with the warning that it
-  serializes bookings on hot batches. ClickHouse through change data
-  capture is the step after that.
+- **No balance table, and none shipped.** A position is a sum of lines; a
+  claim sums its batch after the close. A queryable `batch_balance` is the
+  user's projection off the journal table (a trigger, with the warning that
+  it serializes bookings on hot batches, or ClickHouse through change data
+  capture), and `basable-ledger-testkit`'s `projection` check is what it
+  must pass. A time-window projector was built in `basable-ledger-postgres`
+  and removed the same day: it is not the framework's concern.
 - **No feed column.** A sequence value is handed out inside the
-  transaction, so an auto-increment is neither gapless nor commit-ordered;
-  the projector reads by `booked_at` instead.
+  transaction, so an auto-increment is neither gapless nor commit-ordered.
 - **No account-level limit.** The ledger records reality; a synchronous
   limit is a guarded tier beside it, not the ledger's model.
 
 ## Deviations the Rust shape made
 
 - The rules version is `Accounting::VERSION`, an associated constant, not a
-  field `desired_state` returns: the restatement sweep needs the running
+  field `desired_state` returns: the startup restatement needs the running
   version before it has any object to evaluate, and one number in one
   place cannot drift.
 - Rejections are per object through `Outcome`; a restatement, having no
@@ -99,11 +106,13 @@ first.
 1. `basable-ledger` and `basable-ledger-testkit` (done 2026-10-17).
 2. `basable-ledger-postgres` and the conformance suite against Postgres
    (done 2026-10-17).
-3. Batch lifecycle, epochs and claims behind the row lock; the optional
-   projector; the reports over it (done 2026-10-17).
-4. The restatement sweep over every process behind, with its dry run
-   (done 2026-10-17): `Store::processes_behind` reads the version table's
-   index, `Ledger::sweep(limit)` restates per pass and reports remaining
-   work, `preview_sweep` books nothing. A process that booked a type but
-   crashed between commit and `record_version` is not on the worklist; its
-   next booking restates it first.
+3. Batch lifecycle, epochs and claims behind the row lock (done
+   2026-10-17). The optional time-window projector built with it was
+   removed on 2026-10-18.
+4. The restatement at startup (done 2026-10-17 as an operator's sweep with
+   a dry run, reshaped 2026-10-18): `Store::processes_behind` reads the
+   version table's index, `Ledger::restate_behind` runs to completion when
+   the new deployment starts, `preview_restatement(process)` is the
+   per-process dry run, and a ledger on older rules is refused. A process
+   that booked a type but crashed between commit and `record_version` is
+   not on the worklist; its next booking restates it first.

@@ -1,7 +1,7 @@
 [package]
 name = "basable-ledger-postgres"
 workspace = "../.."
-description = "The Postgres store of basable-ledger: the journal, batch and version tables in a nanoservice's schema (dbmate migration), the compare-and-set commit on (process, sequence), batch creation and epochs, the batch sum, and later the batch lifecycle and the optional batch_balance projector."
+description = "The Postgres store of basable-ledger: the journal, batch and version tables in a nanoservice's schema (dbmate migration), the compare-and-set commit on (process, sequence), batch creation and epochs, the batch sum, and the batch lifecycle."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,13 +17,12 @@ basable-ledger = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
-tokio = { workspace = true }
-tracing = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v4", "v7"] }
 
 [dev-dependencies]
 basable-ledger-testkit = { workspace = true }
 basable-testkit = { workspace = true }
+tokio = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

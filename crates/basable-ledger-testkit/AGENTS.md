@@ -15,8 +15,8 @@ Postgres in its own crate.
 | `fixture::{new_invoice, new_payment}`, `Invoice::next`, `Payment::next` | Snapshot builders: the next version with a state and amounts |
 | `Scenario` | A ledger over a fresh in-memory store with the fixture registered: `book`, `booked`, `book_all`, `journals`, `balances`, `positions`, `batch`, `batches_of`; `upgraded()` is the same store under version 2 of the invoice rules |
 | `walk::{Rng, random_history, desired_positions, check_history}` | The generator-driven properties: a deterministic xorshift, a random legal history of one invoice, and the check that books it and asserts path independence, balanced journals and an idempotent replay |
-| `conformance::{run_all, ...}` | The store suite: reads an unknown process as empty; commits and reads back lines, diffs and batch rows; the sequence is the compare-and-set; concurrent commits land once; batch ids resolve to their highest epoch and a lost race on (id, epoch) reuses the winner's row; a batch sums across processes; versions record monotonically; `processes_behind` lists the sweep's worklist within the limit |
-| `projection::{expected_balances, check_agrees}` | The check any balance projection must pass: per (batch key, unit) it equals the journals' lines summed, over the processes given |
+| `conformance::{run_all, ...}` | The store suite: reads an unknown process as empty; commits and reads back lines, diffs and batch rows; the sequence is the compare-and-set; concurrent commits land once; batch ids resolve to their highest epoch and a lost race on (id, epoch) reuses the winner's row; a batch sums across processes; versions record monotonically; `processes_behind` lists the startup restatement's worklist within the limit |
+| `projection::{expected_balances, check_agrees}` | The check any balance projection must pass: per (batch key, unit) it equals the journals' lines summed, over the processes given. The framework ships no balance table; this is the testkit's projection, and a user's trigger or ClickHouse table answers to it |
 
 ## Rules
 
@@ -32,4 +32,4 @@ Postgres in its own crate.
 ## What the tests pin
 
 See `crates/basable-ledger/AGENTS.md`: `tests/scenario.rs`,
-`tests/walk.rs`, `tests/sweep.rs`, `tests/conformance_memory.rs`.
+`tests/walk.rs`, `tests/restatement.rs`, `tests/conformance_memory.rs`.

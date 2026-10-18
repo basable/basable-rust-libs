@@ -1,8 +1,8 @@
-//! A check any balance projection can run: for every process given, the
+//! A check any balance projection must pass: for every process given, the
 //! projection's balance per (batch key, unit) must equal the sum of the
-//! journals' lines, which is what the engine itself computes. The
-//! projector of `basable-ledger-postgres` passes it; so should a trigger a
-//! user adds, or a ClickHouse table.
+//! journals' lines, which is what the engine itself computes. The framework
+//! keeps no balance table; a user's trigger, a ClickHouse table fed by
+//! change data capture, or a query over the lines index all answer to this.
 
 use std::collections::BTreeMap;
 use std::future::Future;

@@ -151,8 +151,8 @@ impl Plan {
 }
 
 /// Plans one process's part of a call. `restate_types` are the registered
-/// types to check for a pending restatement beyond the submitted ones (a
-/// restatement sweep passes every registered type).
+/// types to check for a pending restatement beyond the submitted ones (the
+/// startup restatement passes every registered type).
 pub(crate) fn plan(
     current: &Current,
     submissions: &[Submission],
@@ -177,8 +177,10 @@ pub(crate) fn plan(
 
     // Restatement first: every type in question that is behind in this process.
     let mut types: BTreeMap<&'static str, u32> = restate_types.iter().copied().collect();
+    let mut submitted: BTreeSet<&'static str> = BTreeSet::new();
     for s in submissions {
         types.insert(s.object.type_name(), s.object.rules_version());
+        submitted.insert(s.object.type_name());
     }
     for (type_name, running) in types {
         let recorded = current.versions.get(type_name).copied();
@@ -190,6 +192,11 @@ pub(crate) fn plan(
             Some(r) => r < running,
             None => has_objects,
         };
+        // A type this process has no objects of and that is not being booked
+        // gets no version row: the row marks a type the process booked.
+        if !behind && !submitted.contains(type_name) {
+            continue;
+        }
         if behind {
             for (id, cur) in &current.objects {
                 if cur.object.type_name() != type_name {

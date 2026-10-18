@@ -26,8 +26,8 @@ that there is nothing to keep in sync.
 | `Batches` | The recorder a desired state names batches through: `open(account, id)` reuses the open batch or has the commit create it, `existing(account, id)` reuses only. Returns a `BatchRef`; two accounts on one id is a `BatchConflict` and a rejection |
 | `Desired`, `balance(batch, unit, amount)`, `desired![...]` | The positions of a state: signed amounts in the column of each batch's type. Duplicates of one key are summed |
 | `Balances`, `ObjectBalances` | What `validate_balances` and `Ledger::balances` see: per object, per batch id and unit, summed over the batch's epochs, computed from the journals |
-| `Ledger<S>`, `Builder`, `Request`, `Outcome` | `Ledger::builder(store).register::<O, A>()...build()`; `book(Request)` books any mix of registered types across processes, one `Outcome` per object: `Booked`, `AlreadyBooked`, `Stale`, `Rejected(reason)`. `balances(process)`, `restate(process)`, `preview_restatement(process)`; the sweep after a rules bump: `sweep(limit)` restates up to `limit` processes behind per type and reports `SweepReport { processes, objects, lines, versions_recorded, remaining }`, `preview_sweep(limit, samples)` is its dry run, `SweepPreview` with the net deltas per batch and unit and the first processes' own previews |
-| `Store` | The persistence interface: `read`, `resolve`, `commit`, `record_version`, `batch_sum`, `processes_behind` (the sweep's worklist); `ProcessRead`, `BatchRow`, `Commit`, `CommitLine`, `LineBatch`, `NewBatch`, `CommitOutcome::{Committed, SequenceTaken, BatchNotOpen}` |
+| `Ledger<S>`, `Builder`, `Request`, `Outcome` | `Ledger::builder(store).register::<O, A>()...build()`; `book(Request)` books any mix of registered types across processes, one `Outcome` per object: `Booked`, `AlreadyBooked`, `Stale`, `Rejected(reason)`. `balances(process)`, `restate(process)`, `preview_restatement(process)` (the per-process dry run: the net deltas per batch and unit); `restate_behind()`, called once when a deployment starts, restates every process behind the running rules of any registered type and reports `RestatementReport { processes, objects, lines, versions_recorded }` |
+| `Store` | The persistence interface: `read`, `resolve`, `commit`, `record_version`, `batch_sum`, `processes_behind` (the startup restatement's worklist); `ProcessRead`, `BatchRow`, `Commit`, `CommitLine`, `LineBatch`, `NewBatch`, `CommitOutcome::{Committed, SequenceTaken, BatchNotOpen}` |
 | `InMemoryStore` | The reference store, for tests |
 | `Journal`, `Line`, `SnapshotDiff` | The stored shape: lines `[batch_key, object_id, unit_key, amount]`, diffs `{object_id, type, full | patch}` |
 | `jsonpatch::{diff, apply}` | RFC 7386 merge patch, how diffs are made and folded |
@@ -65,12 +65,19 @@ that there is nothing to keep in sync.
 7. **Record** the rules version per type that was missing or behind, as a
    separate converging upsert after the commit.
 
-After a rules bump, `sweep(limit)` walks `processes_behind` per registered
-type and restates each process (lines, no diffs, one journal); call it
-until `remaining` is false, from any number of workers. `preview_sweep` is
-the dry run an operator reads first. A process that booked a type but
-crashed between its commit and `record_version` has no row to find; its
-next booking restates it.
+A rules version changes only with a deployment, so the new code calls
+`restate_behind()` once when it starts: it pages through `processes_behind`
+per registered type and restates each process (lines, no diffs, one
+journal) until nothing is behind. Before serving or alongside it is the
+caller's choice; any number of replicas may run it at once. While the new
+deployment restates, a replica of the previous one is still booking: a
+booking whose running `VERSION` is below the process's recorded version
+fails with `LedgerError::RulesBehind` rather than moving the restated
+positions back, and the caller retries once the old replica is gone. A
+rules change is therefore never rolled back; the old desired state comes
+back as a higher version. A process that booked a type but crashed between
+its commit and `record_version` has no row to find; its next booking
+restates it. A version row exists only for a type the process booked.
 
 ## Rules
 
@@ -103,5 +110,7 @@ disallowed changes, frozen amounts, the balance check, a payment clearing an
 invoice across objects, a rejected object rejecting its process, a rules
 bump restating by one appended journal, a consumed batch rolling to the
 next epoch, memo batches), `tests/walk.rs` (random histories: every journal
-balances, path independence, replay books nothing) and
+balances, path independence, replay books nothing),
+`tests/restatement.rs` (the startup restatement over every process behind,
+the run after it finding nothing, the older-rules replica refused) and
 `tests/conformance_memory.rs` (the store suite over `InMemoryStore`).

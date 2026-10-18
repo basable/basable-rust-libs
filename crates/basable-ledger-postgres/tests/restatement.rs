@@ -1,9 +1,10 @@
-//! The restatement sweep over Postgres: the worklist comes from the version
-//! table's index, the dry run books nothing, the pass restates, the next
-//! pass finds nothing.
+//! The startup restatement over Postgres: the worklist comes from the
+//! version table's index, the per-process dry run books nothing, the run
+//! restates every process behind, the next run finds nothing, and a
+//! replica on the older rules is refused.
 
 use basable_db::{Nanoservice, Stateful};
-use basable_ledger::{Ledger, Request, Store, SweepReport, UnitKey};
+use basable_ledger::{Ledger, LedgerError, Request, RestatementReport, Store, UnitKey};
 use basable_ledger_postgres::{PgStore, SCHEMA_PLACEHOLDER};
 use basable_ledger_testkit::fixture::{
     Currency, Invoice, InvoiceLedger, InvoiceLedgerV2, InvoiceState, Payment, PaymentLedger,
@@ -30,7 +31,7 @@ async fn db() -> Option<TestDb> {
 }
 
 #[tokio::test]
-async fn the_sweep_restates_on_postgres() {
+async fn the_startup_restatement_restates_on_postgres() {
     let Some(db) = db().await else {
         eprintln!("TEST_DATABASE_URL unset: skipping");
         return;
@@ -54,41 +55,47 @@ async fn the_sweep_restates_on_postgres() {
         .register::<Invoice, InvoiceLedgerV2>()
         .register::<Payment, PaymentLedger>()
         .build();
-    let preview = v2.preview_sweep(10, 1).await.expect("preview");
-    assert_eq!(preview.processes, 4);
-    let total: i128 = (1..=4).map(|i| 210 * i).sum();
+    // The dry run of one process: VAT moves from the month to the quarter.
+    let preview = v2
+        .preview_restatement(invoices[0].process_id)
+        .await
+        .expect("preview");
     assert_eq!(
         preview.deltas,
         vec![
-            (invoices[0].vat_batch(), UnitKey(978), -total),
-            (
-                InvoiceLedgerV2::vat_batch(&invoices[0]),
-                UnitKey(978),
-                total
-            ),
+            (invoices[0].vat_batch(), UnitKey(978), -210),
+            (InvoiceLedgerV2::vat_batch(&invoices[0]), UnitKey(978), 210),
         ]
     );
-    // The dry run booked nothing.
-    for invoice in &invoices {
-        assert_eq!(
-            store
-                .read(invoice.process_id)
-                .await
-                .expect("read")
-                .sequence(),
-            1
-        );
-    }
-    let report = v2.sweep(10).await.expect("sweep");
-    assert_eq!(report.processes, 4);
-    assert_eq!(report.objects, 4);
-    assert_eq!(report.lines, 8);
-    assert!(!report.remaining);
-    assert_eq!(v2.sweep(10).await.expect("sweep"), SweepReport::default());
+    assert_eq!(
+        store
+            .read(invoices[0].process_id)
+            .await
+            .expect("read")
+            .sequence(),
+        1,
+        "the dry run booked nothing"
+    );
+
+    let report = v2.restate_behind().await.expect("restate");
+    assert_eq!(
+        report,
+        RestatementReport {
+            processes: 4,
+            objects: 4,
+            lines: 8,
+            versions_recorded: 4,
+        }
+    );
+    assert_eq!(
+        v2.restate_behind().await.expect("restate"),
+        RestatementReport::default()
+    );
     for invoice in &invoices {
         let read = store.read(invoice.process_id).await.expect("read");
         assert_eq!(read.sequence(), 2);
         assert_eq!(read.versions.get("invoice"), Some(&2));
+        assert_eq!(read.versions.get("payment"), None);
         let b = v2.balances(invoice.process_id).await.expect("balances");
         assert_eq!(
             b.of(invoice.id)
@@ -96,6 +103,24 @@ async fn the_sweep_restates_on_postgres() {
             invoice.vat
         );
     }
+
+    // The previous deployment's replica may not book a restated process.
+    let paid = invoices[0].next(InvoiceState::Paid, 1_210);
+    let err = v1
+        .book(Request::new().with(paid))
+        .await
+        .expect_err("booked under older rules");
+    assert!(
+        matches!(
+            err,
+            LedgerError::RulesBehind {
+                recorded: 2,
+                running: 1,
+                ..
+            }
+        ),
+        "{err}"
+    );
     pool.close().await;
     db.finish().await;
 }

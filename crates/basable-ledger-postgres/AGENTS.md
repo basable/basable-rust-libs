@@ -1,38 +1,36 @@
-# basable-ledger-postgres — the ledger's tables, its Postgres store, the batch lifecycle and the optional projector
+# basable-ledger-postgres — the ledger's tables, its Postgres store and the batch lifecycle
 
 The `Store` of `basable-ledger` over Postgres, in the schema of the
 nanoservice that owns the ledger (`basable_db::NanoPool`, `SET ROLE` and
 `search_path` pinned, so table names are unqualified), plus what only a
-database can do: the batch lifecycle behind a row lock, and the optional
-projector. The specification is `docs/decisions/0005-declarative-ledger.md`.
+database can do: the batch lifecycle behind a row lock. The specification
+is `docs/decisions/0005-declarative-ledger.md`.
 
 ## The surface
 
 | Item | What it is |
 |---|---|
 | `MIGRATION`, `MIGRATION_FILE`, `SCHEMA_PLACEHOLDER`, `migrations()` | The dbmate migration that creates `journal`, `batch`, `batch_claim` and `process_accounting_object_version`, with `nano_ledger` as the schema and role placeholder. Apply it through `basable_db::migrate::apply` with the replacement `("nano_ledger", "nano_<name>")` |
-| `PROJECTOR_MIGRATION`, `projector_migrations()` | The optional projector's tables, `batch_balance`, `projected_process`, `projector_watermark`. Apply only when running the projector |
-| `PgStore::new(pool)` | The store: `read` (every journal of a process, the batch rows its lines name, the recorded versions), `resolve` (the highest epoch per batch id), `commit` (new batches with `ON CONFLICT (batch_id, epoch) DO NOTHING`; the existing batches written into locked `FOR SHARE` and checked open, else `BatchNotOpen`; the journal at the next sequence, a unique violation on the primary key being `SequenceTaken`), `record_version` (an upsert that never moves backwards), `batch_sum` (a containment query on the lines index) |
+| `PgStore::new(pool)` | The store: `read` (every journal of a process, the batch rows its lines name, the recorded versions), `resolve` (the highest epoch per batch id), `commit` (new batches with `ON CONFLICT (batch_id, epoch) DO NOTHING`; the existing batches written into locked `FOR SHARE` and checked open, else `BatchNotOpen`; the journal at the next sequence, a unique violation on the primary key being `SequenceTaken`), `record_version` (an upsert that never moves backwards), `batch_sum` (a containment query on the lines index), `processes_behind` (the startup restatement's worklist, from the version table's index) |
 | `BatchLifecycle::new(pool)` | `status`, `close` (open to closed; the `UPDATE` waits for every commit holding the row `FOR SHARE`), `claim` (closed to claimed: sums the batch's lines per unit and records them in `batch_claim` in one transaction; a second claim reads the record), `consume` (claimed to consumed; the batch never changes again, the engine rolls the next line to a new epoch); `Claim`, `LifecycleError::{Backend, Unknown, WrongStatus, Corrupt}` |
-| `Projector::new(pool, overlap)`, `.named(name)` | The optional balance projection: `run_once` (the journals booked since the previous run's start minus the overlap, applied in booked order as each process's stored sequence plus one; at or below is skipped, two or more above is `ProjectorError::Gap` and nothing applies), `run_from(since)` (the recovery: a wider window), `run(interval, cancel)` (the loop, stopping on the first error on purpose), `balance`, `trial_balance(ledger)`, `negative_balances`; `Applied`, `BalanceRow` |
 
 ## The tables
 
 - `journal (process_id, sequence) PK`: `event_time`, `booked_at`
-  (`clock_timestamp()` at insert, the projector's window), `lines` jsonb
+  (`clock_timestamp()` at insert), `lines` jsonb
   `[[batch_key, object_id, unit_key, amount], …]`, `snapshot_diffs` jsonb.
   A GIN index on `lines` (`jsonb_path_ops`) answers "this batch's lines" as
-  `lines @> '[[<key>]]'`; an index on `booked_at` serves the projector.
+  `lines @> '[[<key>]]'`.
 - `batch (batch_key identity PK, batch_id, epoch, ledger, batch_type,
   status, closed_at)`, `UNIQUE (batch_id, epoch)`. Type 1 debit, 2 credit,
   3 memo; status 1 open, 2 closed, 3 claimed, 4 consumed.
 - `batch_claim (batch_key, unit_key) PK`, `amount NUMERIC(39,0)`: what a
   claim found, written with the status change.
 - `process_accounting_object_version (process_id, type_name) PK`,
-  `version`, indexed on `(type_name, version)` as the sweep's worklist.
-- Projector only: `batch_balance (batch_key, unit_key) PK, amount`,
-  `projected_process (process_id) PK, sequence`,
-  `projector_watermark (name) PK, through`.
+  `version`, indexed on `(type_name, version)` as the startup
+  restatement's worklist.
+
+No balance table: a position is a sum of lines, and so is a claim.
 
 ## Rules
 
@@ -48,25 +46,21 @@ projector. The specification is `docs/decisions/0005-declarative-ledger.md`.
   `numeric` in SQL, so an `i128` never meets a `bigint`.
 - **sqlx's runtime API only**, never the query macros; `basable_db`'s
   SQLSTATE helpers classify a unique violation.
-- **Nothing in the write path maintains a balance.** `batch_sum` computes
-  one on demand for a claim; the projector is a separate component the
-  implementer starts or not, and the only writer of `batch_balance`.
-- **The projector rests on a bounded transaction.** Its overlap must be
-  longer than any booking transaction may run (`statement_timeout`); a
-  journal that still lands outside the window is a `Gap`, which stops the
-  loop so an operator widens the window and runs again. Applying is
-  idempotent.
+- **Nothing in the write path maintains a balance, and this crate ships
+  no balance table.** `batch_sum` computes one on demand for a claim. A
+  queryable `batch_balance` is the user's projection off the journal
+  table, and `basable_ledger_testkit::projection::check_agrees` is the
+  check it must pass.
 
-## A trigger instead of the projector, and its warning
+## A balance projection by trigger, and its warning
 
-A user may keep `batch_balance` in the write transaction with a trigger
-instead of running the projector: `AFTER INSERT ON journal FOR EACH
-STATEMENT`, `REFERENCING NEW TABLE AS inserted`, one set-based `INSERT INTO
-batch_balance (batch_key, unit_key, amount) SELECT (l->>0)::bigint,
-(l->>2)::bigint, (l->>3)::numeric FROM inserted, jsonb_array_elements
-(inserted.lines) l ON CONFLICT (batch_key, unit_key) DO UPDATE SET amount =
-batch_balance.amount + excluded.amount`. Always consistent, no process to
-run.
+A user may keep a `batch_balance` of their own in the write transaction
+with a trigger: `AFTER INSERT ON journal FOR EACH STATEMENT`, `REFERENCING
+NEW TABLE AS inserted`, one set-based `INSERT INTO batch_balance
+(batch_key, unit_key, amount) SELECT (l->>0)::bigint, (l->>2)::bigint,
+(l->>3)::numeric FROM inserted, jsonb_array_elements (inserted.lines) l ON
+CONFLICT (batch_key, unit_key) DO UPDATE SET amount = batch_balance.amount
++ excluded.amount`. Always consistent, no process to run.
 
 **Warning: this puts a balance back into the write path. Every booking that
 touches a shared batch (this month's revenue, a bank clearing batch) updates
@@ -78,7 +72,7 @@ change data capture on the journal table.**
 
 ## What the tests pin
 
-`src/lib.rs`: the migrations parse. Against `TEST_DATABASE_URL`, skipped
+`src/lib.rs`: the migration parses. Against `TEST_DATABASE_URL`, skipped
 without it:
 
 - `tests/postgres.rs`: the conformance suite of `basable-ledger-testkit`;
@@ -92,8 +86,8 @@ without it:
   the engine rolling a consumed batch to epoch 2; a writer holding the row
   `FOR SHARE` makes the close wait, and a booking that finds its batch
   closed at commit books into the next epoch.
-- `tests/projector.rs`: the projector agrees with the journals
-  (`basable_ledger_testkit::projection::check_agrees`), skips the overlap's
-  repeats, draws a trial balance that balances, reports no negative
-  balances when none exist, stops on a gap with nothing applied, and
-  recovers from a wider window.
+- `tests/restatement.rs`: after a rules bump, `preview_restatement` of one
+  process books nothing, `restate_behind` restates every process behind
+  from the version table's index and the run after it finds nothing, a
+  version row exists only for a type the process booked, and a ledger on
+  the older rules is refused with `LedgerError::RulesBehind`.

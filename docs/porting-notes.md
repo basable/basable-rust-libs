@@ -859,8 +859,8 @@ of it changed, in the crates and in the templates:
     in its crate does not apply; a change to the ledger's model lands in the
     decision record first and in the crates second. Three shapes the Rust
     took that the plan's prose did not spell out: the rules version is
-    `Accounting::VERSION`, an associated constant, because the restatement
-    sweep needs the running version before it has an object to evaluate;
+    `Accounting::VERSION`, an associated constant, because the startup
+    restatement needs the running version before it has an object to evaluate;
     rejections reach a caller per object as an `Outcome` and a restatement's
     as `LedgerError::Rejected`; and snapshot diffs carry the type name as the
     `LedgerObject::TYPE` string rather than a registry integer.
@@ -879,3 +879,23 @@ of it changed, in the crates and in the templates:
     writer, and the claim sums right after it. Share locks do not contend
     with each other, so bookings into one batch stay parallel; only the
     close waits, once.
+
+89. **A rules bump is restated once at startup, not swept by an operator;
+    and the framework ships no balance projection.** Phase 4 first landed as
+    `Ledger::sweep(limit)` with `preview_sweep`, a resumable pass an operator
+    would run after deploying. The user's correction (2026-10-18): a version
+    only changes with a deployment, so the new code restates once when it
+    starts. `restate_behind()` runs to completion over `processes_behind`
+    pages; the per-process `preview_restatement` stays as the dry run. The
+    rollout it implies brought one guard: a replica of the previous
+    deployment booking a process the new one already restated would move
+    the positions back, so a booking whose running `VERSION` is below the
+    recorded one fails with `LedgerError::RulesBehind` and the caller
+    retries once the old replica is gone; a rules change therefore never
+    goes back, the old desired state returns as a higher version. A version
+    row is written only for a type the process booked, so a bump of one
+    type lists only the processes that have it. The time-window `Projector`
+    of `basable-ledger-postgres` (with `batch_balance`, `projected_process`,
+    `projector_watermark` and the `booked_at` index) was removed the day
+    after it landed: a balance projection is the user's, and the testkit's
+    `projection` check is what it must pass.

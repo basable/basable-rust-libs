@@ -24,8 +24,6 @@ CREATE TABLE journal (
 );
 -- A batch's lines across every process: `lines @> '[[<batch_key>]]'`.
 CREATE INDEX idx_journal_lines ON journal USING GIN (lines jsonb_path_ops);
--- The optional projector reads by time window.
-CREATE INDEX idx_journal_booked_at ON journal (booked_at);
 
 -- One physical batch per (batch_id, epoch). The framework knows of a batch
 -- only its ledger and its type (1 debit, 2 credit, 3 memo); what the id

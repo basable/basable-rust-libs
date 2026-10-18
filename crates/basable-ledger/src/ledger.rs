@@ -90,9 +90,10 @@ pub struct RestatementPreview {
     pub deltas: Vec<(BatchId, UnitKey, i128)>,
 }
 
-/// What one pass of the sweep did.
+/// What [`Ledger::restate_behind`] did at startup, over every process that
+/// was behind.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
-pub struct SweepReport {
+pub struct RestatementReport {
     /// Processes restated.
     pub processes: usize,
     /// Objects re-evaluated.
@@ -101,24 +102,10 @@ pub struct SweepReport {
     pub lines: usize,
     /// Versions recorded.
     pub versions_recorded: usize,
-    /// Whether a type's worklist was cut at the limit: call again.
-    pub remaining: bool,
 }
 
-/// The sweep's dry run.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
-pub struct SweepPreview {
-    /// Processes that would be restated.
-    pub processes: usize,
-    /// Objects that would be re-evaluated.
-    pub objects: usize,
-    /// The net change per (batch id, unit) over every process previewed.
-    pub deltas: Vec<(BatchId, UnitKey, i128)>,
-    /// The first processes' own previews.
-    pub samples: Vec<(ProcessId, RestatementPreview)>,
-    /// Whether a type's worklist was cut at the limit.
-    pub remaining: bool,
-}
+/// How many processes behind [`Ledger::restate_behind`] fetches per page.
+const RESTATE_PAGE: u32 = 256;
 
 /// Builds a [`Ledger`]: the store and every object type it books.
 pub struct Builder<S> {
@@ -241,6 +228,7 @@ impl<S: Store> Ledger<S> {
         for _attempt in 0..self.max_attempts {
             let read = self.store.read(process).await?;
             let current = engine::fold(process, &read, &self.registry)?;
+            Self::check_rules_current(process, &current, types.iter().copied())?;
             let plan = engine::plan(&current, &[], &types)
                 .map_err(|rejection| LedgerError::Rejected { process, rejection })?;
             let mut restated = Restated {
@@ -279,6 +267,7 @@ impl<S: Store> Ledger<S> {
         let types: Vec<(&'static str, u32)> = self.registry.types().collect();
         let read = self.store.read(process).await?;
         let current = engine::fold(process, &read, &self.registry)?;
+        Self::check_rules_current(process, &current, types.iter().copied())?;
         let plan = engine::plan(&current, &[], &types)
             .map_err(|rejection| LedgerError::Rejected { process, rejection })?;
         let mut deltas: BTreeMap<(BatchId, UnitKey), i128> = BTreeMap::new();
@@ -296,69 +285,59 @@ impl<S: Store> Ledger<S> {
         })
     }
 
-    /// One pass of the restatement sweep: for every registered type, up to
-    /// `limit` processes whose recorded version is behind are restated.
-    /// Level-triggered and resumable: call until `remaining` is false, from
-    /// any number of workers. A process whose desired states no longer
-    /// balance under the new rules stops the pass with `LedgerError::Rejected`,
-    /// which is what a dry run ([`preview_sweep`](Self::preview_sweep)) is for.
-    pub async fn sweep(&self, limit: u32) -> Result<SweepReport, LedgerError> {
-        let mut report = SweepReport::default();
+    /// Restates every process whose recorded version of a registered type is
+    /// behind the running [`Accounting::VERSION`], and returns once none is.
+    /// A version changes only with a deployment, so this runs once, when the
+    /// new code starts: before it serves, or alongside, since a process still
+    /// behind is restated by its next booking anyway. Any number of replicas
+    /// may run it at the same time; the sequence makes a double restatement
+    /// of one process land once. A process whose desired states no longer
+    /// balance under the new rules stops it with `LedgerError::Rejected`.
+    pub async fn restate_behind(&self) -> Result<RestatementReport, LedgerError> {
+        let mut report = RestatementReport::default();
         for (type_name, version) in self.registry.types() {
-            let behind = self
-                .store
-                .processes_behind(type_name, version, limit)
-                .await?;
-            if behind.len() as u32 >= limit {
-                report.remaining = true;
-            }
-            for process in behind {
-                let restated = self.restate(process).await?;
-                report.processes += 1;
-                report.objects += restated.objects;
-                report.lines += restated.lines;
-                report.versions_recorded += restated.versions_recorded;
+            loop {
+                let behind = self
+                    .store
+                    .processes_behind(type_name, version, RESTATE_PAGE)
+                    .await?;
+                if behind.is_empty() {
+                    break;
+                }
+                for process in behind {
+                    let restated = self.restate(process).await?;
+                    report.processes += 1;
+                    report.objects += restated.objects;
+                    report.lines += restated.lines;
+                    report.versions_recorded += restated.versions_recorded;
+                }
             }
         }
         Ok(report)
     }
 
-    /// The sweep's dry run over up to `limit` processes per type: what the
-    /// restatement would book, per batch and unit, with the first
-    /// `samples` processes' own previews. Books nothing.
-    pub async fn preview_sweep(
-        &self,
-        limit: u32,
-        samples: usize,
-    ) -> Result<SweepPreview, LedgerError> {
-        let mut preview = SweepPreview::default();
-        let mut deltas: BTreeMap<(BatchId, UnitKey), i128> = BTreeMap::new();
-        for (type_name, version) in self.registry.types() {
-            let behind = self
-                .store
-                .processes_behind(type_name, version, limit)
-                .await?;
-            if behind.len() as u32 >= limit {
-                preview.remaining = true;
-            }
-            for process in behind {
-                let one = self.preview_restatement(process).await?;
-                preview.processes += 1;
-                preview.objects += one.objects;
-                for (id, unit, amount) in &one.deltas {
-                    *deltas.entry((id.clone(), *unit)).or_insert(0) += amount;
-                }
-                if preview.samples.len() < samples {
-                    preview.samples.push((process, one));
-                }
+    /// A process booked by rules newer than the ones running here cannot be
+    /// booked by these: a replica of the previous deployment is still
+    /// serving while the new one restates, and booking under the older rules
+    /// would move the restated positions back.
+    fn check_rules_current<'a>(
+        process: ProcessId,
+        current: &engine::Current,
+        types: impl IntoIterator<Item = (&'a str, u32)>,
+    ) -> Result<(), LedgerError> {
+        for (type_name, running) in types {
+            if let Some(&recorded) = current.versions.get(type_name)
+                && recorded > running
+            {
+                return Err(LedgerError::RulesBehind {
+                    process,
+                    type_name: type_name.to_owned(),
+                    recorded,
+                    running,
+                });
             }
         }
-        preview.deltas = deltas
-            .into_iter()
-            .filter(|(_, a)| *a != 0)
-            .map(|((id, unit), a)| (id, unit, a))
-            .collect();
-        Ok(preview)
+        Ok(())
     }
 
     /// Books one process's submissions, retrying a lost sequence race.
@@ -376,6 +355,13 @@ impl<S: Store> Ledger<S> {
         for _attempt in 0..self.max_attempts {
             let read = self.store.read(process).await?;
             let current = engine::fold(process, &read, &self.registry)?;
+            Self::check_rules_current(
+                process,
+                &current,
+                submissions
+                    .iter()
+                    .map(|s| (s.object.type_name(), s.object.rules_version())),
+            )?;
             let plan = match engine::plan(&current, submissions, &[]) {
                 Ok(plan) => plan,
                 Err(rejection) => return Ok(rejected(rejection)),

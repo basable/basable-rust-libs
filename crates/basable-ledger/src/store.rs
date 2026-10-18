@@ -169,7 +169,7 @@ pub trait Store: Send + Sync {
     ) -> impl Future<Output = Result<Vec<(UnitKey, i128)>, StoreError>> + Send;
 
     /// Up to `limit` processes whose recorded version of `type_name` is below
-    /// `version`: the restatement sweep's worklist, in any stable order. A
+    /// `version`: the startup restatement's worklist, in any stable order. A
     /// process that booked the type but never had its version recorded (a
     /// crash between commit and `record_version`) is not listed; its next
     /// booking restates it.
