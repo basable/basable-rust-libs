@@ -8,7 +8,7 @@
 
 use basable_ledger::{
     Accounting, Balances, BatchAccount, BatchKey, BatchType, Desired, LedgerKey, LedgerObject,
-    ObjectId, ProcessId, Rejection, Timestamp, Unit, UnitKey, amount_string, balance, desired,
+    ObjectId, ProcessId, Rejection, Unit, UnitKey, amount_string, balance, desired,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -129,8 +129,6 @@ pub struct Invoice {
     pub id: ObjectId,
     /// The producer's version.
     pub version: u64,
-    /// When the producer last changed it.
-    pub changed_at: Timestamp,
     /// Its state.
     pub state: InvoiceState,
     /// The customer.
@@ -166,10 +164,6 @@ impl LedgerObject for Invoice {
 
     fn version(&self) -> u64 {
         self.version
-    }
-
-    fn changed_at(&self) -> Timestamp {
-        self.changed_at
     }
 
     fn state(&self) -> InvoiceState {
@@ -333,8 +327,6 @@ pub struct Payment {
     pub invoice: ObjectId,
     /// The producer's version.
     pub version: u64,
-    /// When the producer last changed it.
-    pub changed_at: Timestamp,
     /// Its state.
     pub state: PaymentState,
     /// The currency.
@@ -362,10 +354,6 @@ impl LedgerObject for Payment {
 
     fn version(&self) -> u64 {
         self.version
-    }
-
-    fn changed_at(&self) -> Timestamp {
-        self.changed_at
     }
 
     fn state(&self) -> PaymentState {
@@ -445,8 +433,6 @@ pub struct VatReturn {
     pub id: ObjectId,
     /// The producer's version.
     pub version: u64,
-    /// When the producer last changed it.
-    pub changed_at: Timestamp,
     /// Its state.
     pub state: VatReturnState,
     /// The period the return covers, as the VAT batch names it.
@@ -472,10 +458,6 @@ impl LedgerObject for VatReturn {
 
     fn version(&self) -> u64 {
         self.version
-    }
-
-    fn changed_at(&self) -> Timestamp {
-        self.changed_at
     }
 
     fn state(&self) -> VatReturnState {
@@ -513,12 +495,10 @@ impl Accounting<VatReturn> for VatReturnLedger {
 /// A fresh invoice in `Draft`, version 1, for a new process.
 pub fn new_invoice(net: i128, vat: i128, currency: Currency) -> Invoice {
     let id = Uuid::now_v7();
-    let now = chrono::Utc::now();
     Invoice {
         process_id: ProcessId(id),
         id: ObjectId(id),
         version: 1,
-        changed_at: now,
         state: InvoiceState::Draft,
         customer: Uuid::new_v4(),
         currency,
@@ -533,10 +513,8 @@ pub fn new_invoice(net: i128, vat: i128, currency: Currency) -> Invoice {
 impl Invoice {
     /// The next snapshot: version plus one, state and fields changed.
     pub fn next(&self, state: InvoiceState, paid: i128) -> Invoice {
-        let now = chrono::Utc::now();
         Invoice {
             version: self.version + 1,
-            changed_at: now,
             state,
             paid,
             ..self.clone()
@@ -546,13 +524,11 @@ impl Invoice {
 
 /// A pending payment against an invoice.
 pub fn new_payment(invoice: &Invoice, amount: i128) -> Payment {
-    let now = chrono::Utc::now();
     Payment {
         process_id: invoice.process_id,
         id: ObjectId(Uuid::now_v7()),
         invoice: invoice.id,
         version: 1,
-        changed_at: now,
         state: PaymentState::Pending,
         currency: invoice.currency,
         amount,
@@ -562,10 +538,8 @@ pub fn new_payment(invoice: &Invoice, amount: i128) -> Payment {
 impl Payment {
     /// The next snapshot.
     pub fn next(&self, state: PaymentState) -> Payment {
-        let now = chrono::Utc::now();
         Payment {
             version: self.version + 1,
-            changed_at: now,
             state,
             ..self.clone()
         }
@@ -576,12 +550,10 @@ impl Payment {
 /// read as the period's VAT batch sum.
 pub fn new_vat_return(period: &str, amount: i128, currency: Currency) -> VatReturn {
     let id = Uuid::now_v7();
-    let now = chrono::Utc::now();
     VatReturn {
         process_id: ProcessId(id),
         id: ObjectId(id),
         version: 1,
-        changed_at: now,
         state: VatReturnState::Filed,
         period: period.to_owned(),
         currency,

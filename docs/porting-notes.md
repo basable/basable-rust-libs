@@ -940,5 +940,7 @@ of it changed, in the crates and in the templates:
     no object. A time axis other than the commit's is the reader's business
     on the folded object, which the change-data-capture consumer applies
     anyway to get the object's fields. `changed_at` on the reader (the
-    source's change time, for a timeliness metric no code emits yet) is of
-    the same kind and still there.
+    source's change time, meant for a timeliness metric no code emits) was
+    the same kind of thing and went the same day: when the metric comes, it
+    comes with the code that emits it, and the field it reads is the
+    object's own.

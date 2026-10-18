@@ -9,7 +9,7 @@ use std::hash::Hash;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::types::{ObjectId, ProcessId, Timestamp};
+use crate::types::{ObjectId, ProcessId};
 
 /// One input snapshot of one business object, of the user's own type.
 ///
@@ -40,9 +40,6 @@ pub trait LedgerObject: Serialize + DeserializeOwned + Send + Sync + 'static {
     /// The producer's version: strictly increasing per object. Higher books,
     /// equal is a duplicate, lower is stale.
     fn version(&self) -> u64;
-
-    /// When the source last changed the object; the timeliness input.
-    fn changed_at(&self) -> Timestamp;
 
     /// The accounting state the object is in.
     fn state(&self) -> Self::State;

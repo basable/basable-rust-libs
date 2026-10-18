@@ -19,7 +19,7 @@ that there is nothing to keep in sync.
 
 | Item | What it is |
 |---|---|
-| `LedgerObject` | The reader on the user's own type: `TYPE`, `State` (a `Copy + Eq + Hash` enum), `process_id`, `object_id`, `parent_id`, `version`, `changed_at`, `state() -> State`. `Serialize + DeserializeOwned`: the serde form is the stored form |
+| `LedgerObject` | The reader on the user's own type: `TYPE`, `State` (a `Copy + Eq + Hash` enum), `process_id`, `object_id`, `parent_id`, `version`, `state() -> State`. `Serialize + DeserializeOwned`: the serde form is the stored form |
 | `Accounting<O>` | The rules of one type, no `self`: `VERSION` (bump on a desired-state or classification change), `validate_state_change(current) -> &[State]` (listing the current state allows an amount change in it; a terminal state lists nothing), `desired_state(state, &O) -> Desired`, `validate_balances(state, &O, &Balances, &Desired)` |
 | `BatchAccount` | Whatever names a batch: `batch_key()`, `ledger()` and `batch_type()` (`Debit`, `Credit`, `Memo`). All the framework knows about a batch. There is no batch table: the key is the user's, allocated in a table of their own or encoded or hashed from what names the batch, and a batch is closed when a booking brings its balance to zero. Implemented for `&A` and for `Batch` |
 | `Batch`, `BatchKey`, `LedgerKey`, `BatchType`, `UnitKey` | A batch as a line names it (key, ledger, type; `Batch::of(&account)`), and the keys. `BatchKey: From<&impl BatchAccount>`, so a balance lookup takes a key or an account |
