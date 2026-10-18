@@ -5,9 +5,7 @@
 //! store agreeing with Postgres on a history.
 
 use basable_db::{Nanoservice, Stateful};
-use basable_ledger::{
-    BatchAccount, InMemoryStore, Journal, Ledger, Outcome, Request, Store, UnitKey,
-};
+use basable_ledger::{BatchAccount, InMemoryStore, Ledger, Outcome, Request, Store, UnitKey};
 use basable_ledger_postgres::{PgStore, SCHEMA_PLACEHOLDER, migrations};
 use basable_ledger_testkit::conformance;
 use basable_ledger_testkit::fixture::{
@@ -122,12 +120,23 @@ async fn the_invoice_lifecycle_books_on_postgres() {
     );
     let journals = store.read(p).await.expect("read");
     assert_eq!(journals.len(), 3);
-    let versions = Journal::versions_of(&journals);
-    assert_eq!(versions.get("invoice"), Some(&1));
-    assert_eq!(versions.get("payment"), Some(&1));
-    // The first journal moved both versions; the later ones moved none.
-    assert_eq!(journals[0].rules_versions.len(), 2);
-    assert!(journals[1].rules_versions.is_empty());
+    // Both types are indexed at the version they were evaluated under.
+    for type_name in ["invoice", "payment"] {
+        assert_eq!(
+            store
+                .processes_behind(type_name, 2, 10)
+                .await
+                .expect("behind"),
+            vec![p]
+        );
+        assert!(
+            store
+                .processes_behind(type_name, 1, 10)
+                .await
+                .expect("behind")
+                .is_empty()
+        );
+    }
     // The batch sum spans the whole process.
     assert_eq!(
         store
@@ -221,9 +230,15 @@ async fn a_rules_bump_restates_on_postgres() {
         2_100
     );
     let journals = store.read(p).await.expect("read");
-    assert_eq!(Journal::versions_of(&journals).get("invoice"), Some(&2));
     assert!(journals[1].snapshot_diffs.is_empty());
-    assert_eq!(journals[1].rules_versions.get("invoice"), Some(&2));
+    assert!(
+        store
+            .processes_behind("invoice", 2, 10)
+            .await
+            .expect("behind")
+            .is_empty(),
+        "indexed at version 2"
+    );
     db.finish().await;
 }
 

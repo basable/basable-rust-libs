@@ -2,6 +2,12 @@
 //! positions, plan what a call books, and turn the plan into a commit.
 //! Nothing here is async and nothing reads a clock; the store stamps the
 //! commit time, and the runtime in `ledger.rs` drives it against a store.
+//! The engine knows no recorded rules version: every plan re-evaluates every
+//! object of the process under the running rules and books the difference,
+//! so a rules change is booked like any other difference, at the process's
+//! next touch. The version each type was evaluated under goes to the store
+//! with the commit, for the startup restatement's worklist, and is never
+//! read back by a booking.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,11 +34,9 @@ pub(crate) struct Current {
     pub sequence: i64,
     pub objects: BTreeMap<ObjectId, CurrentObject>,
     pub balances: Balances,
-    pub versions: BTreeMap<String, u32>,
 }
 
-/// Folds a process's journals into its current objects, positions and
-/// rules versions.
+/// Folds a process's journals into its current objects and positions.
 pub(crate) fn fold(
     process: ProcessId,
     journals: &[Journal],
@@ -100,7 +104,6 @@ pub(crate) fn fold(
         sequence: journals.last().map(|j| j.sequence).unwrap_or(0),
         objects,
         balances,
-        versions: Journal::versions_of(journals),
     })
 }
 
@@ -123,18 +126,19 @@ pub(crate) struct Plan {
     pub outcomes: Vec<(usize, PreOutcome)>,
     pub lines: Vec<Line>,
     pub diffs: Vec<SnapshotDiff>,
-    /// Types whose recorded version becomes the running one with this
-    /// journal: written in its `rules_versions`, and the index rows with it.
-    pub rules_versions: BTreeMap<String, u32>,
-    /// How many objects were restated ahead of the submissions.
+    /// The running rules version of every object type present in the
+    /// process after the call: what the commit writes to the version index.
+    pub versions: BTreeMap<String, u32>,
+    /// Current objects whose booked positions no longer matched their desired
+    /// state under the running rules, moved ahead of the submissions.
     pub restated_objects: usize,
 }
 
 impl Plan {
-    /// Nothing to commit: every submission was a duplicate or stale, no
-    /// restatement was due and no version moves.
+    /// Nothing to commit: every submission was a duplicate or stale and every
+    /// current object already matches the running rules.
     pub(crate) fn is_empty(&self) -> bool {
-        self.lines.is_empty() && self.diffs.is_empty() && self.rules_versions.is_empty()
+        self.lines.is_empty() && self.diffs.is_empty()
     }
 
     /// The commit: one journal at the process's next sequence.
@@ -144,24 +148,19 @@ impl Plan {
             after_sequence: current.sequence,
             lines: self.lines,
             snapshot_diffs: self.diffs,
-            rules_versions: self.rules_versions,
+            versions: self.versions,
         }
     }
 }
 
-/// Plans one process's part of a call. `restate_types` are the registered
-/// types to check for a pending restatement beyond the submitted ones (the
-/// startup restatement passes every registered type).
-pub(crate) fn plan(
-    current: &Current,
-    submissions: &[Submission],
-    restate_types: &[(&'static str, u32)],
-) -> Result<Plan, Rejection> {
+/// Plans one process's part of a call: the restatement of every current
+/// object first, then the submissions in order.
+pub(crate) fn plan(current: &Current, submissions: &[Submission]) -> Result<Plan, Rejection> {
     let mut plan = Plan {
         outcomes: Vec::with_capacity(submissions.len()),
         lines: Vec::new(),
         diffs: Vec::new(),
-        rules_versions: BTreeMap::new(),
+        versions: BTreeMap::new(),
         restated_objects: 0,
     };
     let mut working = current.balances.clone();
@@ -172,43 +171,23 @@ pub(crate) fn plan(
         .map(|(id, o)| (*id, o.object.as_ref()))
         .collect();
 
-    // Restatement first: every type in question that is behind in this process.
-    let mut types: BTreeMap<&'static str, u32> = restate_types.iter().copied().collect();
-    let mut submitted: BTreeSet<&'static str> = BTreeSet::new();
-    for s in submissions {
-        types.insert(s.object.type_name(), s.object.rules_version());
-        submitted.insert(s.object.type_name());
-    }
-    for (type_name, running) in types {
-        let recorded = current.versions.get(type_name).copied();
-        let has_objects = current
-            .objects
-            .values()
-            .any(|o| o.object.type_name() == type_name);
-        let behind = match recorded {
-            Some(r) => r < running,
-            None => has_objects,
-        };
-        // A type this process has no objects of and that is not being booked
-        // gets no version row: the row marks a type the process booked.
-        if !behind && !submitted.contains(type_name) {
-            continue;
+    // Every current object first: under the running rules its booked
+    // positions must equal the desired state of its folded snapshot. A
+    // difference means the rules changed since it was last booked, and it is
+    // booked here, ahead of the submissions, so that a submission's own
+    // delta below is the object's own change and nothing else.
+    for (id, cur) in &current.objects {
+        let desired = evaluate(cur.object.as_ref(), &mut working)?;
+        let delta = delta_for(*id, &desired, &working);
+        if !delta.is_empty() {
+            apply_delta(&mut working, &delta);
+            plan.lines.extend(delta);
+            plan.restated_objects += 1;
         }
-        if behind {
-            for (id, cur) in &current.objects {
-                if cur.object.type_name() != type_name {
-                    continue;
-                }
-                let desired = evaluate(cur.object.as_ref(), &mut working)?;
-                let delta = delta_for(*id, &desired, &working);
-                apply_delta(&mut working, &delta);
-                plan.lines.extend(delta);
-                plan.restated_objects += 1;
-            }
-        }
-        if recorded.is_none_or(|r| r < running) {
-            plan.rules_versions.insert(type_name.to_owned(), running);
-        }
+        plan.versions.insert(
+            cur.object.type_name().to_owned(),
+            cur.object.rules_version(),
+        );
     }
 
     // Then the submissions, in order.
@@ -281,6 +260,8 @@ pub(crate) fn plan(
         };
         plan.diffs.push(diff);
         live.insert(id, s.object.as_ref());
+        plan.versions
+            .insert(s.object.type_name().to_owned(), s.object.rules_version());
         plan.outcomes.push((s.index, PreOutcome::Booked));
     }
 

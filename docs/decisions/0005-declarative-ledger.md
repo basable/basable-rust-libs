@@ -37,8 +37,7 @@ first.
   sum of the object's lines, computed from the process's journals on every
   read. No position, balance or booked-state table exists.
 - A **journal** is one row per commit of one process: lines
-  `[batch_key, ledger, batch_type, object_id, unit_key, amount]`, the
-  `rules_versions` it moved (`{type_name: version}`, usually empty) and
+  `[batch_key, ledger, batch_type, object_id, unit_key, amount]` and
   snapshot diffs
   `{object_id, type, full | patch}` (RFC 7386 merge patches; the first
   sight of an object is its full JSON). Folding a process's diffs rebuilds
@@ -62,28 +61,32 @@ first.
   version), stale (a lower one), rejected (with the reason, which names the
   object; one rejection rejects the process's part of the call).
 - The diff is always against the booked positions, never against the old
-  state's desired state recomputed now. A changed amount in an unchanged
-  state is allowed only when that state lists itself as its own next state.
+  state's desired state recomputed now. Every booking first re-evaluates
+  every current object of the process under the running rules and books
+  the difference, so the engine never needs to know whether rules changed:
+  a submission's own delta, computed after that, is the object's own
+  change. A changed amount in an unchanged state is allowed only when that
+  state lists itself as its own next state.
 - The desired state names batches through `BatchAccount` values that carry
   their own key, so it stays pure and the engine resolves nothing: the
   commit is one insert. A key the process has booked under another ledger
   or type, or named under two accounts in one call, rejects.
-- A rules version bump restates: every process whose recorded version
-  (per process and object type, written in the journal row's
-  `rules_versions` by the booking or restatement that moved it and folded
-  on read, so a booking reads journals and nothing else; the store keeps
-  an index of it, upserted by the commit's own statement and read only by
-  the startup restatement) is behind is re-evaluated on its folded
-  snapshots and
-  the difference appended as a journal with lines and no diffs. Prospective:
-  history is never rewritten. A version changes only with a deployment, so
-  the new code restates once at startup (`Ledger::restate_behind`, over
-  `Store::processes_behind`, the version index the commit maintains) and a booking into
-  a process still behind restates it first, in the same journal. A replica
-  of the previous deployment may not book a process already restated:
-  `LedgerError::RulesBehind`, since its older rules would move the
-  positions back. A rules change is never rolled back; the old desired
-  state comes back as a higher version.
+- A rules version bump restates. A process converges to the running rules
+  whenever it is touched, so what a bump needs is the processes nobody
+  touches: `Ledger::restate_behind` runs once when the new deployment
+  starts, over `Store::processes_behind`, the version index that lists
+  every process whose last evaluation of a type was under an older number,
+  and restates each by appending a journal with lines and no diffs (or by
+  moving the index alone when nothing differs). The index is one row per
+  process and object type, written by the commit's own statement for every
+  type in the process, latest wins, and never read by a booking: two
+  tables written per process, one read. Prospective: history is never
+  rewritten. A replica of the previous deployment still booking during the
+  rollout books under its rules and re-indexes the process at its version,
+  so the pass takes it again; nothing is refused, and the book settles when
+  the old replica is gone. (A per-process version read on every booking, a
+  `RulesBehind` refusal and a `rules_versions` column on the journal were
+  each built and removed on 2026-10-18.)
 
 ## Not in the write path, by design
 
@@ -136,6 +139,7 @@ first.
    a dry run, reshaped 2026-10-18): `Store::processes_behind` reads the
    version index, `Ledger::restate_behind` runs to completion when the new
    deployment starts, `preview_restatement(process)` is the per-process dry
-   run, and a ledger on older rules is refused. Since later that day the
-   version rides in the journal row and the index is written by the same
-   statement, so no crash can separate the two.
+   run. Later that day the engine stopped reading any version: every
+   booking re-evaluates its whole process, the index is written by the
+   commit's statement, and an older replica's booking converges at the next
+   run instead of being refused.

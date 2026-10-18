@@ -966,3 +966,24 @@ of it changed, in the crates and in the templates:
     deployment's last replica at the next startup). A restatement that
     changes no position still writes a journal when a version moves, so
     `Plan::is_empty` counts the versions.
+
+93. **The engine knows no rules version; the version index is the
+    worklist, written with every commit.** Two questions of the user's
+    (2026-10-18) undid most of note 92 and the guard of note 89: "why does
+    the engine need to differentiate between the rules change and the
+    amounts changed?" and "it does not need the rolling-deployment guard,
+    it is just increasing numbers". It did not: the engine re-evaluates
+    every current object of the process under the running rules on every
+    booking and books the difference, so a rules change is booked at the
+    next touch like any other difference, and a submission's own delta,
+    computed after that, is the object's own change, which is all the
+    amount-immutability check needs. `rules_versions` left the journal row,
+    `Journal::versions_of`, `LedgerError::RulesBehind` and the version
+    check went with it, and the commit writes two tables per process: the
+    journal, and the version index row of every type in the process at the
+    running `Accounting::VERSION`, latest wins, in the same statement and
+    never read by a booking. `Store::record_versions` moves the index alone
+    for a restatement that finds nothing to book, so `restate_behind` stops
+    listing the process. An older replica's booking during a rollout is
+    accepted, indexed at its version and taken again by the next run; the
+    book settles when the replica is gone.

@@ -34,7 +34,7 @@ impl InMemoryStore {
         g.journals.get(&process).cloned().unwrap_or_default()
     }
 
-    /// The indexed rules version of a type in a process.
+    /// The indexed rules version a type in a process was last evaluated under.
     pub fn version(&self, process: ProcessId, type_name: &str) -> Option<u32> {
         let g = self.inner.lock().expect("store lock");
         g.versions.get(&(process, type_name.to_owned())).copied()
@@ -55,14 +55,10 @@ impl Store for InMemoryStore {
         if last != commit.after_sequence {
             return Ok(CommitOutcome::SequenceTaken);
         }
-        for (type_name, version) in &commit.rules_versions {
-            let slot = inner
+        for (type_name, version) in &commit.versions {
+            inner
                 .versions
-                .entry((commit.process_id, type_name.clone()))
-                .or_insert(*version);
-            if *slot < *version {
-                *slot = *version;
-            }
+                .insert((commit.process_id, type_name.clone()), *version);
         }
         journals.push(Journal {
             process_id: commit.process_id,
@@ -70,9 +66,20 @@ impl Store for InMemoryStore {
             booked_at: chrono::Utc::now(),
             lines: commit.lines,
             snapshot_diffs: commit.snapshot_diffs,
-            rules_versions: commit.rules_versions,
         });
         Ok(CommitOutcome::Committed)
+    }
+
+    async fn record_versions(
+        &self,
+        process: ProcessId,
+        versions: &BTreeMap<String, u32>,
+    ) -> Result<(), StoreError> {
+        let mut g = self.inner.lock().expect("store lock");
+        for (type_name, version) in versions {
+            g.versions.insert((process, type_name.clone()), *version);
+        }
+        Ok(())
     }
 
     async fn batch_sum(&self, batch: BatchKey) -> Result<Vec<(UnitKey, i128)>, StoreError> {

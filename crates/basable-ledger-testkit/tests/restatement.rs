@@ -1,9 +1,9 @@
 //! The startup restatement over the in-memory store: a rules bump, the run
 //! that restates every process behind, the run after it that finds nothing,
-//! and the replica of the previous deployment that may not book a restated
-//! process under its older rules.
+//! and the replica of the previous deployment whose booking under its older
+//! rules is taken again by the next run.
 
-use basable_ledger::{LedgerError, Outcome, Request, RestatementReport};
+use basable_ledger::{Outcome, Request, RestatementReport};
 use basable_ledger_testkit::Scenario;
 use basable_ledger_testkit::fixture::{Currency, InvoiceLedgerV2, InvoiceState, new_invoice};
 
@@ -29,7 +29,6 @@ async fn a_startup_restatement_restates_every_process_behind_and_then_finds_noth
             processes: 5,
             objects: 5,
             lines: 10,
-            versions_recorded: 5,
         }
     );
     // Nothing is behind any more.
@@ -70,7 +69,7 @@ async fn a_startup_restatement_restates_every_process_behind_and_then_finds_noth
 }
 
 #[tokio::test]
-async fn a_replica_on_the_older_rules_may_not_book_a_restated_process() {
+async fn a_booking_by_a_replica_on_the_older_rules_converges_at_the_next_run() {
     let v1 = Scenario::new();
     let issued = new_invoice(1_000, 210, Currency::Eur).next(InvoiceState::Issued, 0);
     v1.booked(issued.clone()).await;
@@ -79,32 +78,44 @@ async fn a_replica_on_the_older_rules_may_not_book_a_restated_process() {
     // The new deployment starts and restates while the old one still serves.
     let v2 = v1.upgraded();
     v2.ledger().restate_behind().await.expect("restate");
+    assert_eq!(v2.store().version(issued.process_id, "invoice"), Some(2));
 
-    // The old replica's booking under version 1 would move the VAT back to
-    // the month batch: refused as a whole, nothing is written.
+    // The old replica books the paid state under version 1: accepted, and
+    // under its rules the VAT goes back to the month batch, so the process
+    // is indexed at version 1 again.
     let paid = issued.next(InvoiceState::Paid, 1_210);
-    let err = v1
-        .book_all(Request::new().with(paid.clone()))
-        .await
-        .expect_err("booked under older rules");
-    assert!(
-        matches!(
-            &err,
-            LedgerError::RulesBehind { process, type_name, recorded: 2, running: 1 }
-                if *process == issued.process_id && type_name == "invoice"
-        ),
-        "{err}"
-    );
+    assert_eq!(v1.book(paid.clone()).await, Outcome::Booked);
+    assert_eq!(v1.store().version(issued.process_id, "invoice"), Some(1));
+    let b = v1.balances(issued.process_id).await;
+    assert_eq!(b.of(paid.id).amount(&paid.vat_batch(), Currency::Eur), 210);
     assert_eq!(
-        v1.journals(issued.process_id).len(),
-        2,
-        "the restatement only"
+        b.of(paid.id)
+            .amount(&InvoiceLedgerV2::vat_batch(&paid), Currency::Eur),
+        0
     );
     // A process the new deployment has not reached yet books under the old
-    // rules as before; the new one restates it when it gets there.
+    // rules as before.
     assert_eq!(v1.book(untouched.clone()).await, Outcome::Booked);
     assert_eq!(v1.store().version(untouched.process_id, "invoice"), Some(1));
-    // The new replica books the paid state, and its journal is the third.
-    assert_eq!(v2.book(paid).await, Outcome::Booked);
-    assert_eq!(v2.journals(issued.process_id).len(), 3);
+
+    // The new deployment's next pass takes both and the book converges.
+    let report = v2.ledger().restate_behind().await.expect("restate");
+    assert_eq!(report.processes, 2);
+    for (process, object, vat) in [
+        (issued.process_id, paid.id, 210),
+        (untouched.process_id, untouched.id, 420),
+    ] {
+        assert_eq!(v2.store().version(process, "invoice"), Some(2));
+        let b = v2.balances(process).await;
+        assert_eq!(
+            b.of(object).amount(&untouched.vat_batch(), Currency::Eur),
+            0
+        );
+        assert_eq!(
+            b.of(object)
+                .amount(&InvoiceLedgerV2::vat_batch(&untouched), Currency::Eur),
+            vat
+        );
+    }
+    assert_eq!(v2.journals(issued.process_id).len(), 4);
 }

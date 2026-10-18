@@ -93,22 +93,6 @@ pub enum LedgerError {
         /// The reason.
         rejection: Rejection,
     },
-    /// The process was booked by rules newer than the ones running here: a
-    /// replica of the previous deployment is still booking while the new one
-    /// restates. Booking under the older rules would move the restated
-    /// positions back, so the call fails and the caller retries once the
-    /// old replica is gone. A rules change is never rolled back; the old
-    /// desired state comes back as a higher version.
-    RulesBehind {
-        /// The process.
-        process: ProcessId,
-        /// The type.
-        type_name: String,
-        /// The version recorded for the process.
-        recorded: u32,
-        /// The version this ledger runs.
-        running: u32,
-    },
     /// A stored snapshot no longer decodes into its type: the type changed
     /// without an upgrade of the stored diffs.
     Undecodable {
@@ -141,17 +125,6 @@ impl fmt::Display for LedgerError {
             LedgerError::Rejected { process, rejection } => {
                 write!(f, "process {}: {rejection}", process.0)
             }
-            LedgerError::RulesBehind {
-                process,
-                type_name,
-                recorded,
-                running,
-            } => write!(
-                f,
-                "process {}: type {type_name:?} was booked by rules version {recorded}; \
-                 this ledger runs version {running}",
-                process.0
-            ),
             LedgerError::Undecodable {
                 process,
                 object,

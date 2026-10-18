@@ -26,10 +26,10 @@ that there is nothing to keep in sync.
 | `Unit` | `unit_key() -> UnitKey(u32)`, what a line carries and what the engine balances by |
 | `Desired`, `balance(account, unit, amount)`, `desired![...]` | The positions of a state: signed amounts in the column of each batch's type. Duplicates of one key are summed |
 | `Balances`, `ObjectBalances` | What `validate_balances` and `Ledger::balances` see: per object, per batch key and unit, computed from the journals; `batch(key or &account, unit)` over the process, `batch_account(key)` the ledger and type the process booked the key under |
-| `Ledger<S>`, `Builder`, `Request`, `Outcome` | `Ledger::builder(store).register::<O, A>()...build()`; `book(Request)` books any mix of registered types across processes, one `Outcome` per object: `Booked`, `AlreadyBooked`, `Stale`, `Rejected(reason)`. `balances(process)`, `restate(process)`, `preview_restatement(process)` (the per-process dry run: the net deltas per batch key and unit); `restate_behind()`, called once when a deployment starts, restates every process behind the running rules of any registered type and reports `RestatementReport { processes, objects, lines, versions_recorded }` |
-| `Store` | The persistence interface: `read` (a process's journals, the one read a booking makes), `commit` (the journal row and, in the same statement, the version index rows from its `rules_versions`), `batch_sum`, `processes_behind` (the startup restatement's worklist, from that index); `Commit`, `CommitOutcome::{Committed, SequenceTaken}` |
+| `Ledger<S>`, `Builder`, `Request`, `Outcome` | `Ledger::builder(store).register::<O, A>()...build()`; `book(Request)` books any mix of registered types across processes, one `Outcome` per object: `Booked`, `AlreadyBooked`, `Stale`, `Rejected(reason)`. `balances(process)`, `restate(process)`, `preview_restatement(process)` (the per-process dry run: the net deltas per batch key and unit); `restate_behind()`, called once when a deployment starts, restates every process the store's version index lists behind the running rules of a registered type and reports `RestatementReport { processes, objects, lines }` |
+| `Store` | The persistence interface: `read` (a process's journals, the one read a booking makes), `commit` (the journal row and, in the same statement, the version index row of every type in the process, latest wins), `record_versions` (the index alone, for a restatement with nothing to book), `batch_sum`, `processes_behind` (the startup restatement's worklist, from the index); `Commit`, `CommitOutcome::{Committed, SequenceTaken}` |
 | `InMemoryStore` | The reference store, for tests |
-| `Journal`, `Line`, `SnapshotDiff` | The stored shape: `(process_id, sequence, booked_at, lines, snapshot_diffs, rules_versions)`, lines `[batch_key, ledger, batch_type, object_id, unit_key, amount]` (the type 1 debit, 2 credit, 3 memo), diffs `{object_id, type, full | patch}`, `rules_versions` the `{type_name: version}` this journal moved (usually empty); `Journal::versions_of(journals)` folds them to the process's version per type |
+| `Journal`, `Line`, `SnapshotDiff` | The stored shape: `(process_id, sequence, booked_at, lines, snapshot_diffs)`, lines `[batch_key, ledger, batch_type, object_id, unit_key, amount]` (the type 1 debit, 2 credit, 3 memo), diffs `{object_id, type, full | patch}` |
 | `jsonpatch::{diff, apply}` | RFC 7386 merge patch, how diffs are made and folded |
 | `Rejection`, `StoreError`, `LedgerError` | Hand-written errors, no `thiserror` |
 
@@ -40,12 +40,13 @@ that there is nothing to keep in sync.
    booked state and version are what the reader returns on the fold. Sum
    the lines per (object, batch key, unit) into positions; each line
    carries its batch's ledger and type, and one key under two of them is a
-   corrupt store. The highest sequence is the process version, and the
-   fold of the journals' `rules_versions` (highest per type) is the rules
-   version the process was last evaluated under; nothing else is read.
-2. **Restate** first, if any type in question has a recorded version behind
-   `Accounting::VERSION`: re-evaluate every object of that type on its
-   folded snapshot and queue the delta.
+   corrupt store. The highest sequence is the process version. Nothing
+   else is read: the engine knows no recorded rules version.
+2. **Re-evaluate every current object** under the running rules and queue
+   the difference between its desired state and its booked positions.
+   Under unchanged rules that is nothing, by path independence; after a
+   rules change it is the restatement, booked ahead of the submissions so
+   that a submission's own delta below is the object's own change.
 3. **Per submitted object**, in order: a version at or below the booked one
    is `AlreadyBooked` or `Stale`. Otherwise the next state must be in
    `validate_state_change(current)`; an unchanged state with changed
@@ -58,28 +59,28 @@ that there is nothing to keep in sync.
    through the same batch, whose ledger and type the booked lines carry.
 4. **One rejection rejects the process's part of the call**, naming the
    object and the reason; other processes in the call are unaffected.
-5. **Commit** one journal at `sequence + 1` with every delta line, one
+5. **Commit** one journal at `sequence + 1` with every delta line and one
    snapshot diff per booked object (full the first time, a merge patch
-   afterwards) and, in `rules_versions`, each type whose version this
-   journal moves (a type's first booking in the process, a restatement).
-   The store upserts those into its version index in the same statement.
-   The primary key on (process, sequence) is the compare-and-set; a lost
-   race is retried, `DEFAULT_MAX_ATTEMPTS` times. A restatement that
-   changes no position still writes a journal when a version moves.
+   afterwards). In the same statement the store upserts, for every type
+   present in the process, the running `VERSION` into its version index,
+   latest wins: two tables written per process, one read. The primary key
+   on (process, sequence) is the compare-and-set; a lost race is retried,
+   `DEFAULT_MAX_ATTEMPTS` times. A restatement that finds nothing to book
+   writes no journal and moves the index alone (`record_versions`).
 
 A rules version changes only with a deployment, so the new code calls
 `restate_behind()` once when it starts: it pages through `processes_behind`
-per registered type and restates each process (lines, no diffs, one
-journal) until nothing is behind. Before serving or alongside it is the
-caller's choice; any number of replicas may run it at once. While the new
-deployment restates, a replica of the previous one is still booking: a
-booking whose running `VERSION` is below the process's recorded version
-fails with `LedgerError::RulesBehind` rather than moving the restated
-positions back, and the caller retries once the old replica is gone. A
-rules change is therefore never rolled back; the old desired state comes
-back as a higher version. A version is recorded only for a type the
-process booked, and in the same statement as the journal, so there is no
-gap for a crash to fall into.
+per registered type, the processes whose indexed version is below the
+running one, and restates each (lines, no diffs, one journal; or the index
+alone when nothing differs) until nothing is listed. Before serving or
+alongside it is the caller's choice; any number of replicas may run it at
+once. A replica of the previous deployment still booking during the rollout
+books under its own rules and indexes the process at its own version, so
+the pass takes that process again; the book settles when the old replica is
+gone, and a process it touched last is taken at the next startup. A rules
+change is never refused and never special-cased: a process converges to
+the running rules whenever it is touched. A version row exists only for a
+type the process booked.
 
 ## How a batch closes
 
@@ -131,5 +132,6 @@ booking it to zero with a late correction leaving the remainder, memo
 batches), `tests/walk.rs` (random histories: every journal balances, path
 independence, replay books nothing), `tests/restatement.rs` (the startup
 restatement over every process behind, the run after it finding nothing,
-the older-rules replica refused) and `tests/conformance_memory.rs` (the
+a booking by an older replica converging at the next run) and
+`tests/conformance_memory.rs` (the
 store suite over `InMemoryStore`).

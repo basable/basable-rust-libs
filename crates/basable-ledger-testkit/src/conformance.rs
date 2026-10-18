@@ -56,22 +56,22 @@ fn commit(process: ProcessId, after: i64, batch: Batch, object: ObjectId) -> Com
             full: Some(serde_json::json!({"v": after + 1})),
             patch: None,
         }],
-        rules_versions: BTreeMap::new(),
+        versions: BTreeMap::new(),
     }
 }
 
-/// A commit with no lines or diffs that moves the versions of some types:
-/// the shape of a restatement that changed no position.
-fn versions_commit(process: ProcessId, after: i64, versions: &[(&str, u32)]) -> Commit {
+fn versions(pairs: &[(&str, u32)]) -> BTreeMap<String, u32> {
+    pairs.iter().map(|(t, v)| ((*t).to_owned(), *v)).collect()
+}
+
+/// A commit with no lines or diffs that carries the versions of some types.
+fn versions_commit(process: ProcessId, after: i64, pairs: &[(&str, u32)]) -> Commit {
     Commit {
         process_id: process,
         after_sequence: after,
         lines: Vec::new(),
         snapshot_diffs: Vec::new(),
-        rules_versions: versions
-            .iter()
-            .map(|(t, v)| ((*t).to_owned(), *v))
-            .collect(),
+        versions: versions(pairs),
     }
 }
 
@@ -87,15 +87,13 @@ pub async fn reads_empty_process<S: Store>(store: &S) {
 }
 
 /// The first commit goes at sequence 1; the read returns the journal, its
-/// lines with their batches, its diffs and the versions it moved.
+/// lines with their batches and its diffs.
 pub async fn commits_and_reads_back<S: Store>(store: &S) {
     let p = process();
     let o = object();
     let batch = debit(unique_key());
-    let mut c = commit(p, 0, batch, o);
-    c.rules_versions.insert("conformance".into(), 1);
     assert_eq!(
-        store.commit(c).await.expect("commit"),
+        store.commit(commit(p, 0, batch, o)).await.expect("commit"),
         CommitOutcome::Committed
     );
     let journals = store.read(p).await.expect("read");
@@ -110,7 +108,6 @@ pub async fn commits_and_reads_back<S: Store>(store: &S) {
     );
     assert_eq!(journal.snapshot_diffs.len(), 1);
     assert_eq!(journal.snapshot_diffs[0].object_id, o);
-    assert_eq!(journal.rules_versions.get("conformance"), Some(&1));
 }
 
 /// The primary key on (process, sequence) is the compare-and-set: a second
@@ -208,59 +205,82 @@ pub async fn sums_a_batch_across_processes<S: Store>(store: &S) {
     );
 }
 
-/// The versions a journal moves ride in the row and fold to the highest per
-/// type; the index the commit maintains agrees and never moves backwards.
+/// The commit indexes the version each type was evaluated under, latest
+/// wins, and `record_versions` moves the index without a journal.
 pub async fn records_versions<S: Store>(store: &S) {
     let p = process();
     let invoice = format!("invoice-{}", Uuid::now_v7());
     let payment = format!("payment-{}", Uuid::now_v7());
-    for (after, versions) in [
-        (0, vec![(invoice.as_str(), 2), (payment.as_str(), 1)]),
-        (1, vec![(invoice.as_str(), 1)]),
-    ] {
-        assert_eq!(
-            store
-                .commit(versions_commit(p, after, &versions))
-                .await
-                .expect("commit"),
-            CommitOutcome::Committed
-        );
-    }
-    let journals = store.read(p).await.expect("read");
-    let versions = Journal::versions_of(&journals);
-    assert_eq!(versions.get(&invoice), Some(&2));
-    assert_eq!(versions.get(&payment), Some(&1));
+    assert_eq!(
+        store
+            .commit(versions_commit(
+                p,
+                0,
+                &[(invoice.as_str(), 2), (payment.as_str(), 1)]
+            ))
+            .await
+            .expect("commit"),
+        CommitOutcome::Committed
+    );
     assert_eq!(
         store
             .processes_behind(&invoice, 3, 10)
             .await
             .expect("behind"),
-        vec![p],
-        "the index holds the highest version"
+        vec![p]
     );
     assert!(
         store
             .processes_behind(&invoice, 2, 10)
             .await
             .expect("behind")
-            .is_empty(),
-        "a later lower version does not move the index back"
+            .is_empty()
     );
     assert_eq!(
         store
-            .commit(versions_commit(p, 2, &[(invoice.as_str(), 3)]))
+            .processes_behind(&payment, 2, 10)
+            .await
+            .expect("behind"),
+        vec![p]
+    );
+    // A later commit under older rules puts the process back on the worklist.
+    assert_eq!(
+        store
+            .commit(versions_commit(p, 1, &[(invoice.as_str(), 1)]))
             .await
             .expect("commit"),
         CommitOutcome::Committed
     );
-    let journals = store.read(p).await.expect("read");
-    assert_eq!(Journal::versions_of(&journals).get(&invoice), Some(&3));
+    assert_eq!(
+        store
+            .processes_behind(&invoice, 2, 10)
+            .await
+            .expect("behind"),
+        vec![p]
+    );
+    // A restatement with nothing to book moves the index on its own.
+    store
+        .record_versions(p, &versions(&[(invoice.as_str(), 3)]))
+        .await
+        .expect("record");
     assert!(
         store
             .processes_behind(&invoice, 3, 10)
             .await
             .expect("behind")
             .is_empty()
+    );
+    assert_eq!(
+        store
+            .processes_behind(&invoice, 4, 10)
+            .await
+            .expect("behind"),
+        vec![p]
+    );
+    assert_eq!(
+        store.read(p).await.expect("read").len(),
+        2,
+        "no journal for it"
     );
 }
 

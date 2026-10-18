@@ -21,10 +21,12 @@
 //! positions, checks that left equals right per ledger and unit, and appends
 //! one journal at the process's next sequence. The primary key on (process,
 //! sequence) is the compare-and-set; a lost race is retried inside
-//! [`Ledger::book`]. A bump of an [`Accounting::VERSION`] restates every
-//! process whose recorded version is behind, by appending journals: once at
-//! the start of the deployment that carries it ([`Ledger::restate_behind`]),
-//! and for any process left behind, at its next booking.
+//! [`Ledger::book`]. Every booking re-evaluates every object of its process
+//! under the running rules, so a rules change is booked at the process's
+//! next touch like any other difference; a bump of an
+//! [`Accounting::VERSION`] also restates, once at the start of the
+//! deployment that carries it ([`Ledger::restate_behind`]), every process
+//! the store's version index still lists under the older number.
 //!
 //! Persistence is the [`Store`] trait: [`InMemoryStore`] here, Postgres in
 //! `basable-ledger-postgres`. The scenario DSL, the property suites and the

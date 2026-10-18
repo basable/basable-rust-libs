@@ -73,12 +73,11 @@ impl Request {
 /// What a restatement of one process did.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Restated {
-    /// Objects re-evaluated under the running rules.
+    /// Objects whose positions moved under the running rules.
     pub objects: usize,
-    /// Lines the restatement journal booked; 0 means no journal was written.
+    /// Lines the restatement journal booked; 0 means no journal was written
+    /// and only the version index moved.
     pub lines: usize,
-    /// Types whose recorded version moved, in the journal's `rules_versions`.
-    pub versions_recorded: usize,
 }
 
 /// A restatement's effect before it books: the net change per batch and unit.
@@ -96,12 +95,10 @@ pub struct RestatementPreview {
 pub struct RestatementReport {
     /// Processes restated.
     pub processes: usize,
-    /// Objects re-evaluated.
+    /// Objects whose positions moved.
     pub objects: usize,
     /// Lines booked.
     pub lines: usize,
-    /// Versions recorded.
-    pub versions_recorded: usize,
 }
 
 /// How many processes behind [`Ledger::restate_behind`] fetches per page.
@@ -217,32 +214,30 @@ impl<S: Store> Ledger<S> {
         Ok(current.balances)
     }
 
-    /// Restates one process under the running rules of every registered
-    /// type: objects of a type whose recorded version is behind are
-    /// re-evaluated and the difference is appended as one journal. Nothing
-    /// to do is a `Restated` with zero lines.
+    /// Restates one process under the running rules: every object is
+    /// re-evaluated and the difference is appended as one journal, which
+    /// also moves the version index. Nothing to do is a `Restated` with zero
+    /// lines; the index is moved on its own then, so the startup worklist
+    /// stops listing the process.
     pub async fn restate(&self, process: ProcessId) -> Result<Restated, LedgerError> {
-        let types: Vec<(&'static str, u32)> = self.registry.types().collect();
         for _attempt in 0..self.max_attempts {
             let journals = self.store.read(process).await?;
             let current = engine::fold(process, &journals, &self.registry)?;
-            Self::check_rules_current(process, &current, types.iter().copied())?;
-            let plan = engine::plan(&current, &[], &types)
+            let plan = engine::plan(&current, &[])
                 .map_err(|rejection| LedgerError::Rejected { process, rejection })?;
             let mut restated = Restated {
                 objects: plan.restated_objects,
                 lines: 0,
-                versions_recorded: 0,
             };
-            if !plan.is_empty() {
-                let versions = plan.rules_versions.len();
-                match self.commit_plan(process, &current, plan).await? {
-                    Committed::Journal(lines) => {
-                        restated.lines = lines;
-                        restated.versions_recorded = versions;
-                    }
-                    Committed::Retry => continue,
+            if plan.is_empty() {
+                if !plan.versions.is_empty() {
+                    self.store.record_versions(process, &plan.versions).await?;
                 }
+                return Ok(restated);
+            }
+            match self.commit_plan(process, &current, plan).await? {
+                Committed::Journal(lines) => restated.lines = lines,
+                Committed::Retry => continue,
             }
             return Ok(restated);
         }
@@ -257,11 +252,9 @@ impl<S: Store> Ledger<S> {
         &self,
         process: ProcessId,
     ) -> Result<RestatementPreview, LedgerError> {
-        let types: Vec<(&'static str, u32)> = self.registry.types().collect();
         let journals = self.store.read(process).await?;
         let current = engine::fold(process, &journals, &self.registry)?;
-        Self::check_rules_current(process, &current, types.iter().copied())?;
-        let plan = engine::plan(&current, &[], &types)
+        let plan = engine::plan(&current, &[])
             .map_err(|rejection| LedgerError::Rejected { process, rejection })?;
         let mut deltas: BTreeMap<(BatchKey, UnitKey), i128> = BTreeMap::new();
         for l in &plan.lines {
@@ -277,14 +270,18 @@ impl<S: Store> Ledger<S> {
         })
     }
 
-    /// Restates every process whose recorded version of a registered type is
-    /// behind the running [`Accounting::VERSION`], and returns once none is.
-    /// A version changes only with a deployment, so this runs once, when the
-    /// new code starts: before it serves, or alongside, since a process still
-    /// behind is restated by its next booking anyway. Any number of replicas
-    /// may run it at the same time; the sequence makes a double restatement
-    /// of one process land once. A process whose desired states no longer
-    /// balance under the new rules stops it with `LedgerError::Rejected`.
+    /// Restates every process the version index lists behind the running
+    /// [`Accounting::VERSION`] of a registered type, and returns once none
+    /// is. A version changes only with a deployment, so this runs once, when
+    /// the new code starts: before it serves, or alongside, since a process
+    /// still behind is brought to the running rules by its next booking
+    /// anyway. Any number of replicas may run it at the same time; the
+    /// sequence makes a double restatement of one process land once. While a
+    /// replica of the previous deployment is still booking, its bookings put
+    /// processes back on the worklist and this pass takes them again; it
+    /// settles when that replica is gone. A process whose desired states no
+    /// longer balance under the new rules stops it with
+    /// `LedgerError::Rejected`.
     pub async fn restate_behind(&self) -> Result<RestatementReport, LedgerError> {
         let mut report = RestatementReport::default();
         for (type_name, version) in self.registry.types() {
@@ -301,35 +298,10 @@ impl<S: Store> Ledger<S> {
                     report.processes += 1;
                     report.objects += restated.objects;
                     report.lines += restated.lines;
-                    report.versions_recorded += restated.versions_recorded;
                 }
             }
         }
         Ok(report)
-    }
-
-    /// A process booked by rules newer than the ones running here cannot be
-    /// booked by these: a replica of the previous deployment is still
-    /// serving while the new one restates, and booking under the older rules
-    /// would move the restated positions back.
-    fn check_rules_current<'a>(
-        process: ProcessId,
-        current: &engine::Current,
-        types: impl IntoIterator<Item = (&'a str, u32)>,
-    ) -> Result<(), LedgerError> {
-        for (type_name, running) in types {
-            if let Some(&recorded) = current.versions.get(type_name)
-                && recorded > running
-            {
-                return Err(LedgerError::RulesBehind {
-                    process,
-                    type_name: type_name.to_owned(),
-                    recorded,
-                    running,
-                });
-            }
-        }
-        Ok(())
     }
 
     /// Books one process's submissions, retrying a lost sequence race.
@@ -347,14 +319,7 @@ impl<S: Store> Ledger<S> {
         for _attempt in 0..self.max_attempts {
             let journals = self.store.read(process).await?;
             let current = engine::fold(process, &journals, &self.registry)?;
-            Self::check_rules_current(
-                process,
-                &current,
-                submissions
-                    .iter()
-                    .map(|s| (s.object.type_name(), s.object.rules_version())),
-            )?;
-            let plan = match engine::plan(&current, submissions, &[]) {
+            let plan = match engine::plan(&current, submissions) {
                 Ok(plan) => plan,
                 Err(rejection) => return Ok(rejected(rejection)),
             };
