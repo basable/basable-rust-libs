@@ -77,7 +77,7 @@ pub struct Restated {
     pub objects: usize,
     /// Lines the restatement journal booked; 0 means no journal was written.
     pub lines: usize,
-    /// Types whose recorded version moved.
+    /// Types whose recorded version moved, in the journal's `rules_versions`.
     pub versions_recorded: usize,
 }
 
@@ -212,8 +212,8 @@ impl<S: Store> Ledger<S> {
     /// The booked positions of every object of a process, as the engine
     /// reads them: the sum of each object's lines per batch id and unit.
     pub async fn balances(&self, process: ProcessId) -> Result<Balances, LedgerError> {
-        let read = self.store.read(process).await?;
-        let current = engine::fold(process, &read, &self.registry)?;
+        let journals = self.store.read(process).await?;
+        let current = engine::fold(process, &journals, &self.registry)?;
         Ok(current.balances)
     }
 
@@ -224,8 +224,8 @@ impl<S: Store> Ledger<S> {
     pub async fn restate(&self, process: ProcessId) -> Result<Restated, LedgerError> {
         let types: Vec<(&'static str, u32)> = self.registry.types().collect();
         for _attempt in 0..self.max_attempts {
-            let read = self.store.read(process).await?;
-            let current = engine::fold(process, &read, &self.registry)?;
+            let journals = self.store.read(process).await?;
+            let current = engine::fold(process, &journals, &self.registry)?;
             Self::check_rules_current(process, &current, types.iter().copied())?;
             let plan = engine::plan(&current, &[], &types)
                 .map_err(|rejection| LedgerError::Rejected { process, rejection })?;
@@ -234,18 +234,15 @@ impl<S: Store> Ledger<S> {
                 lines: 0,
                 versions_recorded: 0,
             };
-            let versions_to_record = plan.versions_to_record.clone();
             if !plan.is_empty() {
+                let versions = plan.rules_versions.len();
                 match self.commit_plan(process, &current, plan).await? {
-                    Committed::Journal(lines) => restated.lines = lines,
+                    Committed::Journal(lines) => {
+                        restated.lines = lines;
+                        restated.versions_recorded = versions;
+                    }
                     Committed::Retry => continue,
                 }
-            }
-            for (type_name, version) in &versions_to_record {
-                self.store
-                    .record_version(process, type_name, *version)
-                    .await?;
-                restated.versions_recorded += 1;
             }
             return Ok(restated);
         }
@@ -261,8 +258,8 @@ impl<S: Store> Ledger<S> {
         process: ProcessId,
     ) -> Result<RestatementPreview, LedgerError> {
         let types: Vec<(&'static str, u32)> = self.registry.types().collect();
-        let read = self.store.read(process).await?;
-        let current = engine::fold(process, &read, &self.registry)?;
+        let journals = self.store.read(process).await?;
+        let current = engine::fold(process, &journals, &self.registry)?;
         Self::check_rules_current(process, &current, types.iter().copied())?;
         let plan = engine::plan(&current, &[], &types)
             .map_err(|rejection| LedgerError::Rejected { process, rejection })?;
@@ -348,8 +345,8 @@ impl<S: Store> Ledger<S> {
                 .collect::<Vec<_>>()
         };
         for _attempt in 0..self.max_attempts {
-            let read = self.store.read(process).await?;
-            let current = engine::fold(process, &read, &self.registry)?;
+            let journals = self.store.read(process).await?;
+            let current = engine::fold(process, &journals, &self.registry)?;
             Self::check_rules_current(
                 process,
                 &current,
@@ -362,17 +359,11 @@ impl<S: Store> Ledger<S> {
                 Err(rejection) => return Ok(rejected(rejection)),
             };
             let outcomes = plan.outcomes.clone();
-            let versions_to_record = plan.versions_to_record.clone();
             if !plan.is_empty() {
                 match self.commit_plan(process, &current, plan).await? {
                     Committed::Journal(_) => {}
                     Committed::Retry => continue,
                 }
-            }
-            for (type_name, version) in &versions_to_record {
-                self.store
-                    .record_version(process, type_name, *version)
-                    .await?;
             }
             return Ok(outcomes
                 .iter()

@@ -27,9 +27,9 @@ that there is nothing to keep in sync.
 | `Desired`, `balance(account, unit, amount)`, `desired![...]` | The positions of a state: signed amounts in the column of each batch's type. Duplicates of one key are summed |
 | `Balances`, `ObjectBalances` | What `validate_balances` and `Ledger::balances` see: per object, per batch key and unit, computed from the journals; `batch(key or &account, unit)` over the process, `batch_account(key)` the ledger and type the process booked the key under |
 | `Ledger<S>`, `Builder`, `Request`, `Outcome` | `Ledger::builder(store).register::<O, A>()...build()`; `book(Request)` books any mix of registered types across processes, one `Outcome` per object: `Booked`, `AlreadyBooked`, `Stale`, `Rejected(reason)`. `balances(process)`, `restate(process)`, `preview_restatement(process)` (the per-process dry run: the net deltas per batch key and unit); `restate_behind()`, called once when a deployment starts, restates every process behind the running rules of any registered type and reports `RestatementReport { processes, objects, lines, versions_recorded }` |
-| `Store` | The persistence interface: `read`, `commit`, `record_version`, `batch_sum`, `processes_behind` (the startup restatement's worklist); `ProcessRead`, `Commit`, `CommitOutcome::{Committed, SequenceTaken}` |
+| `Store` | The persistence interface: `read` (a process's journals, the one read a booking makes), `commit` (the journal row and, in the same statement, the version index rows from its `rules_versions`), `batch_sum`, `processes_behind` (the startup restatement's worklist, from that index); `Commit`, `CommitOutcome::{Committed, SequenceTaken}` |
 | `InMemoryStore` | The reference store, for tests |
-| `Journal`, `Line`, `SnapshotDiff` | The stored shape: `(process_id, sequence, booked_at, lines, snapshot_diffs)`, lines `[batch_key, ledger, batch_type, object_id, unit_key, amount]` (the type 1 debit, 2 credit, 3 memo), diffs `{object_id, type, full | patch}` |
+| `Journal`, `Line`, `SnapshotDiff` | The stored shape: `(process_id, sequence, booked_at, lines, snapshot_diffs, rules_versions)`, lines `[batch_key, ledger, batch_type, object_id, unit_key, amount]` (the type 1 debit, 2 credit, 3 memo), diffs `{object_id, type, full | patch}`, `rules_versions` the `{type_name: version}` this journal moved (usually empty); `Journal::versions_of(journals)` folds them to the process's version per type |
 | `jsonpatch::{diff, apply}` | RFC 7386 merge patch, how diffs are made and folded |
 | `Rejection`, `StoreError`, `LedgerError` | Hand-written errors, no `thiserror` |
 
@@ -40,7 +40,9 @@ that there is nothing to keep in sync.
    booked state and version are what the reader returns on the fold. Sum
    the lines per (object, batch key, unit) into positions; each line
    carries its batch's ledger and type, and one key under two of them is a
-   corrupt store. The highest sequence is the process version.
+   corrupt store. The highest sequence is the process version, and the
+   fold of the journals' `rules_versions` (highest per type) is the rules
+   version the process was last evaluated under; nothing else is read.
 2. **Restate** first, if any type in question has a recorded version behind
    `Accounting::VERSION`: re-evaluate every object of that type on its
    folded snapshot and queue the delta.
@@ -56,12 +58,14 @@ that there is nothing to keep in sync.
    through the same batch, whose ledger and type the booked lines carry.
 4. **One rejection rejects the process's part of the call**, naming the
    object and the reason; other processes in the call are unaffected.
-5. **Commit** one journal at `sequence + 1` with every delta line and one
+5. **Commit** one journal at `sequence + 1` with every delta line, one
    snapshot diff per booked object (full the first time, a merge patch
-   afterwards). The primary key on (process, sequence) is the
-   compare-and-set; a lost race is retried, `DEFAULT_MAX_ATTEMPTS` times.
-6. **Record** the rules version per type that was missing or behind, as a
-   separate converging upsert after the commit.
+   afterwards) and, in `rules_versions`, each type whose version this
+   journal moves (a type's first booking in the process, a restatement).
+   The store upserts those into its version index in the same statement.
+   The primary key on (process, sequence) is the compare-and-set; a lost
+   race is retried, `DEFAULT_MAX_ATTEMPTS` times. A restatement that
+   changes no position still writes a journal when a version moves.
 
 A rules version changes only with a deployment, so the new code calls
 `restate_behind()` once when it starts: it pages through `processes_behind`
@@ -73,9 +77,9 @@ booking whose running `VERSION` is below the process's recorded version
 fails with `LedgerError::RulesBehind` rather than moving the restated
 positions back, and the caller retries once the old replica is gone. A
 rules change is therefore never rolled back; the old desired state comes
-back as a higher version. A process that booked a type but crashed between
-its commit and `record_version` has no row to find; its next booking
-restates it. A version row exists only for a type the process booked.
+back as a higher version. A version is recorded only for a type the
+process booked, and in the same statement as the journal, so there is no
+gap for a crash to fall into.
 
 ## How a batch closes
 

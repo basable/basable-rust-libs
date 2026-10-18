@@ -58,7 +58,7 @@ pub use ledger::{
 };
 pub use memory::InMemoryStore;
 pub use object::LedgerObject;
-pub use store::{Commit, CommitOutcome, ProcessRead, Store};
+pub use store::{Commit, CommitOutcome, Store};
 pub use types::{
     Batch, BatchKey, BatchType, LedgerKey, ObjectId, ProcessId, Timestamp, UnitKey, amount_string,
 };

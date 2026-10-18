@@ -1,11 +1,11 @@
 //! `PgStore`: the `Store` over a nanoservice's pool.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use basable_db::sqlstate;
 use basable_ledger::{
-    BatchKey, Commit, CommitOutcome, Journal, Line, ProcessId, ProcessRead, SnapshotDiff, Store,
-    StoreError, Timestamp, UnitKey,
+    BatchKey, Commit, CommitOutcome, Journal, Line, ProcessId, SnapshotDiff, Store, StoreError,
+    Timestamp, UnitKey,
 };
 use serde_json::Value;
 use sqlx::{PgPool, Row};
@@ -39,9 +39,9 @@ fn corrupt(what: &str, e: impl std::fmt::Display) -> StoreError {
 }
 
 impl Store for PgStore {
-    async fn read(&self, process: ProcessId) -> Result<ProcessRead, StoreError> {
+    async fn read(&self, process: ProcessId) -> Result<Vec<Journal>, StoreError> {
         let rows = sqlx::query(
-            "SELECT sequence, booked_at, lines, snapshot_diffs \
+            "SELECT sequence, booked_at, lines, snapshot_diffs, rules_versions \
              FROM journal WHERE process_id = $1 ORDER BY sequence",
         )
         .bind(process.0)
@@ -56,6 +56,9 @@ impl Store for PgStore {
                 serde_json::from_value(lines).map_err(|e| corrupt("journal.lines", e))?;
             let snapshot_diffs: Vec<SnapshotDiff> =
                 serde_json::from_value(diffs).map_err(|e| corrupt("journal.snapshot_diffs", e))?;
+            let versions: Value = row.try_get("rules_versions").map_err(backend)?;
+            let rules_versions: BTreeMap<String, u32> = serde_json::from_value(versions)
+                .map_err(|e| corrupt("journal.rules_versions", e))?;
             let sequence: i64 = row.try_get("sequence").map_err(backend)?;
             let booked_at: Timestamp = row.try_get("booked_at").map_err(backend)?;
             journals.push(Journal {
@@ -64,40 +67,37 @@ impl Store for PgStore {
                 booked_at,
                 lines,
                 snapshot_diffs,
+                rules_versions,
             });
         }
-        let rows = sqlx::query(
-            "SELECT type_name, version FROM process_ledger_object_version \
-             WHERE process_id = $1",
-        )
-        .bind(process.0)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(backend)?;
-        let mut versions = HashMap::new();
-        for row in &rows {
-            let name: String = row.try_get("type_name").map_err(backend)?;
-            let version: i32 = row.try_get("version").map_err(backend)?;
-            versions.insert(
-                name,
-                u32::try_from(version).map_err(|_| corrupt("version", version))?,
-            );
-        }
-        Ok(ProcessRead { journals, versions })
+        Ok(journals)
     }
 
+    /// One statement: the journal row, and from its `rules_versions` the
+    /// upserts into the version index. A primary-key violation on the
+    /// journal fails the statement as a whole, so a lost race leaves
+    /// nothing behind.
     async fn commit(&self, commit: Commit) -> Result<CommitOutcome, StoreError> {
         let lines_json = serde_json::to_value(&commit.lines).map_err(|e| corrupt("lines", e))?;
         let diffs_json =
             serde_json::to_value(&commit.snapshot_diffs).map_err(|e| corrupt("diffs", e))?;
+        let versions_json =
+            serde_json::to_value(&commit.rules_versions).map_err(|e| corrupt("versions", e))?;
         let inserted = sqlx::query(
-            "INSERT INTO journal (process_id, sequence, lines, snapshot_diffs) \
-             VALUES ($1, $2, $3, $4)",
+            "WITH j AS ( \
+                 INSERT INTO journal (process_id, sequence, lines, snapshot_diffs, rules_versions) \
+                 VALUES ($1, $2, $3, $4, $5) RETURNING process_id \
+             ) \
+             INSERT INTO process_ledger_object_version (process_id, type_name, version) \
+             SELECT j.process_id, v.key, v.value::integer FROM j, jsonb_each_text($5) AS v \
+             ON CONFLICT (process_id, type_name) DO UPDATE \
+             SET version = GREATEST(process_ledger_object_version.version, EXCLUDED.version)",
         )
         .bind(commit.process_id.0)
         .bind(commit.after_sequence + 1)
         .bind(&lines_json)
         .bind(&diffs_json)
+        .bind(&versions_json)
         .execute(&self.pool)
         .await;
         match inserted {
@@ -105,27 +105,6 @@ impl Store for PgStore {
             Err(e) if sqlstate::is_unique_violation(&e) => Ok(CommitOutcome::SequenceTaken),
             Err(e) => Err(backend(e)),
         }
-    }
-
-    async fn record_version(
-        &self,
-        process: ProcessId,
-        type_name: &str,
-        version: u32,
-    ) -> Result<(), StoreError> {
-        sqlx::query(
-            "INSERT INTO process_ledger_object_version (process_id, type_name, version) \
-             VALUES ($1, $2, $3) \
-             ON CONFLICT (process_id, type_name) DO UPDATE \
-             SET version = GREATEST(process_ledger_object_version.version, EXCLUDED.version)",
-        )
-        .bind(process.0)
-        .bind(type_name)
-        .bind(i32::try_from(version).map_err(|_| corrupt("version", version))?)
-        .execute(&self.pool)
-        .await
-        .map_err(backend)?;
-        Ok(())
     }
 
     /// Over `idx_journal_batch_keys`: the probe is the index's expression,

@@ -19,13 +19,17 @@ SET LOCAL search_path = nano_ledger;
 -- back. A batch's balance is the sum of its lines; zero is a closed batch.
 -- booked_at is the journal's one time: when something happened in the
 -- world is a field of the object, in its diff, read through the user's
--- reader.
+-- reader. rules_versions is {type_name: version} for the object types
+-- whose rules version this journal moved (a type's first booking in the
+-- process, a restatement); usually {}. The process's version per type is
+-- the fold of these over its journals, which is all a booking reads.
 CREATE TABLE journal (
     process_id     UUID NOT NULL,
     sequence       BIGINT NOT NULL CHECK (sequence >= 1),
     booked_at      TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     lines          JSONB NOT NULL CHECK (jsonb_typeof(lines) = 'array'),
     snapshot_diffs JSONB NOT NULL CHECK (jsonb_typeof(snapshot_diffs) = 'array'),
+    rules_versions JSONB NOT NULL CHECK (jsonb_typeof(rules_versions) = 'object'),
     PRIMARY KEY (process_id, sequence)
 );
 -- A batch's lines across every process: the batch sum's index, over the
@@ -36,9 +40,10 @@ CREATE TABLE journal (
 CREATE INDEX idx_journal_batch_keys
     ON journal USING GIN ((jsonb_path_query_array(lines, '$[*][0]')) jsonb_path_ops);
 
--- The desired_state version that last evaluated an object type in a
--- process; the startup restatement's worklist is every row behind the
--- running version.
+-- An index of the journals' rules_versions: the highest version recorded
+-- per process and object type, upserted by the commit's own statement and
+-- never read by a booking. The startup restatement's worklist is every row
+-- behind the running version.
 CREATE TABLE process_ledger_object_version (
     process_id UUID NOT NULL,
     type_name  TEXT NOT NULL,

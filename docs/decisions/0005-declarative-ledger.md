@@ -37,7 +37,8 @@ first.
   sum of the object's lines, computed from the process's journals on every
   read. No position, balance or booked-state table exists.
 - A **journal** is one row per commit of one process: lines
-  `[batch_key, ledger, batch_type, object_id, unit_key, amount]` and
+  `[batch_key, ledger, batch_type, object_id, unit_key, amount]`, the
+  `rules_versions` it moved (`{type_name: version}`, usually empty) and
   snapshot diffs
   `{object_id, type, full | patch}` (RFC 7386 merge patches; the first
   sight of an object is its full JSON). Folding a process's diffs rebuilds
@@ -68,8 +69,12 @@ first.
   commit is one insert. A key the process has booked under another ledger
   or type, or named under two accounts in one call, rejects.
 - A rules version bump restates: every process whose recorded version
-  (per process and object type, `record_version`, a converging upsert
-  after the commit) is behind is re-evaluated on its folded snapshots and
+  (per process and object type, written in the journal row's
+  `rules_versions` by the booking or restatement that moved it and folded
+  on read, so a booking reads journals and nothing else; the store keeps
+  an index of it, upserted by the commit's own statement and read only by
+  the startup restatement) is behind is re-evaluated on its folded
+  snapshots and
   the difference appended as a journal with lines and no diffs. Prospective:
   history is never rewritten. A version changes only with a deployment, so
   the new code restates once at startup (`Ledger::restate_behind`, over

@@ -1,6 +1,8 @@
 //! The journal: one row per commit of one process, holding the lines of
 //! every object the call booked and the snapshot diff of each.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -101,6 +103,31 @@ pub struct Journal {
     pub lines: Vec<Line>,
     /// One per object the journal booked; empty for a restatement.
     pub snapshot_diffs: Vec<SnapshotDiff>,
+    /// The object types whose rules version this journal moved, with the
+    /// version that evaluated them: a type's first booking in the process
+    /// and a restatement write it, a booking under an unchanged version
+    /// writes nothing. The process's version per type is the fold of these
+    /// ([`Journal::versions_of`]); the store's index table is a copy the
+    /// commit maintains for the startup restatement's worklist.
+    pub rules_versions: BTreeMap<String, u32>,
+}
+
+impl Journal {
+    /// The rules version per object type over a process's journals: the
+    /// highest each type was recorded at. What the engine compares with the
+    /// running `Accounting::VERSION`.
+    pub fn versions_of(journals: &[Journal]) -> BTreeMap<String, u32> {
+        let mut versions = BTreeMap::new();
+        for j in journals {
+            for (type_name, version) in &j.rules_versions {
+                let slot = versions.entry(type_name.clone()).or_insert(*version);
+                if *slot < *version {
+                    *slot = *version;
+                }
+            }
+        }
+        versions
+    }
 }
 
 #[cfg(test)]

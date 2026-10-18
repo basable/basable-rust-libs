@@ -5,7 +5,7 @@
 
 use basable_db::{Nanoservice, Stateful};
 use basable_ledger::{
-    BatchAccount, Ledger, LedgerError, Request, RestatementReport, Store, UnitKey,
+    BatchAccount, Journal, Ledger, LedgerError, Request, RestatementReport, Store, UnitKey,
 };
 use basable_ledger_postgres::{PgStore, SCHEMA_PLACEHOLDER};
 use basable_ledger_testkit::fixture::{
@@ -77,7 +77,7 @@ async fn the_startup_restatement_restates_on_postgres() {
             .read(invoices[0].process_id)
             .await
             .expect("read")
-            .sequence(),
+            .len(),
         1,
         "the dry run booked nothing"
     );
@@ -97,10 +97,11 @@ async fn the_startup_restatement_restates_on_postgres() {
         RestatementReport::default()
     );
     for invoice in &invoices {
-        let read = store.read(invoice.process_id).await.expect("read");
-        assert_eq!(read.sequence(), 2);
-        assert_eq!(read.versions.get("invoice"), Some(&2));
-        assert_eq!(read.versions.get("payment"), None);
+        let journals = store.read(invoice.process_id).await.expect("read");
+        assert_eq!(journals.len(), 2);
+        let versions = Journal::versions_of(&journals);
+        assert_eq!(versions.get("invoice"), Some(&2));
+        assert_eq!(versions.get("payment"), None);
         let b = v2.balances(invoice.process_id).await.expect("balances");
         assert_eq!(
             b.of(invoice.id)

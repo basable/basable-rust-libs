@@ -5,7 +5,9 @@
 //! store agreeing with Postgres on a history.
 
 use basable_db::{Nanoservice, Stateful};
-use basable_ledger::{BatchAccount, InMemoryStore, Ledger, Outcome, Request, Store, UnitKey};
+use basable_ledger::{
+    BatchAccount, InMemoryStore, Journal, Ledger, Outcome, Request, Store, UnitKey,
+};
 use basable_ledger_postgres::{PgStore, SCHEMA_PLACEHOLDER, migrations};
 use basable_ledger_testkit::conformance;
 use basable_ledger_testkit::fixture::{
@@ -118,10 +120,14 @@ async fn the_invoice_lifecycle_books_on_postgres() {
             .expect("book"),
         vec![Outcome::Stale]
     );
-    let read = store.read(p).await.expect("read");
-    assert_eq!(read.sequence(), 3);
-    assert_eq!(read.versions.get("invoice"), Some(&1));
-    assert_eq!(read.versions.get("payment"), Some(&1));
+    let journals = store.read(p).await.expect("read");
+    assert_eq!(journals.len(), 3);
+    let versions = Journal::versions_of(&journals);
+    assert_eq!(versions.get("invoice"), Some(&1));
+    assert_eq!(versions.get("payment"), Some(&1));
+    // The first journal moved both versions; the later ones moved none.
+    assert_eq!(journals[0].rules_versions.len(), 2);
+    assert!(journals[1].rules_versions.is_empty());
     // The batch sum spans the whole process.
     assert_eq!(
         store
@@ -214,9 +220,10 @@ async fn a_rules_bump_restates_on_postgres() {
             .amount(&InvoiceLedgerV2::vat_batch(&issued), Currency::Eur),
         2_100
     );
-    let read = store.read(p).await.expect("read");
-    assert_eq!(read.versions.get("invoice"), Some(&2));
-    assert!(read.journals[1].snapshot_diffs.is_empty());
+    let journals = store.read(p).await.expect("read");
+    assert_eq!(Journal::versions_of(&journals).get("invoice"), Some(&2));
+    assert!(journals[1].snapshot_diffs.is_empty());
+    assert_eq!(journals[1].rules_versions.get("invoice"), Some(&2));
     db.finish().await;
 }
 

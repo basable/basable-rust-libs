@@ -6,12 +6,13 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::StoreError;
 use crate::journal::Journal;
-use crate::store::{Commit, CommitOutcome, ProcessRead, Store};
+use crate::store::{Commit, CommitOutcome, Store};
 use crate::types::{BatchKey, ProcessId, UnitKey};
 
 #[derive(Default)]
 struct Inner {
     journals: BTreeMap<ProcessId, Vec<Journal>>,
+    /// The version index the commit maintains, as Postgres keeps it.
     versions: HashMap<(ProcessId, String), u32>,
 }
 
@@ -33,7 +34,7 @@ impl InMemoryStore {
         g.journals.get(&process).cloned().unwrap_or_default()
     }
 
-    /// The recorded rules version of a type in a process.
+    /// The indexed rules version of a type in a process.
     pub fn version(&self, process: ProcessId, type_name: &str) -> Option<u32> {
         let g = self.inner.lock().expect("store lock");
         g.versions.get(&(process, type_name.to_owned())).copied()
@@ -41,24 +42,27 @@ impl InMemoryStore {
 }
 
 impl Store for InMemoryStore {
-    async fn read(&self, process: ProcessId) -> Result<ProcessRead, StoreError> {
+    async fn read(&self, process: ProcessId) -> Result<Vec<Journal>, StoreError> {
         let g = self.inner.lock().expect("store lock");
-        let journals = g.journals.get(&process).cloned().unwrap_or_default();
-        let versions = g
-            .versions
-            .iter()
-            .filter(|((p, _), _)| *p == process)
-            .map(|((_, t), v)| (t.clone(), *v))
-            .collect();
-        Ok(ProcessRead { journals, versions })
+        Ok(g.journals.get(&process).cloned().unwrap_or_default())
     }
 
     async fn commit(&self, commit: Commit) -> Result<CommitOutcome, StoreError> {
         let mut g = self.inner.lock().expect("store lock");
-        let journals = g.journals.entry(commit.process_id).or_default();
+        let inner = &mut *g;
+        let journals = inner.journals.entry(commit.process_id).or_default();
         let last = journals.last().map(|j| j.sequence).unwrap_or(0);
         if last != commit.after_sequence {
             return Ok(CommitOutcome::SequenceTaken);
+        }
+        for (type_name, version) in &commit.rules_versions {
+            let slot = inner
+                .versions
+                .entry((commit.process_id, type_name.clone()))
+                .or_insert(*version);
+            if *slot < *version {
+                *slot = *version;
+            }
         }
         journals.push(Journal {
             process_id: commit.process_id,
@@ -66,25 +70,9 @@ impl Store for InMemoryStore {
             booked_at: chrono::Utc::now(),
             lines: commit.lines,
             snapshot_diffs: commit.snapshot_diffs,
+            rules_versions: commit.rules_versions,
         });
         Ok(CommitOutcome::Committed)
-    }
-
-    async fn record_version(
-        &self,
-        process: ProcessId,
-        type_name: &str,
-        version: u32,
-    ) -> Result<(), StoreError> {
-        let mut g = self.inner.lock().expect("store lock");
-        let slot = g
-            .versions
-            .entry((process, type_name.to_owned()))
-            .or_insert(version);
-        if *slot < version {
-            *slot = version;
-        }
-        Ok(())
     }
 
     async fn batch_sum(&self, batch: BatchKey) -> Result<Vec<(UnitKey, i128)>, StoreError> {

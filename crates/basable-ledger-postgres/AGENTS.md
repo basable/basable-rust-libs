@@ -10,7 +10,7 @@ is `docs/decisions/0005-declarative-ledger.md`.
 | Item | What it is |
 |---|---|
 | `MIGRATION`, `MIGRATION_FILE`, `SCHEMA_PLACEHOLDER`, `migrations()` | The dbmate migration that creates `journal` and `process_ledger_object_version`, with `nano_ledger` as the schema and role placeholder. Apply it through `basable_db::migrate::apply` with the replacement `("nano_ledger", "nano_<name>")` |
-| `PgStore::new(pool)` | The store: `read` (every journal of a process and the recorded versions), `commit` (one `INSERT` of the journal at the next sequence; a unique violation on the primary key is `SequenceTaken`), `record_version` (an upsert that never moves backwards), `batch_sum` (over the expression index on the lines' batch keys), `processes_behind` (the startup restatement's worklist, from the version table's index) |
+| `PgStore::new(pool)` | The store: `read` (every journal of a process, the one read a booking makes), `commit` (one statement: a CTE inserts the journal at the next sequence and, from its `rules_versions`, upserts the version index rows, never moving one back; a unique violation on the primary key fails the statement as a whole, `SequenceTaken`), `batch_sum` (over the expression index on the lines' batch keys), `processes_behind` (the startup restatement's worklist, from the version index) |
 
 ## The tables
 
@@ -19,14 +19,18 @@ is `docs/decisions/0005-declarative-ledger.md`.
   diffs), `lines` jsonb
   `[[batch_key, ledger, batch_type, object_id, unit_key, amount], …]`
   (type 1 debit, 2 credit, 3 memo; amounts as decimal strings),
-  `snapshot_diffs` jsonb. `idx_journal_batch_keys` is a GIN index on the
+  `snapshot_diffs` jsonb, `rules_versions` jsonb `{type_name: version}`
+  for the types whose version this journal moved (usually `{}`).
+  `idx_journal_batch_keys` is a GIN index on the
   expression `jsonb_path_query_array(lines, '$[*][0]')`, the batch keys of
   a journal's lines and nothing else, so `... @> '[<key>]'` finds a batch's
   journals and a small key never matches a ledger, a type or a unit that
   shares its value.
-- `process_ledger_object_version (process_id, type_name) PK`,
-  `version`, indexed on `(type_name, version)` as the startup
-  restatement's worklist.
+- `process_ledger_object_version (process_id, type_name) PK`, `version`:
+  an index of the journals' `rules_versions`, the highest per process and
+  type, upserted by the commit's own statement and never read by a
+  booking; indexed on `(type_name, version)` as the startup restatement's
+  worklist.
 
 No batch table: a batch key is the user's, and every line carries the
 batch's ledger and type with it. No balance table: a position is a sum of
@@ -35,8 +39,10 @@ lines, and so is a claim. A batch at zero is a closed batch.
 ## Rules
 
 - **The primary key is the compare-and-set.** The commit is one
-  autocommitted statement: no transaction to open, no row updated per
-  booking, no lock of any kind. A loser reads again.
+  autocommitted statement, a CTE that inserts the journal and upserts the
+  version index from it: no transaction to open, no second round trip, no
+  lock of any kind. A loser's statement fails as a whole and the engine
+  reads again. A booking reads the journal table and nothing else.
 - **Amounts travel as strings** inside the jsonb and are summed as
   `numeric` in SQL, so an `i128` never meets a `bigint`.
 - **The batch sum names the index's expression.** The `WHERE` of
@@ -78,7 +84,8 @@ key, unit) drops a row whose summed columns are all zero when it merges.**
 `TEST_DATABASE_URL`, skipped without it:
 
 - `tests/postgres.rs`: the conformance suite of `basable-ledger-testkit`;
-  the invoice and payment fixture on real rows, replays recognised (which
+  the invoice and payment fixture on real rows (the first journal moving
+  both types' versions, later ones none), replays recognised (which
   is what repairs a commit whose acknowledgement was lost: the retry reads
   the row and answers `AlreadyBooked`), the batch sum spanning the
   process; a month's VAT batch closed by a VAT return booking it to zero

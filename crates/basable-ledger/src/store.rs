@@ -1,35 +1,19 @@
 //! The persistence interface. The engine is synchronous and pure (a
 //! process's journals and the call's snapshots in, a commit out); only the
-//! store is async. Four capabilities: read a process, append one journal at
-//! the process's next sequence, record the rules version per process and
-//! type, and sum one batch's lines over every process. The store knows
+//! store is async. Four capabilities: read a process's journals, append one
+//! journal at the process's next sequence, sum one batch's lines over every
+//! process, and list the processes behind a rules version. The store knows
 //! nothing about batches beyond the keys on the lines: there is no batch
-//! table.
+//! table. The rules version per process and type rides in the journal row;
+//! the store keeps an index of it, maintained by the commit, that only the
+//! startup restatement reads.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::future::Future;
 
 use crate::error::StoreError;
 use crate::journal::{Journal, Line, SnapshotDiff};
 use crate::types::{BatchKey, ProcessId, UnitKey};
-
-/// Everything the engine reads about one process: its journals in sequence
-/// order and the rules version recorded per object type.
-#[derive(Clone, Debug, Default)]
-pub struct ProcessRead {
-    /// The journals, sequence 1 first. Empty for a process never booked.
-    pub journals: Vec<Journal>,
-    /// The `desired_state` version that last evaluated each object type
-    /// in this process, by type name.
-    pub versions: HashMap<String, u32>,
-}
-
-impl ProcessRead {
-    /// The process version: the highest sequence, 0 for none.
-    pub fn sequence(&self) -> i64 {
-        self.journals.last().map(|j| j.sequence).unwrap_or(0)
-    }
-}
 
 /// What a call commits for one process: one journal at the next sequence.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -42,6 +26,10 @@ pub struct Commit {
     pub lines: Vec<Line>,
     /// The snapshot diffs.
     pub snapshot_diffs: Vec<SnapshotDiff>,
+    /// The types whose rules version this journal moves, with the version:
+    /// written in the journal row and upserted into the version index in
+    /// the same statement. Usually empty.
+    pub rules_versions: BTreeMap<String, u32>,
 }
 
 /// What a commit came back with.
@@ -57,30 +45,23 @@ pub enum CommitOutcome {
 /// The backend behind the engine. Every adapter passes the conformance suite
 /// in `basable-ledger-testkit`.
 pub trait Store: Send + Sync {
-    /// Every journal of the process in sequence order and the recorded
-    /// versions. A process never booked reads as empty.
+    /// Every journal of the process in sequence order. A process never
+    /// booked reads as empty. This is the one read a booking makes.
     fn read(
         &self,
         process: ProcessId,
-    ) -> impl Future<Output = Result<ProcessRead, StoreError>> + Send;
+    ) -> impl Future<Output = Result<Vec<Journal>, StoreError>> + Send;
 
-    /// Appends the journal at `after_sequence + 1`. The primary key on
-    /// (process, sequence) is the compare-and-set: a violation is
-    /// [`CommitOutcome::SequenceTaken`].
+    /// Appends the journal at `after_sequence + 1` and, in the same
+    /// statement, upserts its `rules_versions` into the index of the
+    /// recorded version per process and type (never moving one backwards).
+    /// The primary key on (process, sequence) is the compare-and-set: a
+    /// violation is [`CommitOutcome::SequenceTaken`], and nothing else of the
+    /// statement lands.
     fn commit(
         &self,
         commit: Commit,
     ) -> impl Future<Output = Result<CommitOutcome, StoreError>> + Send;
-
-    /// Records the `desired_state` version that last evaluated an object
-    /// type in a process. An upsert, called after the commit; a crash between
-    /// the two is repaired by the next pass, which finds nothing to book.
-    fn record_version(
-        &self,
-        process: ProcessId,
-        type_name: &str,
-        version: u32,
-    ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
     /// The sum of one batch's lines per unit over every process: what a
     /// return, a payout or a report takes from a batch. A sum of zero is a
@@ -93,10 +74,8 @@ pub trait Store: Send + Sync {
     ) -> impl Future<Output = Result<Vec<(UnitKey, i128)>, StoreError>> + Send;
 
     /// Up to `limit` processes whose recorded version of `type_name` is below
-    /// `version`: the startup restatement's worklist, in any stable order. A
-    /// process that booked the type but never had its version recorded (a
-    /// crash between commit and `record_version`) is not listed; its next
-    /// booking restates it.
+    /// `version`, from the index the commit maintains: the startup
+    /// restatement's worklist, in any stable order.
     fn processes_behind(
         &self,
         type_name: &str,

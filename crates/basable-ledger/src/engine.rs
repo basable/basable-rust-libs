@@ -3,7 +3,7 @@
 //! Nothing here is async and nothing reads a clock; the store stamps the
 //! commit time, and the runtime in `ledger.rs` drives it against a store.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
@@ -11,9 +11,9 @@ use crate::balances::Balances;
 use crate::desired::Desired;
 use crate::erased::{ErasedObject, Registry};
 use crate::error::{LedgerError, Rejection, StoreError};
-use crate::journal::{Line, SnapshotDiff};
+use crate::journal::{Journal, Line, SnapshotDiff};
 use crate::jsonpatch;
-use crate::store::{Commit, ProcessRead};
+use crate::store::Commit;
 use crate::types::{Batch, BatchKey, BatchType, LedgerKey, ObjectId, ProcessId, UnitKey};
 
 /// One object as the process currently books it: its folded snapshot and
@@ -28,18 +28,19 @@ pub(crate) struct Current {
     pub sequence: i64,
     pub objects: BTreeMap<ObjectId, CurrentObject>,
     pub balances: Balances,
-    pub versions: HashMap<String, u32>,
+    pub versions: BTreeMap<String, u32>,
 }
 
-/// Folds a process read into its current objects and positions.
+/// Folds a process's journals into its current objects, positions and
+/// rules versions.
 pub(crate) fn fold(
     process: ProcessId,
-    read: &ProcessRead,
+    journals: &[Journal],
     registry: &Registry,
 ) -> Result<Current, LedgerError> {
     let mut snapshots: BTreeMap<ObjectId, (String, Value)> = BTreeMap::new();
     let mut balances = Balances::new();
-    for journal in &read.journals {
+    for journal in journals {
         for diff in &journal.snapshot_diffs {
             match (&diff.full, &diff.patch) {
                 (Some(full), _) => {
@@ -96,10 +97,10 @@ pub(crate) fn fold(
         objects.insert(id, CurrentObject { json, object });
     }
     Ok(Current {
-        sequence: read.sequence(),
+        sequence: journals.last().map(|j| j.sequence).unwrap_or(0),
         objects,
         balances,
-        versions: read.versions.clone(),
+        versions: Journal::versions_of(journals),
     })
 }
 
@@ -122,17 +123,18 @@ pub(crate) struct Plan {
     pub outcomes: Vec<(usize, PreOutcome)>,
     pub lines: Vec<Line>,
     pub diffs: Vec<SnapshotDiff>,
-    /// Types whose recorded version must become the running one.
-    pub versions_to_record: Vec<(String, u32)>,
+    /// Types whose recorded version becomes the running one with this
+    /// journal: written in its `rules_versions`, and the index rows with it.
+    pub rules_versions: BTreeMap<String, u32>,
     /// How many objects were restated ahead of the submissions.
     pub restated_objects: usize,
 }
 
 impl Plan {
-    /// Nothing to commit: every submission was a duplicate or stale and no
-    /// restatement was due.
+    /// Nothing to commit: every submission was a duplicate or stale, no
+    /// restatement was due and no version moves.
     pub(crate) fn is_empty(&self) -> bool {
-        self.lines.is_empty() && self.diffs.is_empty()
+        self.lines.is_empty() && self.diffs.is_empty() && self.rules_versions.is_empty()
     }
 
     /// The commit: one journal at the process's next sequence.
@@ -142,6 +144,7 @@ impl Plan {
             after_sequence: current.sequence,
             lines: self.lines,
             snapshot_diffs: self.diffs,
+            rules_versions: self.rules_versions,
         }
     }
 }
@@ -158,7 +161,7 @@ pub(crate) fn plan(
         outcomes: Vec::with_capacity(submissions.len()),
         lines: Vec::new(),
         diffs: Vec::new(),
-        versions_to_record: Vec::new(),
+        rules_versions: BTreeMap::new(),
         restated_objects: 0,
     };
     let mut working = current.balances.clone();
@@ -204,8 +207,7 @@ pub(crate) fn plan(
             }
         }
         if recorded.is_none_or(|r| r < running) {
-            plan.versions_to_record
-                .push((type_name.to_owned(), running));
+            plan.rules_versions.insert(type_name.to_owned(), running);
         }
     }
 

@@ -24,8 +24,8 @@ pub async fn expected_balances<S: Store>(
 ) -> BTreeMap<(BatchKey, UnitKey), i128> {
     let mut sums = BTreeMap::new();
     for process in processes {
-        let read = store.read(*process).await.expect("read");
-        for line in read.journals.iter().flat_map(|j| j.lines.iter()) {
+        let journals = store.read(*process).await.expect("read");
+        for line in journals.iter().flat_map(|j| j.lines.iter()) {
             *sums.entry((line.batch.key, line.unit)).or_insert(0) += line.amount;
         }
     }

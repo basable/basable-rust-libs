@@ -944,3 +944,25 @@ of it changed, in the crates and in the templates:
     the same kind of thing and went the same day: when the metric comes, it
     comes with the code that emits it, and the field it reads is the
     object's own.
+
+92. **The rules version rides in the journal row; the version table is an
+    index the commit maintains.** The user's objection (2026-10-18): a
+    booking should not have to check on every write whether the version is
+    registered. It no longer does. A journal carries `rules_versions`, the
+    `{type_name: version}` it moved (a type's first booking in the process,
+    a restatement; usually empty), and the process's version per type is
+    the fold of those over its journals (`Journal::versions_of`, highest
+    wins), so a booking reads the journal table and nothing else, and the
+    rolling-deployment guard folds too. `Store::record_version` is gone:
+    the Postgres commit is one statement, a CTE that inserts the journal and
+    upserts `process_ledger_object_version` from its `rules_versions`, so a
+    lost sequence race leaves nothing and no crash can fall between the
+    journal and its version row. The table stays, as an index of "latest
+    version per process and type" over an append-only log, which the
+    startup restatement needs for a precise, resumable worklist; the
+    alternative weighed, one marker row per type plus a scan of every
+    process on a bump, was declined for scale (a sliceable worklist beats
+    rereading every process, and it catches a straggler booked by the old
+    deployment's last replica at the next startup). A restatement that
+    changes no position still writes a journal when a version moves, so
+    `Plan::is_empty` counts the versions.
