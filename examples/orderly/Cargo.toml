@@ -16,6 +16,7 @@ members = [
     "nanoservices/catalog",
     "nanoservices/order",
     "nanoservices/notifier",
+    "nanoservices/accounting",
     # basable:members-end
 ]
 
@@ -43,6 +44,9 @@ basable-auth = "=0.4.0"
 basable-pubsub = "=0.4.0"
 basable-app = "=0.4.0"
 basable-testkit = "=0.4.0"
+basable-ledger = "=0.4.0"
+basable-ledger-postgres = "=0.4.0"
+basable-ledger-testkit = "=0.4.0"
 
 # Protobuf and Connect (pre-1.0: pinned to the minor). The two protoc plugins
 # are build-time binaries (crate_universe gen_binaries in MODULE.bazel):
@@ -90,4 +94,7 @@ basable-auth = { path = "tools/basable-crates/crates/basable-auth" }
 basable-pubsub = { path = "tools/basable-crates/crates/basable-pubsub" }
 basable-app = { path = "tools/basable-crates/crates/basable-app" }
 basable-protoc-gen-buffa = { path = "tools/basable-crates/crates/basable-protoc-gen-buffa" }
+basable-ledger = { path = "tools/basable-crates/crates/basable-ledger" }
+basable-ledger-postgres = { path = "tools/basable-crates/crates/basable-ledger-postgres" }
+basable-ledger-testkit = { path = "tools/basable-crates/crates/basable-ledger-testkit" }
 # basable:local-crates-end

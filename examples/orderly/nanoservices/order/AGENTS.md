@@ -7,7 +7,7 @@ The Directive sections that bind this nanoservice: §2 (table ownership), §3–
 (the invariants, the author obligations, the adapter and outcome contract — it
 owns processing-object types), §6 (external-effect admission — it owns adapters), §7
 (cross-nanoservice rules for every message it sends), §10 (this file and
-`flows.md` must stay true).
+`flows.md` must stay true), §11 (money: it produces ledger snapshots).
 
 ## What it owns
 
@@ -17,6 +17,8 @@ owns processing-object types), §6 (external-effect admission — it owns adapte
 | `shipment` | 2 | `shp` | TODO | TODO |
 
 Plain tables (schema `nano_order`): `order_audit`.
+
+Produces ledger snapshots: `order` (`messages::OrderSnapshot`), `payment` (`messages::PaymentSnapshot`), sent as a `Book` to `accounting` from the reconcile pass that changes a state or an amount, with a version the status bumps in the same write.
 
 | External call | System | Strategy | Irreversible |
 |---|---|---|---|
@@ -42,7 +44,7 @@ Plain tables (schema `nano_order`): `order_audit`.
 ## Messages
 
 Handles: `EnsureOrderRequest` → `Order`.
-Sends: `GetProductRequest`, `OrderEvent`.
+Sends: `GetProductRequest`, `OrderEvent`, `Book`.
 
 API: `OrderService` in `api/src/services/order.rs` (EnsureOrder).
 

@@ -39,6 +39,10 @@ nanoservices:
     sends:
       - {message: GetProductRequest, response: Product}
       - {message: OrderEvent}
+      - {message: Book, response: Booked}
   - name: notifier
     handles:
       - {message: OrderEvent}
+  - name: accounting
+    handles:
+      - {message: Book, response: Booked}

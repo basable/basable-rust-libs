@@ -10,17 +10,19 @@ Design: `docs/01-shop/02-order.md`. Code:
 - Processing-object type `order` (key 1, `ord_…`): spec `customer_id`, `lines`; status `phase`, `payment_id`.
 - Processing-object type `shipment` (key 2, `shp_…`): spec TODO; status TODO.
 - Table `order_audit` (columns TODO).
+- Produces ledger snapshots of `order` for `accounting` (a `Book` from the reconcile pass).
+- Produces ledger snapshots of `payment` for `accounting` (a `Book` from the reconcile pass).
 - External call `capture_payment` on payments: `keyed_replay`, irreversible.
 - Schedule `sweep_abandoned` every 15m.
 
 ## Messages
 
 - Handles: `EnsureOrderRequest`.
-- Sends: `GetProductRequest`, `OrderEvent`.
+- Sends: `GetProductRequest`, `OrderEvent`, `Book`.
 
 ## Directive sections that bind
 
-§2 always; §3, §4, §5 for each processing-object type; §6 for each adapter; §7 for each message sent; §10 for the docs.
+§2 always; §3, §4, §5 for each processing-object type; §6 for each adapter; §7 for each message sent; §10 for the docs; §11 for the ledger.
 
 ## TODO, in order
 
@@ -28,6 +30,8 @@ Design: `docs/01-shop/02-order.md`. Code:
 - [ ] `order`: the reconcile pass in `types/order/reconciler.rs`; the worker policy.
 - [ ] `shipment`: the TODO columns in the migration and in `types/shipment/{type,adapter}.rs`; the reconcile pass in `types/shipment/reconciler.rs`; the worker policy.
 - [ ] Table `order_audit`: the columns in the migration and `model.rs`; the queries in `repository.rs`.
+- [ ] Send `Book` with the `order` snapshot from the reconcile pass; bump its version in status in the same write.
+- [ ] Send `Book` with the `payment` snapshot from the reconcile pass; bump its version in status in the same write.
 - [ ] `send` for `capture_payment` in `effects.rs`, the real client in `provider.rs`; the audit stays green.
 - [ ] `tick_sweep_abandoned` in `worker.rs`.
 - [ ] `OrderService` field mapping in `api/src/services/order.rs` and the messages in `proto/order/v1/order.proto`.

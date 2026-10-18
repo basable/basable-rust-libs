@@ -51,6 +51,9 @@ basable-auth = { path = "tools/basable-crates/crates/basable-auth" }
 basable-pubsub = { path = "tools/basable-crates/crates/basable-pubsub" }
 basable-app = { path = "tools/basable-crates/crates/basable-app" }
 basable-protoc-gen-buffa = { path = "tools/basable-crates/crates/basable-protoc-gen-buffa" }
+basable-ledger = { path = "tools/basable-crates/crates/basable-ledger" }
+basable-ledger-postgres = { path = "tools/basable-crates/crates/basable-ledger-postgres" }
+basable-ledger-testkit = { path = "tools/basable-crates/crates/basable-ledger-testkit" }
 # basable:local-crates-end
 EOF
 

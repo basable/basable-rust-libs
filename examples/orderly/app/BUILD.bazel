@@ -31,6 +31,7 @@ rust_server(
         "//nanoservices/catalog",
         "//nanoservices/order",
         "//nanoservices/notifier",
+        "//nanoservices/accounting",
         # basable:bazel-deps-end
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),

@@ -32,6 +32,9 @@ Postgres database, made of N **nanoservices**. A nanoservice is a crate under
 - **0..N schedules** (a ticker worker the nanoservice owns) and **0..N
   webhooks** (a raw route that verifies a signature and makes one messenger
   send).
+- **0..1 ledger** (one per application): the declarative double-entry book
+  every amount owed, held or moved is a position in (§11). The owner books
+  the snapshots the other nanoservices' reconcile passes send it.
 
 There is no label to pick. **The one question, asked per lifecycle, not per
 nanoservice:** is there a multi-step lifecycle to track here — waiting,
@@ -308,3 +311,54 @@ declared adapters with their strategies) and a `flows.md` (the state machine
 per type, sequences, edge cases). A behaviour change without its doc update is
 an incomplete change. The root `CLAUDE.md` points here first; `routing.yaml`
 and `docs/architecture.md` are the map of who sends what to whom.
+
+## 11. Money
+
+An amount owed, held or moved — a receivable, a payment, a wallet, a credit,
+a marketplace split, a subscription's deferred revenue — is a **position in
+the ledger**, never a mutable balance column. The question of §1 has a money
+form: is this amount something the application accounts for? If YES, it is
+booked, and the balance anyone reads is a sum of booked lines. A `balance`
+column on a plain table, updated in place, is the disguise this section
+exists to catch; the manifest refuses it. A price list, a counter, a quantity
+on hand are not money and stay plain columns.
+
+One nanoservice owns the ledger (`owns.ledger`), so a trial balance spans
+the whole application. It books **snapshots**: a producer's reconcile pass
+sends the whole object — its identity, a strictly increasing version, its
+accounting state and the fields the rules read — as a direct messenger
+request (`Book`, §7), never an event, and bumps the version in the same
+status write that changes a state or an amount. The ledger keeps the highest
+version booked: a higher one books, an equal one is already booked, a lower
+one is stale, so re-sending is always safe.
+
+The ledger's own contract, which the crates make mechanical:
+
+- **A desired state is a pure function of the object.** Per object type and
+  per accounting state, the positions that must exist while the object is in
+  that state — each a batch, a unit and a signed amount in the column of the
+  batch's type — computed from the snapshot and nothing else. It reads no
+  table, no clock, no price it could re-derive: a price is a field the
+  producer sent. In every state, debit equals credit per ledger and unit;
+  memo batches stand outside the check.
+- **The ledger books the difference.** What is booked for an object is
+  compared with what its current state asks for, and the difference is one
+  journal, appended. A transition, an amount change in a state that allows
+  it, and a rule change are the same comparison. Journals are append-only;
+  nothing is edited, a correction is new lines.
+- **Amounts are frozen where the state says so.** A state that does not list
+  itself as its own next state accepts no amount change: a snapshot with
+  different amounts is rejected, and the correction is a new object (a credit
+  note, a refund). A state listing nothing is terminal.
+- **Batches are the user's; closing is a booking.** The framework knows of a
+  batch its key, its ledger and its type (debit, credit, memo). What a batch
+  means is the owner's. A batch is closed when a booking of the owner's — a
+  VAT return, a payout — brings its balance to zero; nothing marks it, and a
+  line landing afterwards is the next claim's remainder.
+- **Rules change by version.** A changed desired state bumps the rules
+  version; every process booked under the older number is restated under
+  the new code by appending journals, once when the deployment carrying it
+  starts and at any process's next booking. History is never rewritten.
+- **No balance in the write path.** A position is a sum of lines, computed
+  on read. A queryable balance table is a projection off the journals,
+  never something a booking updates in place.

@@ -34,7 +34,9 @@ plan is the design record, this tree is reality.
 4. **A nanoservice's character is whatever it owns.** Adding a lifecycle
    means adding a processing-object type (spec table, status table, adapter,
    reconciler, worker), not changing a label. Adding plain data means a
-   table and a migration.
+   table and a migration. An amount owed, held or moved is a position in
+   the ledger one nanoservice owns, booked from snapshots, never a balance
+   column (`docs/frameworks/ledger.md`).
 5. **Never hand-write a skeleton.** A new nanoservice, type, table, adapter
    or migration header comes from `scaffold_nanoservice` after the plan's
    `manifest.yaml` declares it; you fill the bodies. BUILD files use
@@ -83,3 +85,4 @@ has the rules that must hold.
 | `catalog` | 0 processing-object type(s), 1 table(s), 1 config type(s), 0 external system(s) | Owns the product catalogue. |
 | `order` | 2 processing-object type(s), 1 table(s), 0 config type(s), 1 external system(s) | Drives an order to paid and fulfilled. |
 | `notifier` | 0 processing-object type(s), 0 table(s), 0 config type(s), 1 external system(s) | Sends one templated email per event. |
+| `accounting` | 0 processing-object type(s), 0 table(s), 0 config type(s), 0 external system(s), the ledger (2 object type(s)) | Books orders and payments on the ledger. |

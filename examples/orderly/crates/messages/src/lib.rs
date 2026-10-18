@@ -12,6 +12,11 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+// basable:messages-modules-begin — the ledger's snapshot types, when a nanoservice owns the ledger
+pub mod ledger;
+pub use ledger::*;
+// basable:messages-modules-end
+
 // basable:messages-begin — declare one struct per message in routing.yaml.
 
 /// `UpsertProductRequest` — answered with `Product` (see routing.yaml).

@@ -3,6 +3,31 @@
 version = 4
 
 [[package]]
+name = "accounting"
+version = "0.1.0"
+dependencies = [
+ "basable-app",
+ "basable-core",
+ "basable-db",
+ "basable-externaleffect",
+ "basable-ledger",
+ "basable-ledger-postgres",
+ "basable-messenger",
+ "basable-publicid",
+ "basable-testkit",
+ "chrono",
+ "interfaces",
+ "messages",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -72,6 +97,7 @@ dependencies = [
 name = "app"
 version = "0.1.0"
 dependencies = [
+ "accounting",
  "api",
  "axum",
  "basable-app",
@@ -303,6 +329,30 @@ dependencies = [
  "chrono",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "basable-ledger"
+version = "0.4.0"
+dependencies = [
+ "basable-core",
+ "chrono",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "basable-ledger-postgres"
+version = "0.4.0"
+dependencies = [
+ "basable-core",
+ "basable-db",
+ "basable-ledger",
+ "chrono",
+ "serde_json",
+ "sqlx",
+ "uuid",
 ]
 
 [[package]]
@@ -1818,6 +1868,7 @@ name = "messages"
 version = "0.1.0"
 dependencies = [
  "basable-core",
+ "basable-ledger",
  "basable-publicid",
  "chrono",
  "rust_decimal",
@@ -1830,6 +1881,7 @@ dependencies = [
 name = "messenger"
 version = "0.1.0"
 dependencies = [
+ "accounting",
  "api",
  "basable-app",
  "basable-core",
@@ -4111,3 +4163,7 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "basable-ledger-testkit"
+version = "0.4.0"

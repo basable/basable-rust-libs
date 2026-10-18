@@ -26,6 +26,7 @@ use messenger::AppMessenger;
 use catalog::Catalog;
 use order::Order;
 use notifier::Notifier;
+use accounting::Accounting;
 // basable:nanoservice-use-end
 
 #[tokio::main]
@@ -54,6 +55,7 @@ async fn run() -> Result<(), BootError> {
     let catalog = Catalog::new(&app, app.pool::<catalog::Schema>().await.map_err(BootError::Database)?);
     let order = Order::new(&app, app.pool::<order::Schema>().await.map_err(BootError::Database)?).await;
     let notifier = Notifier::new(&app);
+    let accounting = Accounting::new(&app, app.pool::<accounting::Schema>().await.map_err(BootError::Database)?).await;
     // basable:nanoservice-build-end
 
     // The router is passed by shared reference into every handler and
@@ -68,6 +70,7 @@ async fn run() -> Result<(), BootError> {
         catalog,
         order,
         notifier,
+        accounting,
         // basable:router-args-end
     )));
     let api: &'static api::Api = router.api();

@@ -29,4 +29,5 @@ api = { path = "../api" }
 catalog = { path = "../nanoservices/catalog" }
 order = { path = "../nanoservices/order" }
 notifier = { path = "../nanoservices/notifier" }
+accounting = { path = "../nanoservices/accounting" }
 # basable:nanoservice-deps-end

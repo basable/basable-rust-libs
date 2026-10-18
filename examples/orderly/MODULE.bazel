@@ -48,6 +48,7 @@ crate.from_cargo(
         "//nanoservices/catalog:Cargo.toml",
         "//nanoservices/order:Cargo.toml",
         "//nanoservices/notifier:Cargo.toml",
+        "//nanoservices/accounting:Cargo.toml",
         # basable:manifests-end
     ],
 )

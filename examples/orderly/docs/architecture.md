@@ -1,6 +1,6 @@
 # Architecture
 
-One binary, one Postgres, 3 nanoservices. This file is the
+One binary, one Postgres, 4 nanoservices. This file is the
 map; `routing.yaml` is the topology the build enforces; the plan under
 `docs/01-shop/` is the design record it was rendered from.
 
@@ -25,7 +25,7 @@ Drives an order to paid and fulfilled.
 - External systems: `payments` (capture_payment: keyed_replay, irreversible).
 - Schedules (ticker workers): `sweep_abandoned` every 15m.
 - Handles: `EnsureOrderRequest` → `Order`.
-- Sends: `GetProductRequest`, `OrderEvent`.
+- Sends: `GetProductRequest`, `OrderEvent`, `Book`.
 - API: `OrderService` (EnsureOrder).
 
 ### `notifier`
@@ -34,6 +34,13 @@ Sends one templated email per event.
 
 - External systems: `email` (send_email: keyed_replay, irreversible).
 - Handles: `OrderEvent`.
+
+### `accounting`
+
+Books orders and payments on the ledger.
+
+- The project's ledger (`docs/frameworks/ledger.md`), booking `order` from `order`, `payment` from `order`; every producer sends a `Book`, the owner answers `Booked`.
+- Handles: `Book` → `Booked`.
 
 ## Topology
 
@@ -50,7 +57,7 @@ Sends one templated email per event.
 
 - `app/`: the binary, `replicas: 2`, every nanoservice in every replica.
 - `frontend/static/`: plain HTML/CSS/JS on nginx-unprivileged.
-- `k8s/postgres/`: one CNPG cluster, 1 instance(s), a schema and a role per stateful nanoservice (`nano_catalog`, `nano_order`).
+- `k8s/postgres/`: one CNPG cluster, 1 instance(s), a schema and a role per stateful nanoservice (`nano_catalog`, `nano_order`, `nano_accounting`).
 - `k8s/kratos/`: Ory Kratos identity (passwordless email code + passkeys), its own database.
 - `k8s/httproute.yaml`: `/api/` → app, `/.ory/` → Kratos, `/` → frontend.
 

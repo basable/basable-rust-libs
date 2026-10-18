@@ -27,6 +27,7 @@ rust_library(
         "//nanoservices/catalog",
         "//nanoservices/order",
         "//nanoservices/notifier",
+        "//nanoservices/accounting",
         # basable:bazel-deps-end
     ],
     visibility = ["//visibility:public"],

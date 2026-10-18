@@ -13,3 +13,6 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 rust_decimal = { workspace = true }
+# basable:messages-deps-begin — the scaffolder adds basable-ledger here when a nanoservice owns the ledger
+basable-ledger = { workspace = true }
+# basable:messages-deps-end
