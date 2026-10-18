@@ -78,7 +78,7 @@ first.
   the difference appended as a journal with lines and no diffs. Prospective:
   history is never rewritten. A version changes only with a deployment, so
   the new code restates once at startup (`Ledger::restate_behind`, over
-  `Store::processes_behind`, the version table's index) and a booking into
+  `Store::processes_behind`, the version index the commit maintains) and a booking into
   a process still behind restates it first, in the same journal. A replica
   of the previous deployment may not book a process already restated:
   `LedgerError::RulesBehind`, since its older rules would move the
@@ -134,8 +134,8 @@ first.
    built with it was removed the same day.
 4. The restatement at startup (done 2026-10-17 as an operator's sweep with
    a dry run, reshaped 2026-10-18): `Store::processes_behind` reads the
-   version table's index, `Ledger::restate_behind` runs to completion when
-   the new deployment starts, `preview_restatement(process)` is the
-   per-process dry run, and a ledger on older rules is refused. A process
-   that booked a type but crashed between commit and `record_version` is
-   not on the worklist; its next booking restates it first.
+   version index, `Ledger::restate_behind` runs to completion when the new
+   deployment starts, `preview_restatement(process)` is the per-process dry
+   run, and a ledger on older rules is refused. Since later that day the
+   version rides in the journal row and the index is written by the same
+   statement, so no crash can separate the two.
