@@ -1,13 +1,14 @@
-//! The fixture: an invoice and a payment, the two object types every suite
-//! books. The invoice is the plan's worked example; the payment is a child
-//! object in the same process that clears the invoice's receivable batch,
-//! which is how a negative position on one object's side of a batch arises
-//! and why the balance check sees the whole process.
+//! The fixture: an invoice, a payment and a VAT return, the object types
+//! every suite books. The invoice is the plan's worked example; the payment
+//! is a child object in the same process that clears the invoice's
+//! receivable batch, which is how a negative position on one object's side
+//! of a batch arises and why the balance check sees the whole process; the
+//! VAT return is a root object of its own that books a period's VAT batch
+//! to zero, which is how a batch closes.
 
 use basable_ledger::{
-    Accounting, Balances, BatchAccount, BatchId, BatchType, Batches, Desired, LedgerKey,
-    LedgerObject, ObjectId, ProcessId, Rejection, Timestamp, Unit, UnitKey, amount_string, balance,
-    desired,
+    Accounting, Balances, BatchAccount, BatchKey, BatchType, Desired, LedgerKey, LedgerObject,
+    ObjectId, ProcessId, Rejection, Timestamp, Unit, UnitKey, amount_string, balance, desired,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -33,34 +34,71 @@ impl Unit for Currency {
     }
 }
 
-/// The fixture's accounts: one variant per kind, with its entity where it
-/// has one. The framework sees only the ledger and the type.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// The fixture's accounts: one variant per kind, with what identifies the
+/// batch, an invoice or a period. The framework sees only the key, the
+/// ledger and the type. The fixture keeps no batch table: a batch's key is a
+/// hash of its name, standing in for the key a user allocates in a table of
+/// their own or encodes from what names the batch.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Account {
-    /// What a customer owes.
-    Receivable(Uuid),
-    /// Cash received, until the payout clears it.
-    CashClearing,
-    /// Revenue.
-    Revenue,
-    /// VAT owed to the tax office.
-    VatPayable,
-    /// Written-off receivables.
-    BadDebt,
-    /// Loyalty points: not money.
-    Points,
+    /// What a customer owes on one invoice.
+    Receivable(ObjectId),
+    /// Cash received against one invoice, until the payout clears it.
+    CashClearing(ObjectId),
+    /// A month's revenue.
+    Revenue(String),
+    /// VAT owed for a period: a month under version 1 of the invoice rules,
+    /// a quarter under version 2.
+    Vat(String),
+    /// What a filed VAT return owes the tax office for a period.
+    TaxOffice(String),
+    /// A month's written-off receivables.
+    BadDebt(String),
+    /// A month's loyalty points: not money.
+    Points(String),
+}
+
+impl Account {
+    /// The batch's name, `<kind>/<invoice or period>`.
+    pub fn name(&self) -> String {
+        match self {
+            Account::Receivable(id) => format!("receivable/{}", id.0),
+            Account::CashClearing(id) => format!("cash/{}", id.0),
+            Account::Revenue(p) => format!("revenue/{p}"),
+            Account::Vat(p) => format!("vat/{p}"),
+            Account::TaxOffice(p) => format!("tax_office/{p}"),
+            Account::BadDebt(p) => format!("bad_debt/{p}"),
+            Account::Points(p) => format!("points/{p}"),
+        }
+    }
+}
+
+/// FNV-1a over the name: the fixture's stand-in for a batch table.
+fn hash_key(name: &str) -> BatchKey {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in name.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    BatchKey(h as i64)
 }
 
 impl BatchAccount for Account {
+    fn batch_key(&self) -> BatchKey {
+        hash_key(&self.name())
+    }
+
     fn ledger(&self) -> LedgerKey {
         PLATFORM_LEDGER
     }
 
     fn batch_type(&self) -> BatchType {
         match self {
-            Account::Receivable(_) | Account::CashClearing | Account::BadDebt => BatchType::Debit,
-            Account::Revenue | Account::VatPayable => BatchType::Credit,
-            Account::Points => BatchType::Memo,
+            Account::Receivable(_) | Account::CashClearing(_) | Account::BadDebt(_) => {
+                BatchType::Debit
+            }
+            Account::Revenue(_) | Account::Vat(_) | Account::TaxOffice(_) => BatchType::Credit,
+            Account::Points(_) => BatchType::Memo,
         }
     }
 }
@@ -141,37 +179,37 @@ impl LedgerObject for Invoice {
     }
 }
 
-/// The invoice's batch ids: one per account and invoice, or per account
-/// and month for the shared ones.
+/// The invoice's batches: one per account and invoice, or per account and
+/// month for the shared ones.
 impl Invoice {
     /// The receivable batch of this invoice.
-    pub fn receivable_batch(&self) -> BatchId {
-        ("receivable", self.id.0).into()
+    pub fn receivable_batch(&self) -> Account {
+        Account::Receivable(self.id)
     }
 
     /// The cash-clearing batch of this invoice.
-    pub fn cash_batch(&self) -> BatchId {
-        ("cash", self.id.0).into()
+    pub fn cash_batch(&self) -> Account {
+        Account::CashClearing(self.id)
     }
 
     /// The month's revenue batch.
-    pub fn revenue_batch(&self) -> BatchId {
-        ("revenue", &self.issued_month).into()
+    pub fn revenue_batch(&self) -> Account {
+        Account::Revenue(self.issued_month.clone())
     }
 
     /// The month's VAT batch (version 1 of the rules).
-    pub fn vat_batch(&self) -> BatchId {
-        ("vat", &self.issued_month).into()
+    pub fn vat_batch(&self) -> Account {
+        Account::Vat(self.issued_month.clone())
     }
 
     /// The month's bad-debt batch.
-    pub fn bad_debt_batch(&self) -> BatchId {
-        ("bad_debt", &self.issued_month).into()
+    pub fn bad_debt_batch(&self) -> Account {
+        Account::BadDebt(self.issued_month.clone())
     }
 
     /// The month's loyalty points batch.
-    pub fn points_batch(&self) -> BatchId {
-        ("points", &self.issued_month).into()
+    pub fn points_batch(&self) -> Account {
+        Account::Points(self.issued_month.clone())
     }
 }
 
@@ -192,39 +230,28 @@ impl InvoiceLedger {
     }
 
     /// The positions of an invoice in a state, with the VAT batch chosen by
-    /// `vat_batch`: version 1 groups VAT per month, version 2 per quarter.
-    pub fn positions(
-        state: InvoiceState,
-        o: &Invoice,
-        b: &mut Batches,
-        vat_batch: BatchId,
-    ) -> Desired {
+    /// the caller: version 1 groups VAT per month, version 2 per quarter.
+    pub fn positions(state: InvoiceState, o: &Invoice, vat: Account) -> Desired {
         use InvoiceState::*;
-        let receivable = b.open(Account::Receivable(o.customer), o.receivable_batch());
-        let cash = b.open(Account::CashClearing, o.cash_batch());
-        let revenue = b.open(Account::Revenue, o.revenue_batch());
-        let vat = b.open(Account::VatPayable, vat_batch);
-        let bad_debt = b.open(Account::BadDebt, o.bad_debt_batch());
-        let points = b.open(Account::Points, o.points_batch());
         let cur = o.currency;
         match state {
             Draft | Credited => Desired::empty(),
             Issued | PartiallyPaid => desired![
-                balance(receivable, cur, o.net + o.vat - o.paid),
-                balance(cash, cur, o.paid),
-                balance(revenue, cur, o.net),
+                balance(o.receivable_batch(), cur, o.net + o.vat - o.paid),
+                balance(o.cash_batch(), cur, o.paid),
+                balance(o.revenue_batch(), cur, o.net),
                 balance(vat, cur, o.vat),
-                balance(points, UnitKey(1), o.points),
+                balance(o.points_batch(), UnitKey(1), o.points),
             ],
             Paid => desired![
-                balance(cash, cur, o.net + o.vat),
-                balance(revenue, cur, o.net),
+                balance(o.cash_batch(), cur, o.net + o.vat),
+                balance(o.revenue_batch(), cur, o.net),
                 balance(vat, cur, o.vat),
-                balance(points, UnitKey(1), o.points),
+                balance(o.points_batch(), UnitKey(1), o.points),
             ],
             WrittenOff => desired![
-                balance(bad_debt, cur, o.net + o.vat),
-                balance(revenue, cur, o.net),
+                balance(o.bad_debt_batch(), cur, o.net + o.vat),
+                balance(o.revenue_batch(), cur, o.net),
                 balance(vat, cur, o.vat),
             ],
         }
@@ -238,8 +265,8 @@ impl Accounting<Invoice> for InvoiceLedger {
         Self::changes(current)
     }
 
-    fn desired_state(state: InvoiceState, o: &Invoice, b: &mut Batches) -> Desired {
-        Self::positions(state, o, b, o.vat_batch())
+    fn desired_state(state: InvoiceState, o: &Invoice) -> Desired {
+        Self::positions(state, o, o.vat_batch())
     }
 
     fn validate_balances(
@@ -267,10 +294,10 @@ pub struct InvoiceLedgerV2;
 
 impl InvoiceLedgerV2 {
     /// The quarter's VAT batch, `vat/YYYY-Qn`.
-    pub fn vat_batch(o: &Invoice) -> BatchId {
+    pub fn vat_batch(o: &Invoice) -> Account {
         let month: u32 = o.issued_month[5..7].parse().unwrap_or(1);
         let year = &o.issued_month[..4];
-        ("vat", format!("{year}-Q{}", month.div_ceil(3))).into()
+        Account::Vat(format!("{year}-Q{}", month.div_ceil(3)))
     }
 }
 
@@ -281,8 +308,8 @@ impl Accounting<Invoice> for InvoiceLedgerV2 {
         InvoiceLedger::changes(current)
     }
 
-    fn desired_state(state: InvoiceState, o: &Invoice, b: &mut Batches) -> Desired {
-        InvoiceLedger::positions(state, o, b, Self::vat_batch(o))
+    fn desired_state(state: InvoiceState, o: &Invoice) -> Desired {
+        InvoiceLedger::positions(state, o, Self::vat_batch(o))
     }
 }
 
@@ -369,20 +396,13 @@ impl Accounting<Payment> for PaymentLedger {
         }
     }
 
-    fn desired_state(state: PaymentState, p: &Payment, b: &mut Batches) -> Desired {
+    fn desired_state(state: PaymentState, p: &Payment) -> Desired {
         match state {
             PaymentState::Pending | PaymentState::Reversed => Desired::empty(),
-            PaymentState::Settled => {
-                let receivable = b.existing(
-                    Account::Receivable(Uuid::nil()),
-                    ("receivable", p.invoice.0),
-                );
-                let cash = b.open(Account::CashClearing, ("cash", p.invoice.0));
-                desired![
-                    balance(cash, p.currency, p.amount),
-                    balance(receivable, p.currency, -p.amount),
-                ]
-            }
+            PaymentState::Settled => desired![
+                balance(Account::CashClearing(p.invoice), p.currency, p.amount),
+                balance(Account::Receivable(p.invoice), p.currency, -p.amount),
+            ],
         }
     }
 
@@ -395,7 +415,7 @@ impl Accounting<Payment> for PaymentLedger {
         if state != PaymentState::Settled {
             return Ok(());
         }
-        let open = current.batch(&("receivable", p.invoice.0).into(), p.currency);
+        let open = current.batch(&Account::Receivable(p.invoice), p.currency);
         if p.amount > open {
             return Err(Rejection::new(format!(
                 "payment of {} exceeds the open receivable of {open}",
@@ -403,6 +423,96 @@ impl Accounting<Payment> for PaymentLedger {
             )));
         }
         Ok(())
+    }
+}
+
+/// A VAT return's lifecycle.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub enum VatReturnState {
+    /// Being prepared: nothing is booked.
+    Draft,
+    /// Filed: the period's VAT is owed to the tax office.
+    Filed,
+}
+
+/// The VAT return for a period: the user's claim on the period's VAT batch,
+/// a root object in a process of its own. The producer read the batch's sum
+/// and put it on the return; filing it books that amount off the VAT batch
+/// and onto what the tax office is owed. That is how a batch closes: by a
+/// booking that brings it to zero, not by a status. A correction that lands
+/// in the period afterwards leaves a remainder, which the next return takes.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct VatReturn {
+    /// The process: its own id.
+    pub process_id: ProcessId,
+    /// The return's id.
+    pub id: ObjectId,
+    /// The producer's version.
+    pub version: u64,
+    /// When the producer last changed it.
+    pub changed_at: Timestamp,
+    /// Its state.
+    pub state: VatReturnState,
+    /// When the state was entered.
+    pub state_since: Timestamp,
+    /// The period the return covers, as the VAT batch names it.
+    pub period: String,
+    /// The currency.
+    pub currency: Currency,
+    /// What the return claims: the batch's sum as the producer read it.
+    #[serde(with = "amount_string")]
+    pub amount: i128,
+}
+
+impl LedgerObject for VatReturn {
+    const TYPE: &'static str = "vat_return";
+    type State = VatReturnState;
+
+    fn process_id(&self) -> ProcessId {
+        self.process_id
+    }
+
+    fn object_id(&self) -> ObjectId {
+        self.id
+    }
+
+    fn version(&self) -> u64 {
+        self.version
+    }
+
+    fn changed_at(&self) -> Timestamp {
+        self.changed_at
+    }
+
+    fn state(&self) -> (VatReturnState, Timestamp) {
+        (self.state, self.state_since)
+    }
+}
+
+/// The VAT return's accounting: filed, it holds minus the claimed amount on
+/// the period's VAT batch and the same amount on the tax office's.
+pub struct VatReturnLedger;
+
+impl Accounting<VatReturn> for VatReturnLedger {
+    const VERSION: u32 = 1;
+
+    fn validate_state_change(current: Option<VatReturnState>) -> &'static [VatReturnState] {
+        use VatReturnState::*;
+        match current {
+            None => &[Draft, Filed],
+            Some(Draft) => &[Draft, Filed],
+            Some(Filed) => &[],
+        }
+    }
+
+    fn desired_state(state: VatReturnState, r: &VatReturn) -> Desired {
+        match state {
+            VatReturnState::Draft => Desired::empty(),
+            VatReturnState::Filed => desired![
+                balance(Account::Vat(r.period.clone()), r.currency, -r.amount),
+                balance(Account::TaxOffice(r.period.clone()), r.currency, r.amount),
+            ],
+        }
     }
 }
 
@@ -473,5 +583,45 @@ impl Payment {
             state_since: now,
             ..self.clone()
         }
+    }
+}
+
+/// A filed VAT return for a period, claiming `amount`: what the producer
+/// read as the period's VAT batch sum.
+pub fn new_vat_return(period: &str, amount: i128, currency: Currency) -> VatReturn {
+    let id = Uuid::now_v7();
+    let now = chrono::Utc::now();
+    VatReturn {
+        process_id: ProcessId(id),
+        id: ObjectId(id),
+        version: 1,
+        changed_at: now,
+        state: VatReturnState::Filed,
+        state_since: now,
+        period: period.to_owned(),
+        currency,
+        amount,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_batch_key_is_stable_and_names_one_batch() {
+        let id = ObjectId(Uuid::nil());
+        assert_eq!(
+            Account::Receivable(id).batch_key(),
+            Account::Receivable(id).batch_key()
+        );
+        assert_ne!(
+            Account::Receivable(id).batch_key(),
+            Account::CashClearing(id).batch_key()
+        );
+        assert_ne!(
+            Account::Vat("2026-10".into()).batch_key(),
+            Account::Vat("2026-Q4".into()).batch_key()
+        );
     }
 }

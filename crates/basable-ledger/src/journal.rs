@@ -5,14 +5,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::types::{BatchKey, ObjectId, ProcessId, Timestamp, UnitKey, amount_string};
+use crate::types::{
+    Batch, BatchKey, BatchType, LedgerKey, ObjectId, ProcessId, Timestamp, UnitKey, amount_string,
+};
 
-/// One line: batch key, object, unit, amount. On the wire an array,
-/// `[4711, "019a…", 978, "11210"]`.
+/// One line: the batch (key, ledger, type), the object, the unit, the
+/// amount. On the wire an array, `[4711, 1, 2, "019a…", 978, "11210"]`:
+/// batch key 4711 in ledger 1, a credit batch, for that object, 112.10 in
+/// unit 978. A line carries the batch's ledger and type itself, so the
+/// journal table alone checks and reads back.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Line {
-    /// The physical batch (one epoch of a batch id).
-    pub batch_key: BatchKey,
+    /// The batch.
+    pub batch: Batch,
     /// The object the line belongs to; what makes an object's booked
     /// positions the sum of its own lines.
     pub object_id: ObjectId,
@@ -23,22 +28,44 @@ pub struct Line {
 }
 
 #[derive(Serialize, Deserialize)]
-struct LineWire(i64, Uuid, u32, #[serde(with = "amount_string")] i128);
+struct LineWire(
+    i64,
+    u32,
+    i16,
+    Uuid,
+    u32,
+    #[serde(with = "amount_string")] i128,
+);
 
 impl Serialize for Line {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        LineWire(self.batch_key.0, self.object_id.0, self.unit.0, self.amount).serialize(s)
+        LineWire(
+            self.batch.key.0,
+            self.batch.ledger.0,
+            self.batch.batch_type.as_i16(),
+            self.object_id.0,
+            self.unit.0,
+            self.amount,
+        )
+        .serialize(s)
     }
 }
 
 impl<'de> Deserialize<'de> for Line {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let LineWire(b, o, u, a) = LineWire::deserialize(d)?;
+        let LineWire(key, ledger, batch_type, object, unit, amount) = LineWire::deserialize(d)?;
+        let batch_type = BatchType::from_i16(batch_type).ok_or_else(|| {
+            serde::de::Error::custom(format!("batch type {batch_type} is not 1, 2 or 3"))
+        })?;
         Ok(Line {
-            batch_key: BatchKey(b),
-            object_id: ObjectId(o),
-            unit: UnitKey(u),
-            amount: a,
+            batch: Batch {
+                key: BatchKey(key),
+                ledger: LedgerKey(ledger),
+                batch_type,
+            },
+            object_id: ObjectId(object),
+            unit: UnitKey(unit),
+            amount,
         })
     }
 }
@@ -86,15 +113,27 @@ mod tests {
     fn a_line_is_an_array_on_the_wire() {
         let id = Uuid::nil();
         let line = Line {
-            batch_key: BatchKey(4711),
+            batch: Batch {
+                key: BatchKey(4711),
+                ledger: LedgerKey(1),
+                batch_type: BatchType::Credit,
+            },
             object_id: ObjectId(id),
             unit: UnitKey(978),
             amount: -11210,
         };
         let json = serde_json::to_string(&line).unwrap();
-        assert_eq!(json, format!("[4711,\"{id}\",978,\"-11210\"]"));
+        assert_eq!(json, format!("[4711,1,2,\"{id}\",978,\"-11210\"]"));
         let back: Line = serde_json::from_str(&json).unwrap();
         assert_eq!(back, line);
+    }
+
+    #[test]
+    fn an_unknown_batch_type_does_not_read() {
+        let id = Uuid::nil();
+        let err =
+            serde_json::from_str::<Line>(&format!("[4711,1,9,\"{id}\",978,\"1\"]")).unwrap_err();
+        assert!(err.to_string().contains("batch type 9"));
     }
 
     #[test]

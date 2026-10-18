@@ -6,9 +6,12 @@
 //! state). The **accounting** of that type, [`Accounting`]: which state
 //! changes are allowed, the [`Desired`] positions that exist while an object
 //! is in each state, and the balance checks a booking must pass. And the
-//! **accounts** that name batches, [`BatchAccount`]: the only two things the
-//! framework knows about a batch are its ledger and its type, debit, credit
-//! or memo; what a batch means is the user's.
+//! **batches**, [`BatchAccount`]: the only three things the framework knows
+//! about a batch are its key, its ledger and its type, debit, credit or
+//! memo. There is no batch table: the key is the user's, from a table of
+//! their own or encoded from what names the batch, every line carries key,
+//! ledger and type, and a batch is closed when a booking of the user's (a
+//! return filed, a payout made) brings its balance to zero.
 //!
 //! The engine owns the rest. A call ([`Request`]) carries any mix of
 //! registered types across processes. Per process it reads every journal,
@@ -32,7 +35,6 @@
 
 mod accounting;
 mod balances;
-mod batches;
 mod desired;
 mod engine;
 mod erased;
@@ -47,7 +49,6 @@ mod types;
 
 pub use accounting::{Accounting, BatchAccount, Unit};
 pub use balances::{Balances, ObjectBalances};
-pub use batches::{BatchConflict, BatchMode, BatchRef, BatchRequest, Batches};
 pub use desired::{Desired, Position, balance};
 pub use error::{LedgerError, Rejection, StoreError};
 pub use journal::{Journal, Line, SnapshotDiff};
@@ -57,10 +58,7 @@ pub use ledger::{
 };
 pub use memory::InMemoryStore;
 pub use object::LedgerObject;
-pub use store::{
-    BatchRow, Commit, CommitLine, CommitOutcome, LineBatch, NewBatch, ProcessRead, Store,
-};
+pub use store::{Commit, CommitOutcome, ProcessRead, Store};
 pub use types::{
-    BatchId, BatchKey, BatchStatus, BatchType, LedgerKey, ObjectId, ProcessId, Timestamp, UnitKey,
-    amount_string,
+    Batch, BatchKey, BatchType, LedgerKey, ObjectId, ProcessId, Timestamp, UnitKey, amount_string,
 };

@@ -2,23 +2,44 @@
 //! batches, the units, and the `Accounting` of one object type.
 
 use crate::balances::Balances;
-use crate::batches::Batches;
 use crate::desired::Desired;
 use crate::error::Rejection;
 use crate::object::LedgerObject;
-use crate::types::{BatchType, LedgerKey, UnitKey};
+use crate::types::{BatchKey, BatchType, LedgerKey, UnitKey};
 
 /// Whatever names a batch implements this, and this is all the framework
-/// knows about a batch: which ledger it balances in and which column of the
-/// book its amounts fall in. What the batch means (an account, an entity, a
-/// subledger, a GL code, a settle time) is the user's.
+/// knows about a batch: its key, which ledger it balances in and which
+/// column of the book its amounts fall in. The framework keeps no batch
+/// table. What the batch means (an account, an entity, a subledger, a GL
+/// code, a period) and where its key comes from (a table of the user's own,
+/// an encoding of the name, a hash of it) is the user's. A batch is closed
+/// when a booking brings its balance to zero; nothing marks it.
 pub trait BatchAccount {
+    /// The key a line carries. One key is one batch, in one ledger, of one
+    /// type, for good: naming a booked key under another ledger or type is
+    /// a rejection.
+    fn batch_key(&self) -> BatchKey;
+
     /// The balancing boundary: each ledger balances on its own.
     fn ledger(&self) -> LedgerKey;
 
     /// Debit for assets and expenses, credit for liabilities, equity and
     /// revenue, memo for what is not money.
     fn batch_type(&self) -> BatchType;
+}
+
+impl<A: BatchAccount + ?Sized> BatchAccount for &A {
+    fn batch_key(&self) -> BatchKey {
+        (**self).batch_key()
+    }
+
+    fn ledger(&self) -> LedgerKey {
+        (**self).ledger()
+    }
+
+    fn batch_type(&self) -> BatchType {
+        (**self).batch_type()
+    }
 }
 
 /// A unit of account: the framework needs only a key to group and balance
@@ -59,10 +80,11 @@ pub trait Accounting<O: LedgerObject>: Send + Sync + 'static {
     fn validate_state_change(current: Option<O::State>) -> &'static [O::State];
 
     /// The positions that must exist while the object is in `state`. Pure:
-    /// it reads the object, names batches through `batches`, and touches
-    /// nothing else. In every state the amounts in debit batches must sum to
-    /// the amounts in credit batches per ledger and unit.
-    fn desired_state(state: O::State, object: &O, batches: &mut Batches) -> Desired;
+    /// it reads the object and touches nothing else; the batches it names
+    /// are the user's accounts, whose keys the object carries or the rules
+    /// derive. In every state the amounts in debit batches must sum to the
+    /// amounts in credit batches per ledger and unit.
+    fn desired_state(state: O::State, object: &O) -> Desired;
 
     /// Checks the booked balances, this object's and the whole process's,
     /// against what the desired state asks for, before anything books. An

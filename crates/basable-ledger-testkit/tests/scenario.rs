@@ -1,10 +1,11 @@
 //! The invoice lifecycle through the engine: what books, what is refused,
-//! what a journal holds, and what a rules bump restates.
+//! what a journal holds, how a batch closes, and what a rules bump restates.
 
-use basable_ledger::{BatchStatus, BatchType, Outcome, Request, UnitKey};
+use basable_ledger::{BatchAccount, BatchType, Outcome, Request, UnitKey};
 use basable_ledger_testkit::Scenario;
 use basable_ledger_testkit::fixture::{
-    Currency, InvoiceLedgerV2, InvoiceState, PaymentState, new_invoice, new_payment,
+    Account, Currency, InvoiceLedgerV2, InvoiceState, PLATFORM_LEDGER, PaymentState, new_invoice,
+    new_payment, new_vat_return,
 };
 
 #[tokio::test]
@@ -24,26 +25,35 @@ async fn an_issued_invoice_holds_receivable_revenue_and_vat() {
     s.booked(issued.clone()).await;
     let positions = s.positions(p, issued.id).await;
     let eur = UnitKey(978);
-    assert_eq!(
-        positions,
-        vec![
-            (issued.points_batch(), UnitKey(1), 100),
-            (issued.receivable_batch(), eur, 12_100),
-            (issued.revenue_batch(), eur, 10_000),
-            (issued.vat_batch(), eur, 2_100),
-        ]
-    );
+    let mut expected = vec![
+        (issued.points_batch().batch_key(), UnitKey(1), 100),
+        (issued.receivable_batch().batch_key(), eur, 12_100),
+        (issued.revenue_batch().batch_key(), eur, 10_000),
+        (issued.vat_batch().batch_key(), eur, 2_100),
+    ];
+    expected.sort();
+    assert_eq!(positions, expected);
     let journals = s.journals(p);
     assert_eq!(journals.len(), 2);
     let second = &journals[1];
     assert_eq!(second.sequence, 2);
     assert_eq!(second.lines.len(), 4);
     assert!(second.snapshot_diffs[0].patch.is_some());
-    // The receivable batch is a debit batch of ledger 1 in epoch 1.
-    let receivable = s.batches_of(&issued.receivable_batch());
-    assert_eq!(receivable.len(), 1);
-    assert_eq!(receivable[0].batch_type, BatchType::Debit);
-    assert_eq!(receivable[0].status, BatchStatus::Open);
+    // Every line carries its batch's ledger and type: the receivable line is
+    // a debit in ledger 1, the VAT line a credit.
+    let receivable = second
+        .lines
+        .iter()
+        .find(|l| l.batch.key == issued.receivable_batch().batch_key())
+        .expect("receivable line");
+    assert_eq!(receivable.batch.ledger, PLATFORM_LEDGER);
+    assert_eq!(receivable.batch.batch_type, BatchType::Debit);
+    let vat = second
+        .lines
+        .iter()
+        .find(|l| l.batch.key == issued.vat_batch().batch_key())
+        .expect("vat line");
+    assert_eq!(vat.batch.batch_type, BatchType::Credit);
 }
 
 #[tokio::test]
@@ -212,14 +222,13 @@ async fn a_rules_bump_restates_the_process_by_appending_a_journal() {
     let preview = v2.ledger().preview_restatement(p).await.expect("preview");
     assert_eq!(preview.objects, 1);
     let quarter = InvoiceLedgerV2::vat_batch(&issued);
-    // Deltas come in batch-id order: "vat/2026-10" sorts before "vat/2026-Q4".
-    assert_eq!(
-        preview.deltas,
-        vec![
-            (issued.vat_batch(), UnitKey(978), -2_100),
-            (quarter.clone(), UnitKey(978), 2_100),
-        ]
-    );
+    // Deltas come in batch key order.
+    let mut expected = vec![
+        (issued.vat_batch().batch_key(), UnitKey(978), -2_100),
+        (quarter.batch_key(), UnitKey(978), 2_100),
+    ];
+    expected.sort();
+    assert_eq!(preview.deltas, expected);
     let restated = v2.ledger().restate(p).await.expect("restate");
     assert_eq!(restated.objects, 1);
     assert_eq!(restated.lines, 2);
@@ -257,40 +266,38 @@ async fn a_rules_bump_restates_the_process_by_appending_a_journal() {
     assert_eq!(b.of(paid2.id).amount(&paid2.vat_batch(), Currency::Eur), 0);
 }
 
+/// A batch closes by a booking that brings it to zero, not by a status. The
+/// VAT return claims what the month's VAT batch holds; a correction landing
+/// in the month afterwards leaves a remainder for the next return.
 #[tokio::test]
-async fn a_consumed_batch_rolls_to_the_next_epoch() {
+async fn a_batch_is_closed_by_booking_its_balance_to_zero() {
     let s = Scenario::new();
-    let draft = new_invoice(10_000, 2_100, Currency::Eur);
-    let p = draft.process_id;
-    let issued = draft.next(InvoiceState::Issued, 0);
-    s.booked(issued.clone()).await;
-    let revenue = s.batches_of(&issued.revenue_batch());
-    assert_eq!(revenue.len(), 1);
-    s.store().set_status(revenue[0].key, BatchStatus::Consumed);
-    // The month's revenue batch was paid out; a correction lands in epoch 2.
-    let mut corrected = issued.next(InvoiceState::Issued, 0);
-    corrected.net = 9_000;
-    corrected.vat = 1_890;
-    s.booked(corrected.clone()).await;
-    let revenue = s.batches_of(&issued.revenue_batch());
-    assert_eq!(revenue.len(), 2);
-    assert_eq!(revenue[1].epoch, 2);
-    assert_eq!(revenue[1].status, BatchStatus::Open);
-    let last = s.journals(p).last().cloned().expect("journal");
-    let on_epoch_two: Vec<_> = last
-        .lines
-        .iter()
-        .filter(|l| l.batch_key == revenue[1].key)
-        .collect();
-    assert_eq!(on_epoch_two.len(), 1);
-    assert_eq!(on_epoch_two[0].amount, -1_000);
-    // The logical batch's balance over both epochs is the new revenue.
-    let b = s.balances(p).await;
-    assert_eq!(
-        b.of(corrected.id)
-            .amount(&corrected.revenue_batch(), Currency::Eur),
-        9_000
-    );
+    let mut issued = Vec::new();
+    for (net, vat) in [(10_000, 2_100), (5_000, 1_050), (1_000, 210)] {
+        let i = new_invoice(net, vat, Currency::Eur).next(InvoiceState::Issued, 0);
+        s.booked(i.clone()).await;
+        issued.push(i);
+    }
+    let vat = Account::Vat("2026-10".into());
+    let tax_office = Account::TaxOffice("2026-10".into());
+    let eur = UnitKey(978);
+    // The producer reads the batch and files the return for what it holds.
+    assert_eq!(s.batch_sum(&vat).await, vec![(eur, 3_360)]);
+    s.booked(new_vat_return("2026-10", 3_360, Currency::Eur))
+        .await;
+    assert_eq!(s.batch_sum(&vat).await, vec![(eur, 0)], "closed");
+    assert_eq!(s.batch_sum(&tax_office).await, vec![(eur, 3_360)]);
+    // A late correction to an October invoice lands in October's batch.
+    let mut corrected = issued[2].next(InvoiceState::Issued, 0);
+    corrected.net = 500;
+    corrected.vat = 105;
+    s.booked(corrected).await;
+    assert_eq!(s.batch_sum(&vat).await, vec![(eur, -105)], "a remainder");
+    // The next return takes the remainder; the batch is at zero again.
+    s.booked(new_vat_return("2026-10", -105, Currency::Eur))
+        .await;
+    assert_eq!(s.batch_sum(&vat).await, vec![(eur, 0)]);
+    assert_eq!(s.batch_sum(&tax_office).await, vec![(eur, 3_255)]);
 }
 
 #[tokio::test]

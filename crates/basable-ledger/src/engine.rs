@@ -1,23 +1,21 @@
 //! The pure engine: fold a process's journals into its current objects and
-//! positions, plan what a call books, and turn the plan into a commit once
-//! the batches are resolved. Nothing here is async and nothing reads a
-//! clock; the runtime in `ledger.rs` drives it against a store.
+//! positions, plan what a call books, and turn the plan into a commit.
+//! Nothing here is async and nothing reads a clock; the runtime in
+//! `ledger.rs` drives it against a store.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde_json::Value;
 
-use crate::accounting::BatchAccount;
 use crate::balances::Balances;
-use crate::batches::{BatchMode, BatchRef, BatchRequest, Batches};
-use crate::desired::{Desired, Position};
+use crate::desired::Desired;
 use crate::erased::{ErasedObject, Registry};
 use crate::error::{LedgerError, Rejection, StoreError};
-use crate::journal::SnapshotDiff;
+use crate::journal::{Line, SnapshotDiff};
 use crate::jsonpatch;
-use crate::store::{BatchRow, Commit, CommitLine, LineBatch, NewBatch, ProcessRead};
+use crate::store::{Commit, ProcessRead};
 use crate::types::{
-    BatchId, BatchStatus, BatchType, LedgerKey, ObjectId, ProcessId, Timestamp, UnitKey,
+    Batch, BatchKey, BatchType, LedgerKey, ObjectId, ProcessId, Timestamp, UnitKey,
 };
 
 /// One object as the process currently books it: its folded snapshot and
@@ -69,19 +67,20 @@ pub(crate) fn fold(
             }
         }
         for line in &journal.lines {
-            let row = read.batches.get(&line.batch_key).ok_or_else(|| {
-                StoreError::Corrupt(format!(
-                    "journal {} of process {}: line names batch key {} the read did not return",
-                    journal.sequence, process.0, line.batch_key.0
-                ))
-            })?;
-            balances.add(
-                line.object_id,
-                &row.id,
-                (row.ledger, row.batch_type),
-                line.unit,
-                line.amount,
-            );
+            balances
+                .add(line.object_id, line.batch, line.unit, line.amount)
+                .map_err(|(ledger, batch_type)| {
+                    StoreError::Corrupt(format!(
+                        "journal {} of process {}: batch {} is ledger {} {} but an earlier line has it as ledger {} {}",
+                        journal.sequence,
+                        process.0,
+                        line.batch.key.0,
+                        line.batch.ledger.0,
+                        line.batch.batch_type,
+                        ledger.0,
+                        batch_type
+                    ))
+                })?;
         }
     }
     let mut objects = BTreeMap::new();
@@ -120,20 +119,10 @@ pub(crate) enum PreOutcome {
     Stale,
 }
 
-/// A planned delta line, before batches are resolved.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct PlannedLine {
-    pub batch: BatchRef,
-    pub object: ObjectId,
-    pub unit: UnitKey,
-    pub amount: i128,
-}
-
 /// What a call books for one process.
 pub(crate) struct Plan {
     pub outcomes: Vec<(usize, PreOutcome)>,
-    pub batches: Batches,
-    pub lines: Vec<PlannedLine>,
+    pub lines: Vec<Line>,
     pub diffs: Vec<SnapshotDiff>,
     pub event_time: Option<Timestamp>,
     /// Types whose recorded version must become the running one.
@@ -148,6 +137,24 @@ impl Plan {
     pub(crate) fn is_empty(&self) -> bool {
         self.lines.is_empty() && self.diffs.is_empty()
     }
+
+    /// The commit: one journal at the process's next sequence. `now` is the
+    /// event time of a journal with no submissions (a restatement books
+    /// prospectively).
+    pub(crate) fn into_commit(
+        self,
+        process: ProcessId,
+        current: &Current,
+        now: Timestamp,
+    ) -> Commit {
+        Commit {
+            process_id: process,
+            after_sequence: current.sequence,
+            event_time: self.event_time.unwrap_or(now),
+            lines: self.lines,
+            snapshot_diffs: self.diffs,
+        }
+    }
 }
 
 /// Plans one process's part of a call. `restate_types` are the registered
@@ -160,7 +167,6 @@ pub(crate) fn plan(
 ) -> Result<Plan, Rejection> {
     let mut plan = Plan {
         outcomes: Vec::with_capacity(submissions.len()),
-        batches: Batches::new(),
         lines: Vec::new(),
         diffs: Vec::new(),
         event_time: None,
@@ -202,9 +208,9 @@ pub(crate) fn plan(
                 if cur.object.type_name() != type_name {
                     continue;
                 }
-                let desired = evaluate(cur.object.as_ref(), &mut plan.batches)?;
-                let delta = delta_for(*id, &desired, &mut plan.batches, &working);
-                apply_delta(&mut working, &plan.batches, &delta);
+                let desired = evaluate(cur.object.as_ref(), &mut working)?;
+                let delta = delta_for(*id, &desired, &working);
+                apply_delta(&mut working, &delta);
                 plan.lines.extend(delta);
                 plan.restated_objects += 1;
             }
@@ -237,10 +243,10 @@ pub(crate) fn plan(
                 continue;
             }
         }
-        let desired = evaluate(s.object.as_ref(), &mut plan.batches)?;
+        let desired = evaluate(s.object.as_ref(), &mut working)?;
         match cur {
             Some(cur) if s.object.state_eq(cur) => {
-                let delta = delta_for(id, &desired, &mut plan.batches, &working);
+                let delta = delta_for(id, &desired, &working);
                 if !delta.is_empty() && !cur.amount_change_allowed() {
                     return Err(Rejection::new(format!(
                         "object {} changed its amounts in state {}, which allows no amount change",
@@ -264,8 +270,8 @@ pub(crate) fn plan(
         s.object
             .validate_balances(&working, &desired)
             .map_err(|r| Rejection::new(format!("object {}: {}", id.0, r.message())))?;
-        let delta = delta_for(id, &desired, &mut plan.batches, &working);
-        apply_delta(&mut working, &plan.batches, &delta);
+        let delta = delta_for(id, &desired, &working);
+        apply_delta(&mut working, &delta);
         plan.lines.extend(delta);
 
         let json = s.object.to_json()?;
@@ -290,59 +296,39 @@ pub(crate) fn plan(
         plan.outcomes.push((s.index, PreOutcome::Booked));
     }
 
-    if let Some(c) = plan.batches.conflicts().first() {
-        return Err(Rejection::new(format!(
-            "batch {} named with two accounts: ledger {} {} and ledger {} {}",
-            c.id, c.first.0.0, c.first.1, c.second.0.0, c.second.1
-        )));
-    }
     plan.lines = net(&plan.lines);
-    check_journal_balances(&plan)?;
+    check_journal_balances(&plan.lines)?;
     Ok(plan)
 }
 
-/// Evaluates an object's desired state into the shared recorder and checks
-/// it balances per ledger and unit.
-fn evaluate(object: &dyn ErasedObject, shared: &mut Batches) -> Result<Desired, Rejection> {
-    let mut local = Batches::new();
-    let desired = object.desired(&mut local);
-    if let Some(c) = local.conflicts().first() {
-        return Err(Rejection::new(format!(
-            "object {}: batch {} named with two accounts: ledger {} {} and ledger {} {}",
-            object.object_id().0,
-            c.id,
-            c.first.0.0,
-            c.first.1,
-            c.second.0.0,
-            c.second.1
-        )));
+/// Evaluates an object's desired state, notes every batch it names against
+/// the ones the process has booked (one key is one ledger and one type, for
+/// good) and checks it balances per ledger and unit.
+fn evaluate(object: &dyn ErasedObject, working: &mut Balances) -> Result<Desired, Rejection> {
+    let desired = object.desired();
+    for p in desired.positions() {
+        working.note(p.batch).map_err(|(ledger, batch_type)| {
+            Rejection::new(format!(
+                "object {} in state {}: batch {} is booked in ledger {} as {} but the desired state names it in ledger {} as {}",
+                object.object_id().0,
+                object.describe_state(),
+                p.batch.key.0,
+                ledger.0,
+                batch_type,
+                p.batch.ledger.0,
+                p.batch.batch_type
+            ))
+        })?;
     }
-    let map = shared.absorb(&local);
-    let desired = Desired::new(
-        desired
-            .positions()
-            .iter()
-            .map(|p| Position {
-                batch: map[p.batch.0],
-                unit: p.unit,
-                amount: p.amount,
-            })
-            .collect(),
-    );
-    check_desired_balances(object, &desired, shared)?;
+    check_desired_balances(object, &desired)?;
     Ok(desired)
 }
 
 /// Left equals right per (ledger, unit) in one desired state; memo outside.
-fn check_desired_balances(
-    object: &dyn ErasedObject,
-    desired: &Desired,
-    batches: &Batches,
-) -> Result<(), Rejection> {
+fn check_desired_balances(object: &dyn ErasedObject, desired: &Desired) -> Result<(), Rejection> {
     let mut sums: BTreeMap<(LedgerKey, UnitKey), i128> = BTreeMap::new();
     for p in desired.positions() {
-        let req = batches.get(p.batch);
-        let signed = match req.batch_type {
+        let signed = match p.batch.batch_type {
             BatchType::Debit => p.amount,
             BatchType::Credit => p
                 .amount
@@ -350,7 +336,7 @@ fn check_desired_balances(
                 .ok_or_else(|| Rejection::new("amount overflow"))?,
             BatchType::Memo => continue,
         };
-        let slot = sums.entry((req.ledger, p.unit)).or_insert(0);
+        let slot = sums.entry((p.batch.ledger, p.unit)).or_insert(0);
         *slot = slot
             .checked_add(signed)
             .ok_or_else(|| Rejection::new("amount overflow"))?;
@@ -368,45 +354,33 @@ fn check_desired_balances(
 }
 
 /// The delta that brings an object's booked positions to a desired state,
-/// per logical batch and unit. A booked position the desired state no
-/// longer names closes through the same batch id, so that batch is recorded
-/// too.
-fn delta_for(
-    object: ObjectId,
-    desired: &Desired,
-    batches: &mut Batches,
-    working: &Balances,
-) -> Vec<PlannedLine> {
-    let mut wanted: BTreeMap<(BatchId, UnitKey), i128> = BTreeMap::new();
+/// per batch and unit. A booked position the desired state no longer names
+/// closes through the same batch, whose ledger and type the booked lines
+/// carry.
+fn delta_for(object: ObjectId, desired: &Desired, working: &Balances) -> Vec<Line> {
+    let mut wanted: BTreeMap<(BatchKey, UnitKey), (Batch, i128)> = BTreeMap::new();
     for p in desired.positions() {
-        let id = batches.get(p.batch).id.clone();
-        let slot = wanted.entry((id, p.unit)).or_insert(0);
-        *slot = slot.checked_add(p.amount).expect("amount overflow");
+        let slot = wanted.entry((p.batch.key, p.unit)).or_insert((p.batch, 0));
+        slot.1 = slot.1.checked_add(p.amount).expect("amount overflow");
     }
     let booked = working.positions_of(object);
-    let keys: BTreeSet<(BatchId, UnitKey)> = wanted.keys().chain(booked.keys()).cloned().collect();
+    let keys: BTreeSet<(BatchKey, UnitKey)> = wanted.keys().chain(booked.keys()).copied().collect();
     let mut delta = Vec::new();
     for key in keys {
-        let want = wanted.get(&key).copied().unwrap_or(0);
-        let have = booked.get(&key).copied().unwrap_or(0);
+        let want = wanted.get(&key).map(|(_, a)| *a).unwrap_or(0);
+        let have = booked.get(&key).map(|(_, a)| *a).unwrap_or(0);
         let amount = want.checked_sub(have).expect("amount overflow");
         if amount == 0 {
             continue;
         }
-        let (ledger, batch_type) = working
-            .batch_account(&key.0)
-            .or_else(|| {
-                batches
-                    .requests()
-                    .iter()
-                    .find(|r| r.id == key.0)
-                    .map(|r| (r.ledger, r.batch_type))
-            })
-            .expect("a named or booked batch has an account");
-        let batch = batches.open(Flat(ledger, batch_type), key.0.clone());
-        delta.push(PlannedLine {
+        let batch = wanted
+            .get(&key)
+            .or_else(|| booked.get(&key))
+            .map(|(b, _)| *b)
+            .expect("a wanted or booked position has its batch");
+        delta.push(Line {
             batch,
-            object,
+            object_id: object,
             unit: key.1,
             amount,
         });
@@ -414,42 +388,24 @@ fn delta_for(
     delta
 }
 
-struct Flat(LedgerKey, BatchType);
-
-impl BatchAccount for Flat {
-    fn ledger(&self) -> LedgerKey {
-        self.0
-    }
-
-    fn batch_type(&self) -> BatchType {
-        self.1
-    }
-}
-
-fn apply_delta(working: &mut Balances, batches: &Batches, delta: &[PlannedLine]) {
+fn apply_delta(working: &mut Balances, delta: &[Line]) {
     for l in delta {
-        let req = batches.get(l.batch);
-        working.add(
-            l.object,
-            &req.id,
-            (req.ledger, req.batch_type),
-            l.unit,
-            l.amount,
-        );
+        working
+            .add(l.object_id, l.batch, l.unit, l.amount)
+            .expect("every batch in a delta was noted first");
     }
 }
 
 /// Left equals right per (ledger, unit) over the whole journal.
-fn check_journal_balances(plan: &Plan) -> Result<(), Rejection> {
+fn check_journal_balances(lines: &[Line]) -> Result<(), Rejection> {
     let mut sums: BTreeMap<(LedgerKey, UnitKey), i128> = BTreeMap::new();
-    for l in &plan.lines {
-        let req = plan.batches.get(l.batch);
-        let signed = match req.batch_type {
+    for l in lines {
+        let signed = match l.batch.batch_type {
             BatchType::Debit => l.amount,
             BatchType::Credit => -l.amount,
             BatchType::Memo => continue,
         };
-        *sums.entry((req.ledger, l.unit)).or_insert(0) += signed;
+        *sums.entry((l.batch.ledger, l.unit)).or_insert(0) += signed;
     }
     if let Some(((ledger, unit), sum)) = sums.iter().find(|(_, s)| **s != 0) {
         return Err(Rejection::new(format!(
@@ -461,101 +417,21 @@ fn check_journal_balances(plan: &Plan) -> Result<(), Rejection> {
 }
 
 /// Sums the lines per (object, batch, unit) and drops the zeros.
-fn net(lines: &[PlannedLine]) -> Vec<PlannedLine> {
-    let mut sums: BTreeMap<(ObjectId, usize, UnitKey), i128> = BTreeMap::new();
+fn net(lines: &[Line]) -> Vec<Line> {
+    let mut sums: BTreeMap<(ObjectId, BatchKey, UnitKey), (Batch, i128)> = BTreeMap::new();
     for l in lines {
-        *sums.entry((l.object, l.batch.0, l.unit)).or_insert(0) += l.amount;
+        let slot = sums
+            .entry((l.object_id, l.batch.key, l.unit))
+            .or_insert((l.batch, 0));
+        slot.1 += l.amount;
     }
     sums.into_iter()
-        .filter(|(_, a)| *a != 0)
-        .map(|((object, batch, unit), amount)| PlannedLine {
-            batch: BatchRef(batch),
-            object,
+        .filter(|(_, (_, a))| *a != 0)
+        .map(|((object_id, _, unit), (batch, amount))| Line {
+            batch,
+            object_id,
             unit,
             amount,
         })
         .collect()
-}
-
-/// Turns a plan into a commit once the store has resolved the batches: an
-/// open batch is used, a consumed or closed one rolls to the next epoch, a
-/// missing one is created (or rejected under `existing`), and a batch that
-/// exists under another ledger or type rejects. `now` is the event time of a
-/// journal with no submissions (a restatement books prospectively).
-pub(crate) fn finalize(
-    process: ProcessId,
-    current: &Current,
-    plan: &Plan,
-    resolved: &[Option<BatchRow>],
-    now: Timestamp,
-) -> Result<Commit, Rejection> {
-    let requests = plan.batches.requests();
-    assert_eq!(requests.len(), resolved.len(), "one resolution per request");
-    let mut new_batches = Vec::new();
-    let mut targets: Vec<LineBatch> = Vec::with_capacity(requests.len());
-    for (req, row) in requests.iter().zip(resolved) {
-        let target = match row {
-            None => match req.mode {
-                BatchMode::Open => LineBatch::New(push_new(&mut new_batches, req, 1)),
-                BatchMode::Existing => {
-                    return Err(Rejection::new(format!(
-                        "batch {} does not exist and the desired state asks for an existing one",
-                        req.id
-                    )));
-                }
-            },
-            Some(row) => {
-                if row.ledger != req.ledger || row.batch_type != req.batch_type {
-                    return Err(Rejection::new(format!(
-                        "batch {} exists in ledger {} as {} but was named in ledger {} as {}",
-                        req.id, row.ledger.0, row.batch_type, req.ledger.0, req.batch_type
-                    )));
-                }
-                match (row.status, req.mode) {
-                    (BatchStatus::Open, _) => LineBatch::Key(row.key),
-                    (_, BatchMode::Open) => {
-                        LineBatch::New(push_new(&mut new_batches, req, row.epoch + 1))
-                    }
-                    (_, BatchMode::Existing) => {
-                        return Err(Rejection::new(format!(
-                            "batch {} is {:?} and the desired state asks for an existing open one",
-                            req.id, row.status
-                        )));
-                    }
-                }
-            }
-        };
-        targets.push(target);
-    }
-    let lines = plan
-        .lines
-        .iter()
-        .map(|l| CommitLine {
-            batch: targets[l.batch.0],
-            object_id: l.object,
-            unit: l.unit,
-            amount: l.amount,
-        })
-        .collect();
-    Ok(Commit {
-        process_id: process,
-        after_sequence: current.sequence,
-        new_batches,
-        event_time: plan.event_time.unwrap_or(now),
-        lines,
-        snapshot_diffs: plan.diffs.clone(),
-    })
-}
-
-fn push_new(new_batches: &mut Vec<NewBatch>, req: &BatchRequest, epoch: i32) -> usize {
-    if let Some(i) = new_batches.iter().position(|b| b.id == req.id) {
-        return i;
-    }
-    new_batches.push(NewBatch {
-        id: req.id.clone(),
-        epoch,
-        ledger: req.ledger,
-        batch_type: req.batch_type,
-    });
-    new_batches.len() - 1
 }

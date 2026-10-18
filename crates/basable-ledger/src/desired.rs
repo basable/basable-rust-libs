@@ -2,15 +2,14 @@
 //! state, each a batch, a unit and a signed amount in the column of the
 //! batch's type.
 
-use crate::accounting::Unit;
-use crate::batches::BatchRef;
-use crate::types::UnitKey;
+use crate::accounting::{BatchAccount, Unit};
+use crate::types::{Batch, UnitKey};
 
 /// One desired position.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Position {
-    /// The batch, as named through the recorder.
-    pub batch: BatchRef,
+    /// The batch: the account's key, ledger and type.
+    pub batch: Batch,
     /// The unit.
     pub unit: UnitKey,
     /// Signed: positive grows the batch's balance in its own column, negative
@@ -47,10 +46,10 @@ impl Desired {
     }
 }
 
-/// A desired balance on a batch: `balance(batch, unit, amount)`.
-pub fn balance(batch: BatchRef, unit: impl Unit, amount: i128) -> Position {
+/// A desired balance on a batch: `balance(account, unit, amount)`.
+pub fn balance(account: impl BatchAccount, unit: impl Unit, amount: i128) -> Position {
     Position {
-        batch,
+        batch: Batch::of(&account),
         unit: unit.unit_key(),
         amount,
     }

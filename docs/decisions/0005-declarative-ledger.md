@@ -17,16 +17,28 @@ first.
   of positions that must exist while it is in that state: each a batch, a
   unit and a signed amount. The user writes it as code, a pure function of
   (state, object), under a hardcoded rules **version**.
-- A **batch** is the user's: named by any string, with one **ledger** and
-  one **type** (debit, credit or memo), both returned by the object that
-  names it. That is everything the framework knows about a batch. Entities,
-  subledger types, account classes, GL codes and settle times are the
-  user's vocabulary for what a batch means, outside the framework.
+- A **batch** is the user's: it has a **key** (a bigint the user allocates
+  in a batch table of their own or encodes or hashes from what names the
+  batch), one **ledger** and one **type** (debit, credit or memo), all
+  three returned by the `BatchAccount` that names it. That is everything
+  the framework knows about a batch, and it keeps no batch table: every
+  line carries the three, so a key booked under one ledger and type and
+  named under another is rejected. Entities, subledger types, account
+  classes, GL codes and periods are the user's vocabulary for what a batch
+  means, outside the framework.
+- A batch is **closed** when a booking brings its balance to zero: a claim
+  (a VAT return filed for what the month's batch held, a payout for a
+  clearing batch) is an object of the user's whose desired state holds
+  minus the batch's sum on that batch and the same amount on the batch the
+  money moves to, booked like any other. Nothing marks a batch. A line
+  landing in it afterwards is a remainder the next claim takes; whatever a
+  sum (`Store::batch_sum`) missed is in the next sum.
 - A **position** is the booked balance of one (object, batch, unit): the
   sum of the object's lines, computed from the process's journals on every
   read. No position, balance or booked-state table exists.
 - A **journal** is one row per commit of one process: lines
-  `[batch_key, object_id, unit_key, amount]` and snapshot diffs
+  `[batch_key, ledger, batch_type, object_id, unit_key, amount]` and
+  snapshot diffs
   `{object_id, type, full | patch}` (RFC 7386 merge patches; the first
   sight of an object is its full JSON). Folding a process's diffs rebuilds
   every object at any sequence; the reader applied to the fold is the
@@ -51,17 +63,10 @@ first.
 - The diff is always against the booked positions, never against the old
   state's desired state recomputed now. A changed amount in an unchanged
   state is allowed only when that state lists itself as its own next state.
-- Batches are named through a recorder, not a store handle, so the desired
-  state stays pure; the engine resolves the names in one query. A consumed
-  or closed batch rolls to the next epoch under the same id; a batch named
-  under another ledger or type rejects.
-- A commit locks the batches it writes into `FOR SHARE` and refuses one
-  that is no longer open (`CommitOutcome::BatchNotOpen`, retried like a
-  lost sequence), so a close waits for every in-flight writer and nothing
-  lands in a batch after its close; the claim sums the moment the close
-  committed. A snapshot-based horizon wait was tried first and dropped:
-  a snapshot lists only the in-progress transactions below its `xmax`, and
-  a writer whose transaction id is assigned after the close is not in it.
+- The desired state names batches through `BatchAccount` values that carry
+  their own key, so it stays pure and the engine resolves nothing: the
+  commit is one insert. A key the process has booked under another ledger
+  or type, or named under two accounts in one call, rejects.
 - A rules version bump restates: every process whose recorded version
   (per process and object type, `record_version`, a converging upsert
   after the commit) is behind is re-evaluated on its folded snapshots and
@@ -77,13 +82,25 @@ first.
 
 ## Not in the write path, by design
 
+- **No batch table, no batch status.** The key, the ledger and the type
+  are the user's answers, carried on every line; a batch opens with its
+  first line and is closed when a booking brings it to zero. The 2026-10-17
+  build's `batch` and `batch_claim` tables, string ids with epochs, the
+  `Batches` recorder, the open-closed-claimed-consumed lifecycle and the
+  `FOR SHARE` lock in the commit were removed on 2026-10-18: a closed
+  period in bookkeeping is closed and a late entry is booked in the open
+  period, which is this shape; epochs were a distributed-systems idea, not
+  an accounting one.
 - **No balance table, and none shipped.** A position is a sum of lines; a
-  claim sums its batch after the close. A queryable `batch_balance` is the
-  user's projection off the journal table (a trigger, with the warning that
-  it serializes bookings on hot batches, or ClickHouse through change data
-  capture), and `basable-ledger-testkit`'s `projection` check is what it
-  must pass. A time-window projector was built in `basable-ledger-postgres`
-  and removed the same day: it is not the framework's concern.
+  claim sums its batch and books what it took. A queryable `batch_balance`
+  is the user's projection off the journal table (a trigger, with the
+  warning that it serializes bookings on hot batches, or ClickHouse through
+  change data capture), and `basable-ledger-testkit`'s `projection` check
+  is what it must pass. A zero balance is a closed batch and should have no
+  row: the trigger deletes what it brought to zero, a `SummingMergeTree`
+  drops it on merge. A time-window projector was built in
+  `basable-ledger-postgres` and removed the same day: it is not the
+  framework's concern.
 - **No feed column.** A sequence value is handed out inside the
   transaction, so an auto-increment is neither gapless nor commit-ordered.
 - **No account-level limit.** The ledger records reality; a synchronous
@@ -106,9 +123,10 @@ first.
 1. `basable-ledger` and `basable-ledger-testkit` (done 2026-10-17).
 2. `basable-ledger-postgres` and the conformance suite against Postgres
    (done 2026-10-17).
-3. Batch lifecycle, epochs and claims behind the row lock (done
-   2026-10-17). The optional time-window projector built with it was
-   removed on 2026-10-18.
+3. Batch lifecycle, epochs and claims behind a row lock (done
+   2026-10-17, removed 2026-10-18 together with the batch table: a batch
+   closes by a booking to zero, above). The optional time-window projector
+   built with it was removed the same day.
 4. The restatement at startup (done 2026-10-17 as an operator's sweep with
    a dry run, reshaped 2026-10-18): `Store::processes_behind` reads the
    version table's index, `Ledger::restate_behind` runs to completion when

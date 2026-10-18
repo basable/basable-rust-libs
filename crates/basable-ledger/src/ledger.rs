@@ -14,7 +14,7 @@ use crate::erased::Registry;
 use crate::error::{LedgerError, Rejection};
 use crate::object::LedgerObject;
 use crate::store::{CommitOutcome, Store};
-use crate::types::{BatchId, ProcessId, Timestamp, UnitKey};
+use crate::types::{BatchKey, ProcessId, Timestamp, UnitKey};
 
 /// How many times a process's commit is retried when another writer takes
 /// its sequence first. A sibling's commit is pure mechanics, so the retry is
@@ -86,8 +86,8 @@ pub struct Restated {
 pub struct RestatementPreview {
     /// Objects that would be re-evaluated.
     pub objects: usize,
-    /// Net lines, per (batch id, unit).
-    pub deltas: Vec<(BatchId, UnitKey, i128)>,
+    /// Net lines, per (batch key, unit).
+    pub deltas: Vec<(BatchKey, UnitKey, i128)>,
 }
 
 /// What [`Ledger::restate_behind`] did at startup, over every process that
@@ -149,10 +149,8 @@ pub struct Ledger<S> {
 
 enum Committed {
     Journal(usize),
-    /// The sequence was taken or a batch closed under the commit: read
-    /// again, recompute.
+    /// The sequence was taken under the commit: read again, recompute.
     Retry,
-    Rejected(Rejection),
 }
 
 impl<S: Store> Ledger<S> {
@@ -236,16 +234,14 @@ impl<S: Store> Ledger<S> {
                 lines: 0,
                 versions_recorded: 0,
             };
+            let versions_to_record = plan.versions_to_record.clone();
             if !plan.is_empty() {
-                match self.commit_plan(process, &current, &plan).await? {
+                match self.commit_plan(process, &current, plan).await? {
                     Committed::Journal(lines) => restated.lines = lines,
                     Committed::Retry => continue,
-                    Committed::Rejected(rejection) => {
-                        return Err(LedgerError::Rejected { process, rejection });
-                    }
                 }
             }
-            for (type_name, version) in &plan.versions_to_record {
+            for (type_name, version) in &versions_to_record {
                 self.store
                     .record_version(process, type_name, *version)
                     .await?;
@@ -270,17 +266,16 @@ impl<S: Store> Ledger<S> {
         Self::check_rules_current(process, &current, types.iter().copied())?;
         let plan = engine::plan(&current, &[], &types)
             .map_err(|rejection| LedgerError::Rejected { process, rejection })?;
-        let mut deltas: BTreeMap<(BatchId, UnitKey), i128> = BTreeMap::new();
+        let mut deltas: BTreeMap<(BatchKey, UnitKey), i128> = BTreeMap::new();
         for l in &plan.lines {
-            let id = plan.batches.get(l.batch).id.clone();
-            *deltas.entry((id, l.unit)).or_insert(0) += l.amount;
+            *deltas.entry((l.batch.key, l.unit)).or_insert(0) += l.amount;
         }
         Ok(RestatementPreview {
             objects: plan.restated_objects,
             deltas: deltas
                 .into_iter()
                 .filter(|(_, a)| *a != 0)
-                .map(|((id, unit), a)| (id, unit, a))
+                .map(|((key, unit), a)| (key, unit, a))
                 .collect(),
         })
     }
@@ -366,20 +361,20 @@ impl<S: Store> Ledger<S> {
                 Ok(plan) => plan,
                 Err(rejection) => return Ok(rejected(rejection)),
             };
+            let outcomes = plan.outcomes.clone();
+            let versions_to_record = plan.versions_to_record.clone();
             if !plan.is_empty() {
-                match self.commit_plan(process, &current, &plan).await? {
+                match self.commit_plan(process, &current, plan).await? {
                     Committed::Journal(_) => {}
                     Committed::Retry => continue,
-                    Committed::Rejected(rejection) => return Ok(rejected(rejection)),
                 }
             }
-            for (type_name, version) in &plan.versions_to_record {
+            for (type_name, version) in &versions_to_record {
                 self.store
                     .record_version(process, type_name, *version)
                     .await?;
             }
-            return Ok(plan
-                .outcomes
+            return Ok(outcomes
                 .iter()
                 .map(|(index, pre)| {
                     let outcome = match pre {
@@ -397,28 +392,18 @@ impl<S: Store> Ledger<S> {
         })
     }
 
-    /// Resolves the plan's batches, finalizes and commits.
+    /// Commits the plan as one journal at the process's next sequence.
     async fn commit_plan(
         &self,
         process: ProcessId,
         current: &engine::Current,
-        plan: &engine::Plan,
+        plan: engine::Plan,
     ) -> Result<Committed, LedgerError> {
-        let ids: Vec<BatchId> = plan
-            .batches
-            .requests()
-            .iter()
-            .map(|r| r.id.clone())
-            .collect();
-        let resolved = self.store.resolve(&ids).await?;
-        let commit = match engine::finalize(process, current, plan, &resolved, now()) {
-            Ok(commit) => commit,
-            Err(rejection) => return Ok(Committed::Rejected(rejection)),
-        };
+        let commit = plan.into_commit(process, current, now());
         let lines = commit.lines.len();
         Ok(match self.store.commit(commit).await? {
             CommitOutcome::Committed => Committed::Journal(lines),
-            CommitOutcome::SequenceTaken | CommitOutcome::BatchNotOpen(_) => Committed::Retry,
+            CommitOutcome::SequenceTaken => Committed::Retry,
         })
     }
 }

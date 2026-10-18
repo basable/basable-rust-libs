@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use basable_ledger::{Accounting, BatchId, BatchType, Batches, Outcome, UnitKey};
+use basable_ledger::{Accounting, BatchKey, BatchType, Outcome, UnitKey};
 
 use crate::fixture::{Currency, Invoice, InvoiceLedger, InvoiceState, new_invoice};
 use crate::scenario::Scenario;
@@ -82,17 +82,15 @@ pub fn random_history(rng: &mut Rng, steps: usize) -> Vec<Invoice> {
     history
 }
 
-/// The desired state of a snapshot as positions per (batch id, unit), the
+/// The desired state of a snapshot as positions per (batch key, unit), the
 /// way the engine compares it.
 pub fn desired_positions<A: Accounting<Invoice>>(
     invoice: &Invoice,
-) -> BTreeMap<(BatchId, UnitKey), i128> {
-    let mut batches = Batches::new();
-    let desired = A::desired_state(invoice.state, invoice, &mut batches);
+) -> BTreeMap<(BatchKey, UnitKey), i128> {
+    let desired = A::desired_state(invoice.state, invoice);
     let mut map = BTreeMap::new();
     for p in desired.positions() {
-        let id = batches.get(p.batch).id.clone();
-        *map.entry((id, p.unit)).or_insert(0) += p.amount;
+        *map.entry((p.batch.key, p.unit)).or_insert(0) += p.amount;
     }
     map.retain(|_, a| *a != 0);
     map
@@ -116,11 +114,11 @@ pub async fn check_history(seed: u64, steps: usize) -> usize {
         );
     }
     let last = history.last().expect("one");
-    let positions: BTreeMap<(BatchId, UnitKey), i128> = scenario
+    let positions: BTreeMap<(BatchKey, UnitKey), i128> = scenario
         .positions(process, last.id)
         .await
         .into_iter()
-        .map(|(id, unit, a)| ((id, unit), a))
+        .map(|(key, unit, a)| ((key, unit), a))
         .collect();
     assert_eq!(
         positions,
@@ -133,8 +131,7 @@ pub async fn check_history(seed: u64, steps: usize) -> usize {
     for journal in &journals {
         let mut sums: BTreeMap<UnitKey, i128> = BTreeMap::new();
         for line in &journal.lines {
-            let row = scenario.batch(line.batch_key).expect("batch row");
-            match row.batch_type {
+            match line.batch.batch_type {
                 BatchType::Debit => *sums.entry(line.unit).or_insert(0) += line.amount,
                 BatchType::Credit => *sums.entry(line.unit).or_insert(0) -= line.amount,
                 BatchType::Memo => {}

@@ -1,10 +1,12 @@
 //! The small value types the ledger speaks: identities, keys, the batch
-//! type, and the amount's wire form.
+//! type, a batch as a line names it, and the amount's wire form.
 
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
+
+use crate::accounting::BatchAccount;
 
 /// A UTC instant to the microsecond, as Postgres stores it.
 pub type Timestamp = chrono::DateTime<chrono::Utc>;
@@ -33,52 +35,18 @@ pub struct LedgerKey(pub u32);
 #[serde(transparent)]
 pub struct UnitKey(pub u32);
 
-/// The store's key of one physical batch (one epoch of a batch id): an
-/// incremental integer, all a line carries beside object, unit and amount.
+/// The user's key of a batch: the one integer a line carries to name the
+/// batch it belongs to. The framework keeps no batch table. The key is what
+/// [`BatchAccount::batch_key`] returns: allocated in a batch table of the
+/// user's own, or encoded or hashed from whatever names the batch. One key
+/// is one batch, in one ledger, of one type, for good.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct BatchKey(pub i64);
 
-/// The user's name for a logical batch: any string. It is the batch's whole
-/// identity, so an invoice's receivable and its cash position are two ids.
-/// A pair `("receivable", id)` renders as `receivable/<id>`.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct BatchId(String);
-
-impl BatchId {
-    /// A batch id from any string.
-    pub fn new(id: impl Into<String>) -> Self {
-        BatchId(id.into())
-    }
-
-    /// The id as the user wrote it.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for BatchId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl From<&str> for BatchId {
-    fn from(s: &str) -> Self {
-        BatchId(s.to_owned())
-    }
-}
-
-impl From<String> for BatchId {
-    fn from(s: String) -> Self {
-        BatchId(s)
-    }
-}
-
-impl<T: fmt::Display> From<(&str, T)> for BatchId {
-    fn from((prefix, rest): (&str, T)) -> Self {
-        BatchId(format!("{prefix}/{rest}"))
+impl<A: BatchAccount + ?Sized> From<&A> for BatchKey {
+    fn from(account: &A) -> Self {
+        account.batch_key()
     }
 }
 
@@ -98,7 +66,7 @@ pub enum BatchType {
 }
 
 impl BatchType {
-    /// The small integer a store keeps: 1 debit, 2 credit, 3 memo.
+    /// The small integer a line carries: 1 debit, 2 credit, 3 memo.
     pub fn as_i16(self) -> i16 {
         match self {
             BatchType::Debit => 1,
@@ -128,41 +96,42 @@ impl fmt::Display for BatchType {
     }
 }
 
-/// Where a batch is in its life. Lines only ever land in an open batch; a
-/// consumed one never changes again, and a line aimed at it goes to the
-/// next epoch of the same batch id.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
-pub enum BatchStatus {
-    /// Takes lines.
-    Open,
-    /// Closed by a claimant; the claim waits for the horizon before summing.
-    Closed,
-    /// Summed by its claimant; the money is being moved.
-    Claimed,
-    /// Done. Never changes.
-    Consumed,
+/// A batch as a line names it: the user's key and the two things the
+/// framework knows about the batch, the ledger it balances in and its
+/// column. Every line carries all three, so a journal is checked and read
+/// back from the journal table alone.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Batch {
+    /// The user's key.
+    pub key: BatchKey,
+    /// The ledger it balances in.
+    pub ledger: LedgerKey,
+    /// Its column.
+    pub batch_type: BatchType,
 }
 
-impl BatchStatus {
-    /// The small integer a store keeps: 1 open, 2 closed, 3 claimed, 4 consumed.
-    pub fn as_i16(self) -> i16 {
-        match self {
-            BatchStatus::Open => 1,
-            BatchStatus::Closed => 2,
-            BatchStatus::Claimed => 3,
-            BatchStatus::Consumed => 4,
+impl Batch {
+    /// From whatever names the batch.
+    pub fn of(account: &(impl BatchAccount + ?Sized)) -> Self {
+        Batch {
+            key: account.batch_key(),
+            ledger: account.ledger(),
+            batch_type: account.batch_type(),
         }
     }
+}
 
-    /// The inverse of [`as_i16`](Self::as_i16); `None` for anything else.
-    pub fn from_i16(v: i16) -> Option<Self> {
-        match v {
-            1 => Some(BatchStatus::Open),
-            2 => Some(BatchStatus::Closed),
-            3 => Some(BatchStatus::Claimed),
-            4 => Some(BatchStatus::Consumed),
-            _ => None,
-        }
+impl BatchAccount for Batch {
+    fn batch_key(&self) -> BatchKey {
+        self.key
+    }
+
+    fn ledger(&self) -> LedgerKey {
+        self.ledger
+    }
+
+    fn batch_type(&self) -> BatchType {
+        self.batch_type
     }
 }
 
@@ -189,17 +158,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn batch_id_from_pair_renders_with_a_slash() {
-        let id: BatchId = ("receivable", 42).into();
-        assert_eq!(id.as_str(), "receivable/42");
-    }
-
-    #[test]
     fn batch_type_round_trips_through_its_integer() {
         for t in [BatchType::Debit, BatchType::Credit, BatchType::Memo] {
             assert_eq!(BatchType::from_i16(t.as_i16()), Some(t));
         }
         assert_eq!(BatchType::from_i16(0), None);
+    }
+
+    #[test]
+    fn a_batch_key_comes_from_whatever_names_the_batch() {
+        let b = Batch {
+            key: BatchKey(7),
+            ledger: LedgerKey(1),
+            batch_type: BatchType::Credit,
+        };
+        let key: BatchKey = (&b).into();
+        assert_eq!(key, BatchKey(7));
+        assert_eq!(Batch::of(&b), b);
     }
 
     #[test]

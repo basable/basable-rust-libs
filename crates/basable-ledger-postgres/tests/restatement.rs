@@ -4,7 +4,9 @@
 //! replica on the older rules is refused.
 
 use basable_db::{Nanoservice, Stateful};
-use basable_ledger::{Ledger, LedgerError, Request, RestatementReport, Store, UnitKey};
+use basable_ledger::{
+    BatchAccount, Ledger, LedgerError, Request, RestatementReport, Store, UnitKey,
+};
 use basable_ledger_postgres::{PgStore, SCHEMA_PLACEHOLDER};
 use basable_ledger_testkit::fixture::{
     Currency, Invoice, InvoiceLedger, InvoiceLedgerV2, InvoiceState, Payment, PaymentLedger,
@@ -60,13 +62,16 @@ async fn the_startup_restatement_restates_on_postgres() {
         .preview_restatement(invoices[0].process_id)
         .await
         .expect("preview");
-    assert_eq!(
-        preview.deltas,
-        vec![
-            (invoices[0].vat_batch(), UnitKey(978), -210),
-            (InvoiceLedgerV2::vat_batch(&invoices[0]), UnitKey(978), 210),
-        ]
-    );
+    let mut expected = vec![
+        (invoices[0].vat_batch().batch_key(), UnitKey(978), -210),
+        (
+            InvoiceLedgerV2::vat_batch(&invoices[0]).batch_key(),
+            UnitKey(978),
+            210,
+        ),
+    ];
+    expected.sort();
+    assert_eq!(preview.deltas, expected);
     assert_eq!(
         store
             .read(invoices[0].process_id)

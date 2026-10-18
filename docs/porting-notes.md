@@ -866,7 +866,8 @@ of it changed, in the crates and in the templates:
     `LedgerObject::TYPE` string rather than a registry integer.
 
 88. **A close waits for writers through a shared row lock, not a snapshot
-    horizon.** The plan recommended closing a batch, then waiting until
+    horizon.** (Superseded by note 90: the lock, the lifecycle and the
+    batch table are gone.) The plan recommended closing a batch, then waiting until
     every transaction in progress at the close had finished, read from
     `pg_current_snapshot()`. Built and tested, it missed two cases: a
     snapshot's `xip` lists only in-progress transactions below its `xmax`,
@@ -899,3 +900,32 @@ of it changed, in the crates and in the templates:
     `projector_watermark` and the `booked_at` index) was removed the day
     after it landed: a balance projection is the user's, and the testkit's
     `projection` check is what it must pass.
+
+90. **The batch table left the framework; a batch closes by booking it to
+    zero.** The user's direction (2026-10-18): a batch table is the user's
+    to define, and the framework's trait needs only a `batch_key()`. Gone
+    are the `batch` and `batch_claim` tables, the string `BatchId` with its
+    epochs, the `Batches` recorder (`open`/`existing`), the four statuses,
+    `BatchLifecycle` (close, claim, consume), `Store::resolve`,
+    `CommitOutcome::BatchNotOpen` and the `FOR SHARE` lock of note 88.
+    `BatchAccount` gained `batch_key()`: the key is the user's, allocated in
+    a table of their own (the object then carries it) or encoded or hashed
+    from what names the batch (the fixture hashes `<kind>/<invoice or
+    period>`), and a line is `[batch_key, ledger, batch_type, object_id,
+    unit_key, amount]`, so the journal table alone checks and reads back
+    and one key under two ledgers or types is rejected at booking (or a
+    corrupt store on read). Closing needs no status, as the user put it:
+    closing a batch is the same as it having zero balance. A claim is an
+    object of the user's (the fixture's `VatReturn`) whose desired state
+    holds minus the batch's sum on the batch and the same amount on the
+    batch the money moves to; a late line afterwards is the next claim's
+    remainder, and a sum never needs a race closed because whatever it
+    missed is in the next one. The commit is one autocommitted `INSERT`,
+    so the COMMIT-fault proxy test had nothing left to fault and was
+    removed; the replay check pins the repair. `batch_sum` reads an
+    expression GIN index over the lines' batch keys
+    (`jsonb_path_query_array(lines, '$[*][0]')`), checked on Postgres 17 to
+    be used and to miss a unit that shares the key's value. A balance
+    projection should drop its zero rows (the trigger deletes them, a
+    ClickHouse `SummingMergeTree` does on merge), noted where the trigger
+    is described.

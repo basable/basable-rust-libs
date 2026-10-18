@@ -1,17 +1,19 @@
 //! The Postgres store against a real database: the conformance suite, the
-//! invoice fixture through the engine, a rules bump restating, and the two
-//! commit ambiguities the wire cannot tell apart.
+//! invoice fixture through the engine (replays included: a commit whose
+//! acknowledgement was lost is repaired by the retry reading the row), a
+//! batch closed by a booking, a rules bump restating, and the in-memory
+//! store agreeing with Postgres on a history.
 
 use basable_db::{Nanoservice, Stateful};
-use basable_ledger::{InMemoryStore, Ledger, LedgerError, Outcome, Request, UnitKey};
+use basable_ledger::{BatchAccount, InMemoryStore, Ledger, Outcome, Request, Store, UnitKey};
 use basable_ledger_postgres::{PgStore, SCHEMA_PLACEHOLDER, migrations};
 use basable_ledger_testkit::conformance;
 use basable_ledger_testkit::fixture::{
-    Currency, Invoice, InvoiceLedger, InvoiceLedgerV2, InvoiceState, Payment, PaymentLedger,
-    PaymentState, new_invoice, new_payment,
+    Account, Currency, Invoice, InvoiceLedger, InvoiceLedgerV2, InvoiceState, Payment,
+    PaymentLedger, PaymentState, VatReturn, VatReturnLedger, new_invoice, new_payment,
+    new_vat_return,
 };
-use basable_testkit::{CommitFault, CommitFaultProxy, TestDb, runfile};
-use sqlx::postgres::PgConnectOptions;
+use basable_testkit::{TestDb, runfile};
 
 struct Orders;
 impl Nanoservice for Orders {
@@ -42,6 +44,7 @@ fn ledger(store: PgStore) -> Ledger<PgStore> {
     Ledger::builder(store)
         .register::<Invoice, InvoiceLedger>()
         .register::<Payment, PaymentLedger>()
+        .register::<VatReturn, VatReturnLedger>()
         .build()
 }
 
@@ -115,23 +118,65 @@ async fn the_invoice_lifecycle_books_on_postgres() {
             .expect("book"),
         vec![Outcome::Stale]
     );
-    let read = basable_ledger::Store::read(&store, p).await.expect("read");
+    let read = store.read(p).await.expect("read");
     assert_eq!(read.sequence(), 3);
     assert_eq!(read.versions.get("invoice"), Some(&1));
     assert_eq!(read.versions.get("payment"), Some(&1));
     // The batch sum spans the whole process.
-    let key = read
-        .batches
-        .values()
-        .find(|b| b.id == paid.cash_batch())
-        .expect("cash batch")
-        .key;
     assert_eq!(
-        basable_ledger::Store::batch_sum(&store, key)
+        store
+            .batch_sum(paid.cash_batch().batch_key())
             .await
             .expect("sum"),
         vec![(UnitKey(978), 24_200)]
     );
+    db.finish().await;
+}
+
+/// A batch closes by a booking that brings its sum to zero; the sum is read
+/// over the lines index across processes, and a late line is the next
+/// return's remainder.
+#[tokio::test]
+async fn a_batch_is_closed_by_booking_its_balance_to_zero_on_postgres() {
+    let Some(db) = db().await else {
+        eprintln!("TEST_DATABASE_URL unset: skipping");
+        return;
+    };
+    let store = store(&db).await;
+    let ledger = ledger(store.clone());
+    let mut issued = Vec::new();
+    for (net, vat) in [(10_000, 2_100), (5_000, 1_050), (1_000, 210)] {
+        let i = new_invoice(net, vat, Currency::Eur).next(InvoiceState::Issued, 0);
+        assert_eq!(
+            ledger
+                .book(Request::new().with(i.clone()))
+                .await
+                .expect("book"),
+            vec![Outcome::Booked]
+        );
+        issued.push(i);
+    }
+    let vat = Account::Vat("2026-10".into()).batch_key();
+    let tax_office = Account::TaxOffice("2026-10".into()).batch_key();
+    let eur = UnitKey(978);
+    assert_eq!(store.batch_sum(vat).await.expect("sum"), vec![(eur, 3_360)]);
+    ledger
+        .book(Request::new().with(new_vat_return("2026-10", 3_360, Currency::Eur)))
+        .await
+        .expect("file");
+    assert_eq!(store.batch_sum(vat).await.expect("sum"), vec![(eur, 0)]);
+    assert_eq!(
+        store.batch_sum(tax_office).await.expect("sum"),
+        vec![(eur, 3_360)]
+    );
+    let mut corrected = issued[2].next(InvoiceState::Issued, 0);
+    corrected.net = 500;
+    corrected.vat = 105;
+    ledger
+        .book(Request::new().with(corrected))
+        .await
+        .expect("correct");
+    assert_eq!(store.batch_sum(vat).await.expect("sum"), vec![(eur, -105)]);
     db.finish().await;
 }
 
@@ -169,55 +214,9 @@ async fn a_rules_bump_restates_on_postgres() {
             .amount(&InvoiceLedgerV2::vat_batch(&issued), Currency::Eur),
         2_100
     );
-    let read = basable_ledger::Store::read(&store, p).await.expect("read");
+    let read = store.read(p).await.expect("read");
     assert_eq!(read.versions.get("invoice"), Some(&2));
     assert!(read.journals[1].snapshot_diffs.is_empty());
-    db.finish().await;
-}
-
-/// A commit whose acknowledgement is lost: the producer's retry answers
-/// `AlreadyBooked` when it landed and `Booked` when it did not. Nothing is
-/// booked twice either way.
-#[tokio::test]
-async fn a_lost_commit_acknowledgement_is_repaired_by_the_retry() {
-    let Some(db) = db().await else {
-        eprintln!("TEST_DATABASE_URL unset: skipping");
-        return;
-    };
-    for mode in [CommitFault::Applied, CommitFault::RolledBack] {
-        let (proxy, options): (CommitFaultProxy, PgConnectOptions) =
-            CommitFaultProxy::for_options(db.app_options())
-                .await
-                .expect("proxy");
-        let pool =
-            basable_db::NanoPool::<Orders>::connect(options, basable_db::PoolConfig::default())
-                .await
-                .expect("pool through the proxy");
-        let faulty = ledger(PgStore::new(pool.pool().clone()));
-        let clean = ledger(store(&db).await);
-        let draft = new_invoice(500, 105, Currency::Usd);
-        let issued = draft.next(InvoiceState::Issued, 0);
-        proxy.arm(mode);
-        let first = faulty.book(Request::new().with(issued.clone())).await;
-        assert!(
-            matches!(first, Err(LedgerError::Store(_))),
-            "{mode:?}: the faulted commit surfaces as a store error, got {first:?}"
-        );
-        let retry = clean
-            .book(Request::new().with(issued.clone()))
-            .await
-            .expect("retry");
-        let expected = match mode {
-            CommitFault::Applied => Outcome::AlreadyBooked,
-            CommitFault::RolledBack => Outcome::Booked,
-        };
-        assert_eq!(retry, vec![expected], "{mode:?}");
-        let read = basable_ledger::Store::read(clean.store(), issued.process_id)
-            .await
-            .expect("read");
-        assert_eq!(read.sequence(), 1, "{mode:?}: exactly one journal");
-        pool.close().await;
-    }
     db.finish().await;
 }
 

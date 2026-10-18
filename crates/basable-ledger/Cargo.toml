@@ -1,7 +1,7 @@
 [package]
 name = "basable-ledger"
 workspace = "../.."
-description = "A declarative double-entry ledger: journals derived from the states business objects are in. The LedgerObject reader, the Accounting trait (allowed changes, desired state per state, balance checks), the Batches recorder, the pure engine over a Store, and the in-memory store."
+description = "A declarative double-entry ledger: journals derived from the states business objects are in. The LedgerObject reader, the Accounting trait (allowed changes, desired state per state, balance checks), the BatchAccount the user's batches implement (key, ledger, type; no batch table), the pure engine over a Store, and the in-memory store."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

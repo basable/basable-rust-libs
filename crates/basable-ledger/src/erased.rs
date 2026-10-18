@@ -11,7 +11,6 @@ use serde_json::Value;
 
 use crate::accounting::Accounting;
 use crate::balances::Balances;
-use crate::batches::Batches;
 use crate::desired::Desired;
 use crate::error::Rejection;
 use crate::object::LedgerObject;
@@ -34,7 +33,7 @@ pub(crate) trait ErasedObject: Send + Sync {
     /// `self`'s state lists itself: amounts may change while in it.
     fn amount_change_allowed(&self) -> bool;
     /// `desired_state` of `self`'s own state on `self`.
-    fn desired(&self, batches: &mut Batches) -> Desired;
+    fn desired(&self) -> Desired;
     /// `validate_balances` of `self`'s own state.
     fn validate_balances(&self, balances: &Balances, desired: &Desired) -> Result<(), Rejection>;
     fn describe_state(&self) -> String;
@@ -112,8 +111,8 @@ impl<O: LedgerObject, A: Accounting<O>> ErasedObject for Typed<O, A> {
         A::validate_state_change(Some(state)).contains(&state)
     }
 
-    fn desired(&self, batches: &mut Batches) -> Desired {
-        A::desired_state(self.state(), &self.object, batches)
+    fn desired(&self) -> Desired {
+        A::desired_state(self.state(), &self.object)
     }
 
     fn validate_balances(&self, balances: &Balances, desired: &Desired) -> Result<(), Rejection> {

@@ -1,7 +1,7 @@
 [package]
 name = "basable-ledger-postgres"
 workspace = "../.."
-description = "The Postgres store of basable-ledger: the journal, batch and version tables in a nanoservice's schema (dbmate migration), the compare-and-set commit on (process, sequence), batch creation and epochs, the batch sum, and the batch lifecycle."
+description = "The Postgres store of basable-ledger: the journal and version tables in a nanoservice's schema (dbmate migration), the compare-and-set commit on (process, sequence), the batch sum over the lines index, and the restatement worklist. No batch table and no balance table."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
