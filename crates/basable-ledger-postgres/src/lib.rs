@@ -84,7 +84,7 @@ mod tests {
         assert!(m[0].up.contains("CREATE TABLE journal"));
         assert!(
             m[0].up
-                .contains("CREATE TABLE process_accounting_object_version")
+                .contains("CREATE TABLE process_ledger_object_version")
         );
         assert!(!m[0].up.contains("CREATE TABLE batch"), "no batch table");
         assert!(MIGRATION.contains(SCHEMA_PLACEHOLDER));

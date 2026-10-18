@@ -67,7 +67,7 @@ impl Store for PgStore {
             });
         }
         let rows = sqlx::query(
-            "SELECT type_name, version FROM process_accounting_object_version \
+            "SELECT type_name, version FROM process_ledger_object_version \
              WHERE process_id = $1",
         )
         .bind(process.0)
@@ -114,10 +114,10 @@ impl Store for PgStore {
         version: u32,
     ) -> Result<(), StoreError> {
         sqlx::query(
-            "INSERT INTO process_accounting_object_version (process_id, type_name, version) \
+            "INSERT INTO process_ledger_object_version (process_id, type_name, version) \
              VALUES ($1, $2, $3) \
              ON CONFLICT (process_id, type_name) DO UPDATE \
-             SET version = GREATEST(process_accounting_object_version.version, EXCLUDED.version)",
+             SET version = GREATEST(process_ledger_object_version.version, EXCLUDED.version)",
         )
         .bind(process.0)
         .bind(type_name)
@@ -163,7 +163,7 @@ impl Store for PgStore {
         limit: u32,
     ) -> Result<Vec<ProcessId>, StoreError> {
         let rows: Vec<uuid::Uuid> = sqlx::query_scalar(
-            "SELECT process_id FROM process_accounting_object_version \
+            "SELECT process_id FROM process_ledger_object_version \
              WHERE type_name = $1 AND version < $2 ORDER BY process_id LIMIT $3",
         )
         .bind(type_name)

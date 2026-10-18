@@ -9,7 +9,7 @@ is `docs/decisions/0005-declarative-ledger.md`.
 
 | Item | What it is |
 |---|---|
-| `MIGRATION`, `MIGRATION_FILE`, `SCHEMA_PLACEHOLDER`, `migrations()` | The dbmate migration that creates `journal` and `process_accounting_object_version`, with `nano_ledger` as the schema and role placeholder. Apply it through `basable_db::migrate::apply` with the replacement `("nano_ledger", "nano_<name>")` |
+| `MIGRATION`, `MIGRATION_FILE`, `SCHEMA_PLACEHOLDER`, `migrations()` | The dbmate migration that creates `journal` and `process_ledger_object_version`, with `nano_ledger` as the schema and role placeholder. Apply it through `basable_db::migrate::apply` with the replacement `("nano_ledger", "nano_<name>")` |
 | `PgStore::new(pool)` | The store: `read` (every journal of a process and the recorded versions), `commit` (one `INSERT` of the journal at the next sequence; a unique violation on the primary key is `SequenceTaken`), `record_version` (an upsert that never moves backwards), `batch_sum` (over the expression index on the lines' batch keys), `processes_behind` (the startup restatement's worklist, from the version table's index) |
 
 ## The tables
@@ -24,7 +24,7 @@ is `docs/decisions/0005-declarative-ledger.md`.
   a journal's lines and nothing else, so `... @> '[<key>]'` finds a batch's
   journals and a small key never matches a ledger, a type or a unit that
   shares its value.
-- `process_accounting_object_version (process_id, type_name) PK`,
+- `process_ledger_object_version (process_id, type_name) PK`,
   `version`, indexed on `(type_name, version)` as the startup
   restatement's worklist.
 

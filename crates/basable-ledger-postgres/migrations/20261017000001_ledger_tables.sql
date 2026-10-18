@@ -39,20 +39,20 @@ CREATE INDEX idx_journal_batch_keys
 -- The desired_state version that last evaluated an object type in a
 -- process; the startup restatement's worklist is every row behind the
 -- running version.
-CREATE TABLE process_accounting_object_version (
+CREATE TABLE process_ledger_object_version (
     process_id UUID NOT NULL,
     type_name  TEXT NOT NULL,
     version    INTEGER NOT NULL,
     PRIMARY KEY (process_id, type_name)
 );
-CREATE INDEX idx_process_accounting_object_version_behind
-    ON process_accounting_object_version (type_name, version);
+CREATE INDEX idx_process_ledger_object_version_behind
+    ON process_ledger_object_version (type_name, version);
 
 RESET ROLE;
 
 -- migrate:down
 SET LOCAL ROLE nano_ledger;
 SET LOCAL search_path = nano_ledger;
-DROP TABLE IF EXISTS process_accounting_object_version;
+DROP TABLE IF EXISTS process_ledger_object_version;
 DROP TABLE IF EXISTS journal;
 RESET ROLE;
