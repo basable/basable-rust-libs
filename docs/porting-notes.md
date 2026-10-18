@@ -929,3 +929,16 @@ of it changed, in the crates and in the templates:
     projection should drop its zero rows (the trigger deletes them, a
     ClickHouse `SummingMergeTree` does on merge), noted where the trigger
     is described.
+
+91. **The journal has one time, `booked_at`.** The `event_time` column (the
+    latest state-entered instant among the objects a journal booked) went
+    on 2026-10-18, with the instant half of `LedgerObject::state()`, which
+    now returns the state alone. The user's point: the instant is in the
+    snapshot diffs already, since the object that carries it is, so the
+    column was a copy the engine never read, one value for a journal that
+    may book several objects, and the clock for a restatement, which books
+    no object. A time axis other than the commit's is the reader's business
+    on the folded object, which the change-data-capture consumer applies
+    anyway to get the object's fields. `changed_at` on the reader (the
+    source's change time, for a timeliness metric no code emits yet) is of
+    the same kind and still there.

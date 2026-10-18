@@ -63,7 +63,6 @@ impl Store for InMemoryStore {
         journals.push(Journal {
             process_id: commit.process_id,
             sequence: last + 1,
-            event_time: commit.event_time,
             booked_at: chrono::Utc::now(),
             lines: commit.lines,
             snapshot_diffs: commit.snapshot_diffs,

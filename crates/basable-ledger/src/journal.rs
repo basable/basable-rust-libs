@@ -95,8 +95,6 @@ pub struct Journal {
     pub process_id: ProcessId,
     /// The process version this journal made: gapless from 1.
     pub sequence: i64,
-    /// The latest state-entered instant among the objects booked.
-    pub event_time: Timestamp,
     /// The commit time.
     pub booked_at: Timestamp,
     /// Every object's delta, each line naming its object.

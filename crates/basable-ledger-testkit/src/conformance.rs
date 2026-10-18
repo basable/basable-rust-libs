@@ -45,7 +45,6 @@ fn commit(process: ProcessId, after: i64, batch: Batch, object: ObjectId) -> Com
     Commit {
         process_id: process,
         after_sequence: after,
-        event_time: chrono::Utc::now(),
         lines: vec![
             line(batch, object, 978, 100),
             line(batch, object, 978, -100),
@@ -89,7 +88,6 @@ pub async fn commits_and_reads_back<S: Store>(store: &S) {
     );
     assert_eq!(journal.snapshot_diffs.len(), 1);
     assert_eq!(journal.snapshot_diffs[0].object_id, o);
-    assert!(journal.booked_at >= journal.event_time - chrono::Duration::minutes(1));
 }
 
 /// The primary key on (process, sequence) is the compare-and-set: a second

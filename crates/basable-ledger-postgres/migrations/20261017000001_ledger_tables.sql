@@ -17,10 +17,12 @@ SET LOCAL search_path = nano_ledger;
 -- batch table: a batch key is the user's, and every line carries the
 -- batch's ledger and type with it, so this table alone checks and reads
 -- back. A batch's balance is the sum of its lines; zero is a closed batch.
+-- booked_at is the journal's one time: when something happened in the
+-- world is a field of the object, in its diff, read through the user's
+-- reader.
 CREATE TABLE journal (
     process_id     UUID NOT NULL,
     sequence       BIGINT NOT NULL CHECK (sequence >= 1),
-    event_time     TIMESTAMPTZ NOT NULL,
     booked_at      TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     lines          JSONB NOT NULL CHECK (jsonb_typeof(lines) = 'array'),
     snapshot_diffs JSONB NOT NULL CHECK (jsonb_typeof(snapshot_diffs) = 'array'),

@@ -41,7 +41,7 @@ fn corrupt(what: &str, e: impl std::fmt::Display) -> StoreError {
 impl Store for PgStore {
     async fn read(&self, process: ProcessId) -> Result<ProcessRead, StoreError> {
         let rows = sqlx::query(
-            "SELECT sequence, event_time, booked_at, lines, snapshot_diffs \
+            "SELECT sequence, booked_at, lines, snapshot_diffs \
              FROM journal WHERE process_id = $1 ORDER BY sequence",
         )
         .bind(process.0)
@@ -57,12 +57,10 @@ impl Store for PgStore {
             let snapshot_diffs: Vec<SnapshotDiff> =
                 serde_json::from_value(diffs).map_err(|e| corrupt("journal.snapshot_diffs", e))?;
             let sequence: i64 = row.try_get("sequence").map_err(backend)?;
-            let event_time: Timestamp = row.try_get("event_time").map_err(backend)?;
             let booked_at: Timestamp = row.try_get("booked_at").map_err(backend)?;
             journals.push(Journal {
                 process_id: process,
                 sequence,
-                event_time,
                 booked_at,
                 lines,
                 snapshot_diffs,
@@ -93,12 +91,11 @@ impl Store for PgStore {
         let diffs_json =
             serde_json::to_value(&commit.snapshot_diffs).map_err(|e| corrupt("diffs", e))?;
         let inserted = sqlx::query(
-            "INSERT INTO journal (process_id, sequence, event_time, lines, snapshot_diffs) \
-             VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO journal (process_id, sequence, lines, snapshot_diffs) \
+             VALUES ($1, $2, $3, $4)",
         )
         .bind(commit.process_id.0)
         .bind(commit.after_sequence + 1)
-        .bind(commit.event_time)
         .bind(&lines_json)
         .bind(&diffs_json)
         .execute(&self.pool)

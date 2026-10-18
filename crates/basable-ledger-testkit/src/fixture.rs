@@ -133,8 +133,6 @@ pub struct Invoice {
     pub changed_at: Timestamp,
     /// Its state.
     pub state: InvoiceState,
-    /// When the state was entered.
-    pub state_since: Timestamp,
     /// The customer.
     pub customer: Uuid,
     /// The currency.
@@ -174,8 +172,8 @@ impl LedgerObject for Invoice {
         self.changed_at
     }
 
-    fn state(&self) -> (InvoiceState, Timestamp) {
-        (self.state, self.state_since)
+    fn state(&self) -> InvoiceState {
+        self.state
     }
 }
 
@@ -339,8 +337,6 @@ pub struct Payment {
     pub changed_at: Timestamp,
     /// Its state.
     pub state: PaymentState,
-    /// When the state was entered.
-    pub state_since: Timestamp,
     /// The currency.
     pub currency: Currency,
     /// The amount.
@@ -372,8 +368,8 @@ impl LedgerObject for Payment {
         self.changed_at
     }
 
-    fn state(&self) -> (PaymentState, Timestamp) {
-        (self.state, self.state_since)
+    fn state(&self) -> PaymentState {
+        self.state
     }
 }
 
@@ -453,8 +449,6 @@ pub struct VatReturn {
     pub changed_at: Timestamp,
     /// Its state.
     pub state: VatReturnState,
-    /// When the state was entered.
-    pub state_since: Timestamp,
     /// The period the return covers, as the VAT batch names it.
     pub period: String,
     /// The currency.
@@ -484,8 +478,8 @@ impl LedgerObject for VatReturn {
         self.changed_at
     }
 
-    fn state(&self) -> (VatReturnState, Timestamp) {
-        (self.state, self.state_since)
+    fn state(&self) -> VatReturnState {
+        self.state
     }
 }
 
@@ -526,7 +520,6 @@ pub fn new_invoice(net: i128, vat: i128, currency: Currency) -> Invoice {
         version: 1,
         changed_at: now,
         state: InvoiceState::Draft,
-        state_since: now,
         customer: Uuid::new_v4(),
         currency,
         net,
@@ -545,11 +538,6 @@ impl Invoice {
             version: self.version + 1,
             changed_at: now,
             state,
-            state_since: if state == self.state {
-                self.state_since
-            } else {
-                now
-            },
             paid,
             ..self.clone()
         }
@@ -566,7 +554,6 @@ pub fn new_payment(invoice: &Invoice, amount: i128) -> Payment {
         version: 1,
         changed_at: now,
         state: PaymentState::Pending,
-        state_since: now,
         currency: invoice.currency,
         amount,
     }
@@ -580,7 +567,6 @@ impl Payment {
             version: self.version + 1,
             changed_at: now,
             state,
-            state_since: now,
             ..self.clone()
         }
     }
@@ -597,7 +583,6 @@ pub fn new_vat_return(period: &str, amount: i128, currency: Currency) -> VatRetu
         version: 1,
         changed_at: now,
         state: VatReturnState::Filed,
-        state_since: now,
         period: period.to_owned(),
         currency,
         amount,

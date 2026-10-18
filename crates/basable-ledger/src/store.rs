@@ -11,7 +11,7 @@ use std::future::Future;
 
 use crate::error::StoreError;
 use crate::journal::{Journal, Line, SnapshotDiff};
-use crate::types::{BatchKey, ProcessId, Timestamp, UnitKey};
+use crate::types::{BatchKey, ProcessId, UnitKey};
 
 /// Everything the engine reads about one process: its journals in sequence
 /// order and the rules version recorded per object type.
@@ -38,8 +38,6 @@ pub struct Commit {
     pub process_id: ProcessId,
     /// The highest sequence the engine read; the journal goes at plus one.
     pub after_sequence: i64,
-    /// The journal's event time.
-    pub event_time: Timestamp,
     /// The lines.
     pub lines: Vec<Line>,
     /// The snapshot diffs.

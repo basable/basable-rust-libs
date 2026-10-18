@@ -1,7 +1,7 @@
 //! The pure engine: fold a process's journals into its current objects and
 //! positions, plan what a call books, and turn the plan into a commit.
-//! Nothing here is async and nothing reads a clock; the runtime in
-//! `ledger.rs` drives it against a store.
+//! Nothing here is async and nothing reads a clock; the store stamps the
+//! commit time, and the runtime in `ledger.rs` drives it against a store.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -14,9 +14,7 @@ use crate::error::{LedgerError, Rejection, StoreError};
 use crate::journal::{Line, SnapshotDiff};
 use crate::jsonpatch;
 use crate::store::{Commit, ProcessRead};
-use crate::types::{
-    Batch, BatchKey, BatchType, LedgerKey, ObjectId, ProcessId, Timestamp, UnitKey,
-};
+use crate::types::{Batch, BatchKey, BatchType, LedgerKey, ObjectId, ProcessId, UnitKey};
 
 /// One object as the process currently books it: its folded snapshot and
 /// the decoded object.
@@ -124,7 +122,6 @@ pub(crate) struct Plan {
     pub outcomes: Vec<(usize, PreOutcome)>,
     pub lines: Vec<Line>,
     pub diffs: Vec<SnapshotDiff>,
-    pub event_time: Option<Timestamp>,
     /// Types whose recorded version must become the running one.
     pub versions_to_record: Vec<(String, u32)>,
     /// How many objects were restated ahead of the submissions.
@@ -138,19 +135,11 @@ impl Plan {
         self.lines.is_empty() && self.diffs.is_empty()
     }
 
-    /// The commit: one journal at the process's next sequence. `now` is the
-    /// event time of a journal with no submissions (a restatement books
-    /// prospectively).
-    pub(crate) fn into_commit(
-        self,
-        process: ProcessId,
-        current: &Current,
-        now: Timestamp,
-    ) -> Commit {
+    /// The commit: one journal at the process's next sequence.
+    pub(crate) fn into_commit(self, process: ProcessId, current: &Current) -> Commit {
         Commit {
             process_id: process,
             after_sequence: current.sequence,
-            event_time: self.event_time.unwrap_or(now),
             lines: self.lines,
             snapshot_diffs: self.diffs,
         }
@@ -169,7 +158,6 @@ pub(crate) fn plan(
         outcomes: Vec::with_capacity(submissions.len()),
         lines: Vec::new(),
         diffs: Vec::new(),
-        event_time: None,
         versions_to_record: Vec::new(),
         restated_objects: 0,
     };
@@ -290,8 +278,6 @@ pub(crate) fn plan(
             },
         };
         plan.diffs.push(diff);
-        let entered = s.object.entered_at();
-        plan.event_time = Some(plan.event_time.map_or(entered, |t| t.max(entered)));
         live.insert(id, s.object.as_ref());
         plan.outcomes.push((s.index, PreOutcome::Booked));
     }

@@ -19,7 +19,7 @@ that there is nothing to keep in sync.
 
 | Item | What it is |
 |---|---|
-| `LedgerObject` | The reader on the user's own type: `TYPE`, `State` (a `Copy + Eq + Hash` enum), `process_id`, `object_id`, `parent_id`, `version`, `changed_at`, `state() -> (State, entered_at)`. `Serialize + DeserializeOwned`: the serde form is the stored form |
+| `LedgerObject` | The reader on the user's own type: `TYPE`, `State` (a `Copy + Eq + Hash` enum), `process_id`, `object_id`, `parent_id`, `version`, `changed_at`, `state() -> State`. `Serialize + DeserializeOwned`: the serde form is the stored form |
 | `Accounting<O>` | The rules of one type, no `self`: `VERSION` (bump on a desired-state or classification change), `validate_state_change(current) -> &[State]` (listing the current state allows an amount change in it; a terminal state lists nothing), `desired_state(state, &O) -> Desired`, `validate_balances(state, &O, &Balances, &Desired)` |
 | `BatchAccount` | Whatever names a batch: `batch_key()`, `ledger()` and `batch_type()` (`Debit`, `Credit`, `Memo`). All the framework knows about a batch. There is no batch table: the key is the user's, allocated in a table of their own or encoded or hashed from what names the batch, and a batch is closed when a booking brings its balance to zero. Implemented for `&A` and for `Batch` |
 | `Batch`, `BatchKey`, `LedgerKey`, `BatchType`, `UnitKey` | A batch as a line names it (key, ledger, type; `Batch::of(&account)`), and the keys. `BatchKey: From<&impl BatchAccount>`, so a balance lookup takes a key or an account |
@@ -29,7 +29,7 @@ that there is nothing to keep in sync.
 | `Ledger<S>`, `Builder`, `Request`, `Outcome` | `Ledger::builder(store).register::<O, A>()...build()`; `book(Request)` books any mix of registered types across processes, one `Outcome` per object: `Booked`, `AlreadyBooked`, `Stale`, `Rejected(reason)`. `balances(process)`, `restate(process)`, `preview_restatement(process)` (the per-process dry run: the net deltas per batch key and unit); `restate_behind()`, called once when a deployment starts, restates every process behind the running rules of any registered type and reports `RestatementReport { processes, objects, lines, versions_recorded }` |
 | `Store` | The persistence interface: `read`, `commit`, `record_version`, `batch_sum`, `processes_behind` (the startup restatement's worklist); `ProcessRead`, `Commit`, `CommitOutcome::{Committed, SequenceTaken}` |
 | `InMemoryStore` | The reference store, for tests |
-| `Journal`, `Line`, `SnapshotDiff` | The stored shape: lines `[batch_key, ledger, batch_type, object_id, unit_key, amount]` (the type 1 debit, 2 credit, 3 memo), diffs `{object_id, type, full | patch}` |
+| `Journal`, `Line`, `SnapshotDiff` | The stored shape: `(process_id, sequence, booked_at, lines, snapshot_diffs)`, lines `[batch_key, ledger, batch_type, object_id, unit_key, amount]` (the type 1 debit, 2 credit, 3 memo), diffs `{object_id, type, full | patch}` |
 | `jsonpatch::{diff, apply}` | RFC 7386 merge patch, how diffs are made and folded |
 | `Rejection`, `StoreError`, `LedgerError` | Hand-written errors, no `thiserror` |
 
@@ -93,7 +93,9 @@ own lines are part of it. No epoch, no lock, nothing marked.
 
 - **The engine is pure; only the store is async.** `engine.rs` takes a
   `ProcessRead` and the submissions and returns a `Commit`; nothing in it
-  reads a clock. A restatement's event time is the booking time, passed in.
+  reads a clock. The store stamps `booked_at`, the journal's one time; when
+  something happened in the world is in the object's own fields, in the
+  diffs.
 - **Journals are append-only.** An adjustment, a transition and a
   restatement are all new lines that bring the booked positions to the
   desired state. Nothing is updated or deleted.

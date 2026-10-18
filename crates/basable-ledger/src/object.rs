@@ -44,7 +44,6 @@ pub trait LedgerObject: Serialize + DeserializeOwned + Send + Sync + 'static {
     /// When the source last changed the object; the timeliness input.
     fn changed_at(&self) -> Timestamp;
 
-    /// The accounting state and the instant it was entered, which becomes
-    /// the journal's event time.
-    fn state(&self) -> (Self::State, Timestamp);
+    /// The accounting state the object is in.
+    fn state(&self) -> Self::State;
 }

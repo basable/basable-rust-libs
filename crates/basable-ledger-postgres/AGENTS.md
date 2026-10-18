@@ -14,8 +14,9 @@ is `docs/decisions/0005-declarative-ledger.md`.
 
 ## The tables
 
-- `journal (process_id, sequence) PK`: `event_time`, `booked_at`
-  (`clock_timestamp()` at insert), `lines` jsonb
+- `journal (process_id, sequence) PK`: `booked_at` (`clock_timestamp()` at
+  insert, the journal's one time; an object's own instants are in its
+  diffs), `lines` jsonb
   `[[batch_key, ledger, batch_type, object_id, unit_key, amount], …]`
   (type 1 debit, 2 credit, 3 memo; amounts as decimal strings),
   `snapshot_diffs` jsonb. `idx_journal_batch_keys` is a GIN index on the

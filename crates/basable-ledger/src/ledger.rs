@@ -14,7 +14,7 @@ use crate::erased::Registry;
 use crate::error::{LedgerError, Rejection};
 use crate::object::LedgerObject;
 use crate::store::{CommitOutcome, Store};
-use crate::types::{BatchKey, ProcessId, Timestamp, UnitKey};
+use crate::types::{BatchKey, ProcessId, UnitKey};
 
 /// How many times a process's commit is retried when another writer takes
 /// its sequence first. A sibling's commit is pure mechanics, so the retry is
@@ -399,15 +399,11 @@ impl<S: Store> Ledger<S> {
         current: &engine::Current,
         plan: engine::Plan,
     ) -> Result<Committed, LedgerError> {
-        let commit = plan.into_commit(process, current, now());
+        let commit = plan.into_commit(process, current);
         let lines = commit.lines.len();
         Ok(match self.store.commit(commit).await? {
             CommitOutcome::Committed => Committed::Journal(lines),
             CommitOutcome::SequenceTaken => Committed::Retry,
         })
     }
-}
-
-fn now() -> Timestamp {
-    chrono::Utc::now()
 }

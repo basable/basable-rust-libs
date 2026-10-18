@@ -14,7 +14,7 @@ use crate::balances::Balances;
 use crate::desired::Desired;
 use crate::error::Rejection;
 use crate::object::LedgerObject;
-use crate::types::{ObjectId, ProcessId, Timestamp};
+use crate::types::{ObjectId, ProcessId};
 
 /// An object of some registered type, with its accounting.
 pub(crate) trait ErasedObject: Send + Sync {
@@ -22,7 +22,6 @@ pub(crate) trait ErasedObject: Send + Sync {
     fn process_id(&self) -> ProcessId;
     fn object_id(&self) -> ObjectId;
     fn version(&self) -> u64;
-    fn entered_at(&self) -> Timestamp;
     fn rules_version(&self) -> u32;
     fn to_json(&self) -> Result<Value, Rejection>;
     /// Same type and same state.
@@ -54,7 +53,7 @@ impl<O: LedgerObject, A: Accounting<O>> Typed<O, A> {
     }
 
     fn state(&self) -> O::State {
-        self.object.state().0
+        self.object.state()
     }
 }
 
@@ -73,10 +72,6 @@ impl<O: LedgerObject, A: Accounting<O>> ErasedObject for Typed<O, A> {
 
     fn version(&self) -> u64 {
         self.object.version()
-    }
-
-    fn entered_at(&self) -> Timestamp {
-        self.object.state().1
     }
 
     fn rules_version(&self) -> u32 {
