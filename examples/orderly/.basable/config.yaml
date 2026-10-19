@@ -5,6 +5,9 @@ kind: TenantConfig
 # the platform allows during the organisation's first month; raise them once
 # a payment method is on file. The block you set also selects the tenancy
 # model (virtual-cluster: a namespace quota on a shared cluster).
+# objectStorage gives each environment a private and a public bucket; the
+# frontend is served from the public one, as the `static` artifact the
+# workflow uploads.
 spec:
   environments:
     preview:
@@ -13,9 +16,11 @@ spec:
         memory: "4Gi"
         storage: "10Gi"
         maxPods: 30
+      objectStorage: {}
     live:
       virtual-cluster:
         cpu: "2000m"
         memory: "4Gi"
         storage: "10Gi"
         maxPods: 30
+      objectStorage: {}

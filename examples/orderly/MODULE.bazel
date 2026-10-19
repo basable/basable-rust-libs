@@ -83,11 +83,4 @@ oci.pull(
     image = "ghcr.io/amacneil/dbmate",
     platforms = ["linux/amd64"],
 )
-# docker.io/nginxinc/nginx-unprivileged:stable-alpine
-oci.pull(
-    name = "nginx_unprivileged",
-    digest = "sha256:daa17b944bac2b578e962da4c61ad72a59233b3c63abea17113acaf4e6b9aea4",
-    image = "docker.io/nginxinc/nginx-unprivileged",
-    platforms = ["linux/amd64"],
-)
-use_repo(oci, "distroless_cc", "distroless_cc_linux_amd64", "dbmate", "dbmate_linux_amd64", "nginx_unprivileged", "nginx_unprivileged_linux_amd64")
+use_repo(oci, "distroless_cc", "distroless_cc_linux_amd64", "dbmate", "dbmate_linux_amd64")

@@ -21,7 +21,19 @@ file under `k8s/` and `.github/workflows/` must keep.
   and StatefulSets being ready, its Jobs completed, and any custom resource
   that reports a `Ready` condition (a CNPG `Cluster`) being Ready; a failed
   Job fails the deployment. This tree: CNPG operator + Cluster + the Kratos secret Job (-2), the kratos Database
-  (-1), migrations + Kratos migration (0), app + frontend + Kratos + HTTPRoute (1).
+  (-1), migrations + Kratos migration (0), app + Kratos + HTTPRoute (1).
+- **The frontend is the `static` artifact**, not a workload: the workflow
+  uploads the site's files (`index.html` at the root) beside the rendered
+  manifests, and the platform puts them into the environment's public
+  bucket and serves them at `/` on the environment's hostnames, switching
+  the moment the upload lands, before the manifests are applied, and while
+  a preview sleeps. A directory's path (`/docs/`, `/docs`) answers that
+  directory's `index.html`; a path that names no file answers the root
+  `index.html`. The platform sets the security headers. Limits: 16 MiB
+  zipped, 64 MiB and 5,000 files unpacked. The HTTPRoute never claims `/`
+  (a rule for it would take the site away from the bucket), and nothing
+  writes to a `site/` folder of the bucket but the platform, which keeps
+  the current commit's site and the one before it.
 - **A Secret read through `secretKeyRef` must exist when the pod starts**:
   `CreateContainerConfigError` is terminal for the health gate. The wave
   layout guarantees it (the Cluster is Ready before wave 0, and CNPG writes `app-postgres-app` during bootstrap;

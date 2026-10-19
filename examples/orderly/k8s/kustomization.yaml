@@ -17,6 +17,4 @@ resources:
   - kratos/service.yaml
   - app/deployment.yaml
   - app/service.yaml
-  - frontend/deployment.yaml
-  - frontend/service.yaml
   - httproute.yaml

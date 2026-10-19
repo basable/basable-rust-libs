@@ -1,7 +1,9 @@
 # One HTTPRoute on the platform's tenant gateway with the path split the
-# basable platform uses itself: /api/ to the binary, /.ory/ to Kratos,
-# everything else to the frontend. TENANT_DOMAIN_PLACEHOLDER is replaced by the
-# platform with the environment's hostname.
+# basable platform uses itself: /api/ to the binary, /.ory/ to Kratos. It never claims /:
+# the frontend is served at / by the platform's own route, from the
+# environment's public bucket, and a rule for / here would take the site
+# away from it. TENANT_DOMAIN_PLACEHOLDER is replaced by the platform
+# with the environment's hostname.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -36,10 +38,3 @@ spec:
       backendRefs:
         - name: kratos-public
           port: 4433
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /
-      backendRefs:
-        - name: frontend
-          port: 80

@@ -987,3 +987,17 @@ of it changed, in the crates and in the templates:
     listing the process. An older replica's booking during a rollout is
     accepted, indexed at its version and taken again by the next run; the
     book settles when the replica is gone.
+
+94. **The example's frontend is served from the bucket, not an nginx
+    container.** On 2026-10-19 the monorepo's scaffold followed the coding
+    prompt's 2026-10-17 default: `frontend/static/` (or the React
+    `dist/`) is uploaded by the workflow as the `static` artifact and the
+    platform serves it at `/` from the environment's public bucket, so
+    `examples/orderly` lost `frontend/static/BUILD.bazel`, both
+    `nginx.conf` files, `k8s/frontend/` and the HTTPRoute's `/` rule, and
+    gained `objectStorage: {}` per environment in `.basable/config.yaml`
+    and an "Upload the site" step in `build.yaml`. No crate changed; the
+    note is here because the render diff is the contract check. The
+    platform itself learned the same day to answer a directory's path
+    (`/docs/`, `/docs`) with that directory's `index.html`, so a
+    multi-page plain site works from the bucket as it did on nginx.

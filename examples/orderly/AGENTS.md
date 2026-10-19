@@ -73,9 +73,14 @@ The platform deploys the `rendered-manifests` artifact the one workflow
 under `.github/workflows/` uploads, in apply waves: the CNPG operator and
 cluster and the Kratos secret Job (-2; the gate waits for the Cluster's `Ready` condition), the
 kratos Database (-1), the migration Job and the
-Kratos migration Job (0), then the app, the frontend, Kratos and the
+Kratos migration Job (0), then the app, Kratos and the
 HTTPRoute (1). `k8s/app/deployment.yaml` keeps the literal image path
-`registry.test.local/abandon-above-tilt/shop`; the workflow pins the digest. `docs/platform-contract.md`
+`registry.test.local/abandon-above-tilt/shop`; the workflow pins the digest. The frontend is no
+image: the same run uploads it as the `static` artifact and the platform
+serves it at `/` from the environment's public bucket (`objectStorage: {}`
+in `.basable/config.yaml`), switching the moment the upload lands, before
+the manifests are applied; a directory's path answers its own `index.html`.
+The HTTPRoute therefore never claims `/`. `docs/platform-contract.md`
 has the rules that must hold.
 
 ## Nanoservices

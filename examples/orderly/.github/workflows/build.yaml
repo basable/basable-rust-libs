@@ -1,7 +1,8 @@
-# The one workflow. The platform deploys the `rendered-manifests` artifact
-# this run uploads and nothing else: lint k8s/, build and test with Bazel,
-# push the images by commit SHA, pin every built image to its digest, render
-# k8s/ with kustomize, upload. Plan commits (docs/** only) start no run and,
+# The one workflow. The platform deploys what this run uploads and nothing
+# else: the `rendered-manifests` artifact and the `static` artifact (the
+# frontend, served from the environment's public bucket). Lint k8s/, build
+# and test with Bazel, push the images by commit SHA, pin every built image to
+# its digest, render k8s/ with kustomize, upload. Plan commits (docs/** only) start no run and,
 # by the platform's rule, create no deployment; neither does the platform's
 # commit of its own builder workflow to the default branch. See docs/ci.md for
 # the cache hygiene rules — they exist because the naive shape ran out of disk.
@@ -48,7 +49,7 @@ jobs:
       - name: Free disk space
         # ubuntu-latest ships ~14GB free, most of it preinstalled toolchains
         # this build never uses (Bazel brings its own). A rules_rust build of
-        # three images plus the restored caches does not fit beside them: the
+        # two images plus the restored caches does not fit beside them: the
         # platform's own CI died mid-build with "No space left on device"
         # before it removed these. NOT /usr/local/lib/android: a transitive
         # rule auto-detects a real SDK path and breaks when it is half-gone.
@@ -149,13 +150,11 @@ jobs:
           # Render step as an output, never recomputed.
           digest() { jq -r '.manifests[0].digest' "bazel-bin/$1/index.json"; }
           echo "digest_app=$(digest app/app_image)" >> "$GITHUB_OUTPUT"
-          echo "digest_frontend=$(digest frontend/static/frontend_image)" >> "$GITHUB_OUTPUT"
           echo "digest_dbmate=$(digest db/app/dbmate_image)" >> "$GITHUB_OUTPUT"
       - name: Render manifests
         run: |
           cd k8s
           kustomize edit set image "${REGISTRY}/${IMAGE_NAME}=${REGISTRY}/${IMAGE_NAME}@${{ steps.build.outputs.digest_app }}"
-          kustomize edit set image "${REGISTRY}/${IMAGE_NAME}-frontend=${REGISTRY}/${IMAGE_NAME}-frontend@${{ steps.build.outputs.digest_frontend }}"
           kustomize edit set image "${REGISTRY}/${IMAGE_NAME}-dbmate=${REGISTRY}/${IMAGE_NAME}-dbmate@${{ steps.build.outputs.digest_dbmate }}"
           kustomize build --enable-helm . > ../rendered-manifests.yaml
 
@@ -164,6 +163,17 @@ jobs:
         with:
           name: rendered-manifests
           path: rendered-manifests.yaml
+          retention-days: 7
+
+      # The frontend: the platform puts the `static` artifact's files into the
+      # environment's public bucket and serves them at / the moment the
+      # upload lands, before the manifests above are applied. The plain pages
+      # have nothing to build.
+      - name: Upload the site
+        uses: actions/upload-artifact@v4
+        with:
+          name: static
+          path: frontend/static
           retention-days: 7
 
       # Cache hygiene, on success only (a failed build keeps the previous good

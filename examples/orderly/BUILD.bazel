@@ -13,12 +13,13 @@ exports_files(
 )
 
 # `bazel run //:push -- --tag <sha>` pushes every image the deployment
-# references: the app, the frontend and the migration image.
+# references: the app and the migration image. The frontend is no image: the
+# workflow uploads it as the `static` artifact and the platform serves it
+# from the environment's public bucket.
 multirun(
     name = "push",
     commands = [
         "//app:app_push",
-        "//frontend/static:frontend_push",
         "//db/app:dbmate_push",
     ],
     visibility = ["//visibility:public"],
