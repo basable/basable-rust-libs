@@ -1001,3 +1001,27 @@ of it changed, in the crates and in the templates:
     platform itself learned the same day to answer a directory's path
     (`/docs/`, `/docs`) with that directory's `index.html`, so a
     multi-page plain site works from the bucket as it did on nginx.
+
+## basable-ledger, in the other direction
+
+95. **The ledger has a Go port, and the crates stay the reference.** On
+    2026-10-19 the monorepo gained `golang/controller/lib/ledger` (the
+    engine, `InMemoryStore`), `ledger/ledgerpg` (the Postgres store) and
+    `ledger/testkit` (the fixture, scenario helpers, walks, conformance
+    suite and projection check), ported from `basable-ledger`,
+    `basable-ledger-postgres` and `basable-ledger-testkit`, with the
+    tables as a dbmate migration in the state database
+    (`db/state/migrations/20261019000001_create_ledger_tables.sql`). The
+    behaviour is the crates' and every crate test has a Go twin; the shape
+    differs where Go does: amounts are `int64` minor units (no 128-bit
+    integer; the wire form is the same decimal string, so both read one
+    journal table), `TYPE` is `Accounting.TypeName()` and the registry also
+    keys by the object's Go type (how `Book(ctx, objects ...any)` finds a
+    handler), the reader's methods are `ProcessRef`/`ObjectRef`/
+    `ObjectVersion`/`AccountingState` (a struct's `ProcessID`, `ID`,
+    `Version`, `State` fields would clash with same-named methods),
+    `parent_id` is gone from the reader (the engine never read it),
+    `validate_balances` returns `error`, and the tables are
+    `ledger_journal` and `ledger_process_object_version` (a shared
+    database, no schema or role placeholder). A change to the crates lands
+    in the Go port in the same piece of work, or is recorded here.
