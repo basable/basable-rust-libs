@@ -69,11 +69,11 @@ register_toolchains("@rules_buf_toolchains//:all")
 
 # --- Base images (digest-pinned; a tag would move under the project) --------
 oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
-# gcr.io/distroless/cc-debian12:nonroot
+# gcr.io/distroless/cc-debian13:nonroot
 oci.pull(
     name = "distroless_cc",
-    digest = "sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f",
-    image = "gcr.io/distroless/cc-debian12",
+    digest = "sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2",
+    image = "gcr.io/distroless/cc-debian13",
     platforms = ["linux/amd64"],
 )
 # ghcr.io/amacneil/dbmate:2.36.0

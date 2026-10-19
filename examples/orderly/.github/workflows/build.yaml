@@ -1,8 +1,9 @@
 # The one workflow. The platform deploys what this run uploads and nothing
 # else: the `rendered-manifests` artifact and the `static` artifact (the
-# frontend, served from the environment's public bucket). Lint k8s/, build
-# and test with Bazel, push the images by commit SHA, pin every built image to
-# its digest, render k8s/ with kustomize, upload. Plan commits (docs/** only) start no run and,
+# frontend, served from the environment's public bucket). In a Debian 13
+# container (the release of the app image's base): lint k8s/, build and test
+# with Bazel, push the images by commit SHA, pin every built image to its
+# digest, render k8s/ with kustomize, upload. Plan commits (docs/** only) start no run and,
 # by the platform's rule, create no deployment; neither does the platform's
 # commit of its own builder workflow to the default branch. See docs/ci.md for
 # the cache hygiene rules — they exist because the naive shape ran out of disk.
@@ -21,6 +22,14 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Every step runs inside a Debian 13 container on that VM: the release
+    # the app image's distroless base is built from, so the binary is linked
+    # against the glibc it will run on. glibc runs an older binary on a
+    # newer libc, never the reverse, and the VM's Ubuntu (26.04 since
+    # 2026-10-19) is ahead of every Debian release. There is no Debian VM to
+    # pick with runs-on; a job container is how a job builds on one.
+    container:
+      image: docker.io/library/debian:13.7@sha256:913f6706df59a68922d1dd08f78c2476560a8d367897200a6005b00e5f67c2d5
     permissions:
       contents: read
       # The job's OIDC identity token is what logs in to the platform
@@ -34,36 +43,36 @@ jobs:
           POSTGRES_USER: test
           POSTGRES_PASSWORD: test
           POSTGRES_DB: test
-        ports:
-          - 5432:5432
+        # No ports: a job container reaches a service by its name on the
+        # job's network (TEST_DATABASE_URL below), not through localhost.
         options: >-
           --health-cmd "pg_isready -U test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     steps:
+      # The container starts with the image's packages alone. The C toolchain
+      # is what rules_rust links with and the crates' build scripts compile
+      # with (cmake is aws-lc-sys's fallback when its cc build is refused);
+      # git is for the checkout (without it actions/checkout downloads an
+      # archive with no history, and the breaking-change check needs the
+      # branches); zstd keeps the cache entries in the format the platform's
+      # builder saves them in; curl and jq serve the registry login and the
+      # digests; kustomize and helm render the manifests; gh deletes the
+      # superseded caches.
+      - name: Install the toolchain and tools
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates cmake curl git jq zstd
+          curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.8.1/kustomize_v5.8.1_linux_amd64.tar.gz" | tar -xz -C /usr/local/bin kustomize
+          curl -fsSL "https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz" | tar -xz --strip-components=1 -C /usr/local/bin linux-amd64/helm
+          curl -fsSL "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_amd64.tar.gz" | tar -xz --strip-components=2 -C /usr/local/bin gh_2.102.0_linux_amd64/bin/gh
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Free disk space
-        # ubuntu-latest ships ~14GB free, most of it preinstalled toolchains
-        # this build never uses (Bazel brings its own). A rules_rust build of
-        # two images plus the restored caches does not fit beside them: the
-        # platform's own CI died mid-build with "No space left on device"
-        # before it removed these. NOT /usr/local/lib/android: a transitive
-        # rule auto-detects a real SDK path and breaks when it is half-gone.
-        run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL \
-            /usr/local/.ghcup /usr/share/swift /usr/local/share/boost \
-            /usr/share/miniconda /usr/local/julia* /opt/az /opt/microsoft \
-            /opt/google /usr/local/share/powershell /usr/local/share/chromium \
-            /usr/lib/jvm /opt/hostedtoolcache/Ruby /opt/hostedtoolcache/PyPy \
-            /opt/hostedtoolcache/Python /opt/hostedtoolcache/go \
-            /opt/hostedtoolcache/node /opt/hostedtoolcache/Java_*
-          docker image prune -a -f
-          df -h /
       # The platform registry namespaces images by project (the same words
       # as its hostname); only the repository's lowercase name comes from
       # the run.
@@ -80,9 +89,12 @@ jobs:
       # Two caches, keyed by how often they change: the repository cache and
       # bazelisk by the lockfiles (they change only with a dependency), the
       # disk cache per SHA with a prefix restore (it changes every commit).
-      # The fallback is the platform's verified builds' (basable-builder-),
-      # saved on the default branch with --config=ci too: a run on main whose
-      # own entry the last dev run's cleanup deleted starts from those.
+      # The repository cache falls back on the platform's verified builds'
+      # (basable-builder-repo-, saved on the default branch): a download is
+      # the same bytes whatever builds. The disk cache does not: the builder
+      # links on the VM, and the toolchain is an input of every action, so
+      # its entries would never hit in this container. A branch's warm start
+      # is its own last entry, which the cleanup below leaves standing.
       - name: Restore repository cache
         uses: actions/cache/restore@v4
         with:
@@ -101,7 +113,6 @@ jobs:
           key: disk-cache-${{ github.sha }}
           restore-keys: |
             disk-cache-
-            basable-builder-disk-
 
       # Every disk-cache entry this build USES has its mtime refreshed (Bazel
       # touches an entry on a hit); anything still older than this marker at
@@ -122,7 +133,7 @@ jobs:
 
       - name: Test
         env:
-          TEST_DATABASE_URL: postgres://test:test@localhost:5432/test?sslmode=disable
+          TEST_DATABASE_URL: postgres://test:test@postgres:5432/test?sslmode=disable
           CARGO_BAZEL_REPIN: workspace
         run: bazel test --config=ci //...
 
@@ -131,12 +142,15 @@ jobs:
         run: bazel run --config=ci @rules_buf_toolchains//:buf -- breaking --against '.git#branch=main' || true
 
       # The job's OIDC identity token, exchanged at the platform registry's
-      # token service through this repository's federated service account.
-      # crane (the push below) reads the docker config this writes.
+      # token service through this repository's federated service account,
+      # written straight into the docker config crane (the push below)
+      # reads: the container has no Docker, and docker login would only
+      # write this file.
       - name: Login to the platform registry
         run: |
           token="$(curl -fsSL -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${REGISTRY}" | jq -r .value)"
-          echo "${token}" | docker login "${REGISTRY}" --username oidc --password-stdin
+          mkdir -p ~/.docker
+          printf '{"auths":{"%s":{"auth":"%s"}}}' "${REGISTRY}" "$(printf 'oidc:%s' "${token}" | base64 -w0)" > ~/.docker/config.json
 
       # rules_oci pushes with crane — no Docker daemon. The image() macro
       # pushes the digest tag; --tag adds the commit-SHA tag the platform
@@ -210,9 +224,13 @@ jobs:
 
       # A cache entry is immutable, so every commit saves a new one; without
       # this step a ~GB entry per commit piles up until the quota is hit.
-      # Only entries created BEFORE this run's: a concurrent run on a newer
-      # commit may already have saved its own, and it must survive. The
-      # repository cache is keyed by the lockfiles, so a dependency bump
+      # Only this branch's entries (--ref), and only those created BEFORE
+      # this run's: a push to main reads main's entries alone, so a dev run
+      # must leave main's last one standing for the live deploy to start
+      # warm, and a concurrent run on a newer commit may already have saved
+      # its own, which must survive. Deleted by id, never by key: after a
+      # fast-forward one commit sits on both branches with an entry on each.
+      # The repository cache is keyed by the lockfiles, so a dependency bump
       # leaves the previous entry standing: whichever entry this run used or
       # saved is the newest by access time, every other one is superseded.
       # Best effort: a failure here leaves an extra entry for GitHub's own
@@ -225,16 +243,16 @@ jobs:
         run: |
           set -uo pipefail
           mine="disk-cache-${GITHUB_SHA}"
-          gh cache list --key disk-cache- --limit 100 --json key,createdAt \
+          gh cache list --ref "${GITHUB_REF}" --key disk-cache- --limit 100 --json id,key,createdAt \
             | jq -r --arg mine "${mine}" '(map(select(.key==$mine))[0].createdAt) as $t
-                | if $t == null then empty else .[] | select(.key != $mine and .createdAt < $t) | .key end' \
-            | while read -r key; do
-                echo "deleting ${key}"
-                gh cache delete "${key}" || echo "::warning::could not delete ${key}"
+                | if $t == null then empty else .[] | select(.key != $mine and .createdAt < $t) | "\(.id) \(.key)" end' \
+            | while read -r id key; do
+                echo "deleting ${key} (${id})"
+                gh cache delete "${id}" || echo "::warning::could not delete ${key}"
               done
-          gh cache list --key repo-cache- --limit 100 --json key,lastAccessedAt \
-            | jq -r 'sort_by(.lastAccessedAt) | .[:-1][] | .key' \
-            | while read -r key; do
-                echo "deleting superseded repository cache ${key}"
-                gh cache delete "${key}" || echo "::warning::could not delete ${key}"
+          gh cache list --ref "${GITHUB_REF}" --key repo-cache- --limit 100 --json id,key,lastAccessedAt \
+            | jq -r 'sort_by(.lastAccessedAt) | .[:-1][] | "\(.id) \(.key)"' \
+            | while read -r id key; do
+                echo "deleting superseded repository cache ${key} (${id})"
+                gh cache delete "${id}" || echo "::warning::could not delete ${key}"
               done
