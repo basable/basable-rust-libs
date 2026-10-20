@@ -1,4 +1,4 @@
-# basable-ledger and basable-ledger-postgres (crates 0.4.0)
+# basable-ledger and basable-ledger-postgres (crates 0.5.0)
 
 A declarative double-entry ledger (the Directive §11). One nanoservice owns
 it (`accounting`, `owns.ledger` in the manifest); every nanoservice

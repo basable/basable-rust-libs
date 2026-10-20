@@ -1,10 +1,15 @@
-//! What names a batch: the accounts of this ledger. The framework knows of a
-//! batch only its key, its ledger and its type (debit, credit or memo); what
-//! a batch means, and whatever else you keep about it, is yours, in a table
-//! of your own keyed by the batch key or encoded in the key. A batch is
-//! closed when a booking brings its balance to zero (a VAT return filed for
-//! what the month's batch held, a payout for a clearing batch); nothing
-//! marks it, and a line landing afterwards is the next claim's remainder.
+//! What names a batch: the accounts of this ledger. At booking time the
+//! framework knows of a batch its key, its ledger and its type (debit,
+//! credit or memo), all three from the `BatchAccount` the desired state
+//! names; a STORED line carries the key only. Ledger and type, what a batch
+//! means, and whatever else you keep about it are yours: in a batches table
+//! of your own with at least `batch_key`, `ledger` and `batch_type`, found
+//! by the key, or encoded in the key as here. A key must mean one ledger
+//! and one type for good, since nothing in the journal says otherwise. A
+//! batch is closed when a booking brings its balance to zero (a VAT return
+//! filed for what the month's batch held, a payout for a clearing batch);
+//! nothing marks it, and a line landing afterwards is the next claim's
+//! remainder.
 
 use basable_ledger::{BatchAccount, BatchKey, BatchType, LedgerKey};
 
