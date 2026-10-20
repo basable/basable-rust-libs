@@ -42,8 +42,8 @@ impl std::error::Error for Rejection {}
 pub enum StoreError {
     /// The backend's own error.
     Backend(BoxError),
-    /// A stored row the engine cannot read: a journal's JSON, an unknown
-    /// batch type, one batch key under two ledgers or types.
+    /// A stored row the engine cannot read: a journal's JSON, a patch
+    /// before its object's first snapshot.
     Corrupt(String),
 }
 
@@ -83,8 +83,8 @@ pub enum LedgerError {
         attempts: u32,
     },
     /// A restatement or a commit could not be planned for a process: a
-    /// current object's desired state no longer balances, or names a booked
-    /// batch under another ledger or type. Bookings report this per
+    /// current object's desired state no longer balances, or names one
+    /// batch key under two ledgers or types. Bookings report this per
     /// object as an [`Outcome`](crate::Outcome); a restatement has no object
     /// to report on.
     Rejected {

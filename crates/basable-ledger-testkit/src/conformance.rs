@@ -35,7 +35,7 @@ fn debit(key: BatchKey) -> Batch {
 
 fn line(batch: Batch, object: ObjectId, unit: u32, amount: i128) -> Line {
     Line {
-        batch,
+        batch: batch.key,
         object_id: object,
         unit: UnitKey(unit),
         amount,

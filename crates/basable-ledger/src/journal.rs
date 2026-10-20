@@ -1,23 +1,24 @@
 //! The journal: one row per commit of one process, holding the lines of
 //! every object the call booked and the snapshot diff of each.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use uuid::Uuid;
 
-use crate::types::{
-    Batch, BatchKey, BatchType, LedgerKey, ObjectId, ProcessId, Timestamp, UnitKey, amount_string,
-};
+use crate::types::{BatchKey, ObjectId, ProcessId, Timestamp, UnitKey, amount_string};
 
-/// One line: the batch (key, ledger, type), the object, the unit, the
-/// amount. On the wire an array, `[4711, 1, 2, "019a…", 978, "11210"]`:
-/// batch key 4711 in ledger 1, a credit batch, for that object, 112.10 in
-/// unit 978. A line carries the batch's ledger and type itself, so the
-/// journal table alone checks and reads back.
+/// One line: the batch, by key, the object, the unit, the amount. A line
+/// carries the batch's key and nothing else about the batch: its ledger
+/// and its type are the user's, in their batches table (at least
+/// `batch_key`, `ledger` and `batch_type`), found by the key, and the
+/// engine takes them from the [`BatchAccount`](crate::BatchAccount) the
+/// desired state names at booking time. On the wire a journal's lines are
+/// grouped by object, see [`lines_to_json`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Line {
-    /// The batch.
-    pub batch: Batch,
+    /// The batch, by key.
+    pub batch: BatchKey,
     /// The object the line belongs to; what makes an object's booked
     /// positions the sum of its own lines.
     pub object_id: ObjectId,
@@ -27,47 +28,58 @@ pub struct Line {
     pub amount: i128,
 }
 
-#[derive(Serialize, Deserialize)]
-struct LineWire(
-    i64,
-    u32,
-    i16,
-    Uuid,
-    u32,
-    #[serde(with = "amount_string")] i128,
-);
+/// One line as the row stores it: `[batch_key, unit_key, "amount"]`.
+#[derive(Deserialize)]
+struct LineWire(i64, u32, #[serde(with = "amount_string")] i128);
 
-impl Serialize for Line {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        LineWire(
-            self.batch.key.0,
-            self.batch.ledger.0,
-            self.batch.batch_type.as_i16(),
-            self.object_id.0,
-            self.unit.0,
-            self.amount,
-        )
-        .serialize(s)
+/// The lines of one journal as the row stores them, grouped by object so
+/// the object id is written once:
+/// `{"<object_id>": [[batch_key, unit_key, "amount"], ...], ...}`, for
+/// example `{"019a…": [[4711, 978, "-11210"]]}`: batch key 4711, 112.10
+/// below zero in unit 978, for that object. Objects in id order, each
+/// object's lines in the order given (the engine's: by batch, then unit);
+/// no lines is `{}`. Amounts are decimal strings: protobuf has no 128-bit
+/// integer and JSON numbers above 2^53 lose precision in JavaScript.
+pub fn lines_to_json(lines: &[Line]) -> Value {
+    let mut by_object: BTreeMap<ObjectId, Vec<Value>> = BTreeMap::new();
+    for l in lines {
+        by_object
+            .entry(l.object_id)
+            .or_default()
+            .push(Value::Array(vec![
+                Value::from(l.batch.0),
+                Value::from(l.unit.0),
+                Value::String(l.amount.to_string()),
+            ]));
     }
+    Value::Object(
+        by_object
+            .into_iter()
+            .map(|(object, lines)| (object.0.to_string(), Value::Array(lines)))
+            .collect(),
+    )
 }
 
-impl<'de> Deserialize<'de> for Line {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let LineWire(key, ledger, batch_type, object, unit, amount) = LineWire::deserialize(d)?;
-        let batch_type = BatchType::from_i16(batch_type).ok_or_else(|| {
-            serde::de::Error::custom(format!("batch type {batch_type} is not 1, 2 or 3"))
-        })?;
-        Ok(Line {
-            batch: Batch {
-                key: BatchKey(key),
-                ledger: LedgerKey(ledger),
-                batch_type,
-            },
-            object_id: ObjectId(object),
-            unit: UnitKey(unit),
-            amount,
+/// The lines of one journal read back from the row's form: grouped per
+/// object in id order whatever order the row had its keys in, each
+/// object's lines in stored order. A top-level array, a line that is not
+/// `[batch_key, unit_key, "amount"]`, an amount that is not a decimal
+/// string or a key that is not a UUID does not read.
+pub fn lines_from_json(value: Value) -> Result<Vec<Line>, serde_json::Error> {
+    let by_object: BTreeMap<ObjectId, Vec<LineWire>> = serde_json::from_value(value)?;
+    Ok(by_object
+        .into_iter()
+        .flat_map(|(object_id, lines)| {
+            lines
+                .into_iter()
+                .map(move |LineWire(key, unit, amount)| Line {
+                    batch: BatchKey(key),
+                    object_id,
+                    unit: UnitKey(unit),
+                    amount,
+                })
         })
-    }
+        .collect())
 }
 
 /// What changed in one object: its full JSON the first time the process
@@ -105,33 +117,69 @@ pub struct Journal {
 
 #[cfg(test)]
 mod tests {
+    use uuid::Uuid;
+
     use super::*;
 
-    #[test]
-    fn a_line_is_an_array_on_the_wire() {
-        let id = Uuid::nil();
-        let line = Line {
-            batch: Batch {
-                key: BatchKey(4711),
-                ledger: LedgerKey(1),
-                batch_type: BatchType::Credit,
-            },
-            object_id: ObjectId(id),
-            unit: UnitKey(978),
-            amount: -11210,
-        };
-        let json = serde_json::to_string(&line).unwrap();
-        assert_eq!(json, format!("[4711,1,2,\"{id}\",978,\"-11210\"]"));
-        let back: Line = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, line);
+    fn line(batch: i64, object: ObjectId, unit: u32, amount: i128) -> Line {
+        Line {
+            batch: BatchKey(batch),
+            object_id: object,
+            unit: UnitKey(unit),
+            amount,
+        }
     }
 
     #[test]
-    fn an_unknown_batch_type_does_not_read() {
+    fn lines_are_grouped_by_object_on_the_wire() {
         let id = Uuid::nil();
-        let err =
-            serde_json::from_str::<Line>(&format!("[4711,1,9,\"{id}\",978,\"1\"]")).unwrap_err();
-        assert!(err.to_string().contains("batch type 9"));
+        let l = line(4711, ObjectId(id), 978, -11210);
+        let json = lines_to_json(&[l]);
+        assert_eq!(
+            json.to_string(),
+            format!("{{\"{id}\":[[4711,978,\"-11210\"]]}}")
+        );
+        assert_eq!(lines_from_json(json).unwrap(), vec![l]);
+    }
+
+    #[test]
+    fn lines_read_back_in_object_order_whatever_order_the_row_had() {
+        let a = ObjectId(Uuid::from_u128(1));
+        let b = ObjectId(Uuid::from_u128(2));
+        let lines = [line(1, b, 978, 5), line(2, a, 978, 7), line(1, b, 840, 9)];
+        let json = lines_to_json(&lines);
+        let keys: Vec<String> = json.as_object().unwrap().keys().cloned().collect();
+        assert_eq!(keys, vec![a.0.to_string(), b.0.to_string()]);
+        assert_eq!(
+            lines_from_json(json).unwrap(),
+            vec![lines[1], lines[0], lines[2]]
+        );
+    }
+
+    #[test]
+    fn no_lines_is_an_empty_object() {
+        assert_eq!(lines_to_json(&[]), serde_json::json!({}));
+        assert!(lines_from_json(serde_json::json!({})).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_malformed_row_does_not_read() {
+        let id = Uuid::nil();
+        for bad in [
+            // The flat array form.
+            r#"[[4711,978,"1"]]"#.to_owned(),
+            // Two elements.
+            format!(r#"{{"{id}":[[4711,978]]}}"#),
+            // Four elements.
+            format!(r#"{{"{id}":[[4711,1,978,"1"]]}}"#),
+            // A numeric amount.
+            format!(r#"{{"{id}":[[4711,978,1]]}}"#),
+            // A key that is not an object id.
+            r#"{"not-an-id":[[4711,978,"1"]]}"#.to_owned(),
+        ] {
+            let value: Value = serde_json::from_str(&bad).unwrap();
+            assert!(lines_from_json(value).is_err(), "{bad} read");
+        }
     }
 
     #[test]

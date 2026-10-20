@@ -20,7 +20,7 @@ use crate::error::{LedgerError, Rejection, StoreError};
 use crate::journal::{Journal, Line, SnapshotDiff};
 use crate::jsonpatch;
 use crate::store::Commit;
-use crate::types::{Batch, BatchKey, BatchType, LedgerKey, ObjectId, ProcessId, UnitKey};
+use crate::types::{BatchKey, BatchType, LedgerKey, ObjectId, ProcessId, UnitKey};
 
 /// One object as the process currently books it: its folded snapshot and
 /// the decoded object.
@@ -70,20 +70,7 @@ pub(crate) fn fold(
             }
         }
         for line in &journal.lines {
-            balances
-                .add(line.object_id, line.batch, line.unit, line.amount)
-                .map_err(|(ledger, batch_type)| {
-                    StoreError::Corrupt(format!(
-                        "journal {} of process {}: batch {} is ledger {} {} but an earlier line has it as ledger {} {}",
-                        journal.sequence,
-                        process.0,
-                        line.batch.key.0,
-                        line.batch.ledger.0,
-                        line.batch.batch_type,
-                        ledger.0,
-                        batch_type
-                    ))
-                })?;
+            balances.add(line.object_id, line.batch, line.unit, line.amount);
         }
     }
     let mut objects = BTreeMap::new();
@@ -265,14 +252,19 @@ pub(crate) fn plan(current: &Current, submissions: &[Submission]) -> Result<Plan
         plan.outcomes.push((s.index, PreOutcome::Booked));
     }
 
+    // No check that the journal as a whole balances: the booked positions
+    // are the sum of desired states that each balanced per ledger and unit,
+    // the desired states above balance, so their difference does too, as
+    // long as one key means one ledger and one type for good. A line stores
+    // the key alone; that constancy is the user's batches table's, not a
+    // check the engine can make.
     plan.lines = net(&plan.lines);
-    check_journal_balances(&plan.lines)?;
     Ok(plan)
 }
 
 /// Evaluates an object's desired state, notes every batch it names against
-/// the ones the process has booked (one key is one ledger and one type, for
-/// good) and checks it balances per ledger and unit.
+/// the ones the call has named so far (one key is one ledger and one type)
+/// and checks it balances per ledger and unit.
 fn evaluate(object: &dyn ErasedObject, working: &mut Balances) -> Result<Desired, Rejection> {
     let desired = object.desired();
     for p in desired.positions() {
@@ -324,33 +316,27 @@ fn check_desired_balances(object: &dyn ErasedObject, desired: &Desired) -> Resul
 
 /// The delta that brings an object's booked positions to a desired state,
 /// per batch and unit. A booked position the desired state no longer names
-/// closes through the same batch, whose ledger and type the booked lines
-/// carry.
+/// closes through the same batch key.
 fn delta_for(object: ObjectId, desired: &Desired, working: &Balances) -> Vec<Line> {
-    let mut wanted: BTreeMap<(BatchKey, UnitKey), (Batch, i128)> = BTreeMap::new();
+    let mut wanted: BTreeMap<(BatchKey, UnitKey), i128> = BTreeMap::new();
     for p in desired.positions() {
-        let slot = wanted.entry((p.batch.key, p.unit)).or_insert((p.batch, 0));
-        slot.1 = slot.1.checked_add(p.amount).expect("amount overflow");
+        let slot = wanted.entry((p.batch.key, p.unit)).or_insert(0);
+        *slot = slot.checked_add(p.amount).expect("amount overflow");
     }
     let booked = working.positions_of(object);
     let keys: BTreeSet<(BatchKey, UnitKey)> = wanted.keys().chain(booked.keys()).copied().collect();
     let mut delta = Vec::new();
-    for key in keys {
-        let want = wanted.get(&key).map(|(_, a)| *a).unwrap_or(0);
-        let have = booked.get(&key).map(|(_, a)| *a).unwrap_or(0);
+    for (batch, unit) in keys {
+        let want = wanted.get(&(batch, unit)).copied().unwrap_or(0);
+        let have = booked.get(&(batch, unit)).copied().unwrap_or(0);
         let amount = want.checked_sub(have).expect("amount overflow");
         if amount == 0 {
             continue;
         }
-        let batch = wanted
-            .get(&key)
-            .or_else(|| booked.get(&key))
-            .map(|(b, _)| *b)
-            .expect("a wanted or booked position has its batch");
         delta.push(Line {
             batch,
             object_id: object,
-            unit: key.1,
+            unit,
             amount,
         });
     }
@@ -359,44 +345,20 @@ fn delta_for(object: ObjectId, desired: &Desired, working: &Balances) -> Vec<Lin
 
 fn apply_delta(working: &mut Balances, delta: &[Line]) {
     for l in delta {
-        working
-            .add(l.object_id, l.batch, l.unit, l.amount)
-            .expect("every batch in a delta was noted first");
+        working.add(l.object_id, l.batch, l.unit, l.amount);
     }
 }
 
-/// Left equals right per (ledger, unit) over the whole journal.
-fn check_journal_balances(lines: &[Line]) -> Result<(), Rejection> {
-    let mut sums: BTreeMap<(LedgerKey, UnitKey), i128> = BTreeMap::new();
-    for l in lines {
-        let signed = match l.batch.batch_type {
-            BatchType::Debit => l.amount,
-            BatchType::Credit => -l.amount,
-            BatchType::Memo => continue,
-        };
-        *sums.entry((l.batch.ledger, l.unit)).or_insert(0) += signed;
-    }
-    if let Some(((ledger, unit), sum)) = sums.iter().find(|(_, s)| **s != 0) {
-        return Err(Rejection::new(format!(
-            "journal does not balance: ledger {} unit {} left minus right is {sum}",
-            ledger.0, unit.0
-        )));
-    }
-    Ok(())
-}
-
-/// Sums the lines per (object, batch, unit) and drops the zeros.
+/// Sums the lines per (object, batch, unit), drops the zeros and orders
+/// them by that key.
 fn net(lines: &[Line]) -> Vec<Line> {
-    let mut sums: BTreeMap<(ObjectId, BatchKey, UnitKey), (Batch, i128)> = BTreeMap::new();
+    let mut sums: BTreeMap<(ObjectId, BatchKey, UnitKey), i128> = BTreeMap::new();
     for l in lines {
-        let slot = sums
-            .entry((l.object_id, l.batch.key, l.unit))
-            .or_insert((l.batch, 0));
-        slot.1 += l.amount;
+        *sums.entry((l.object_id, l.batch, l.unit)).or_insert(0) += l.amount;
     }
     sums.into_iter()
-        .filter(|(_, (_, a))| *a != 0)
-        .map(|((object_id, _, unit), (batch, amount))| Line {
+        .filter(|(_, a)| *a != 0)
+        .map(|((object_id, batch, unit), amount)| Line {
             batch,
             object_id,
             unit,

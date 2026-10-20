@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use basable_db::sqlstate;
 use basable_ledger::{
-    BatchKey, Commit, CommitOutcome, Journal, Line, ProcessId, SnapshotDiff, Store, StoreError,
-    Timestamp, UnitKey,
+    BatchKey, Commit, CommitOutcome, Journal, ProcessId, SnapshotDiff, Store, StoreError,
+    Timestamp, UnitKey, lines_from_json, lines_to_json,
 };
 use serde_json::Value;
 use sqlx::{PgPool, Row};
@@ -52,8 +52,7 @@ impl Store for PgStore {
         for row in &rows {
             let lines: Value = row.try_get("lines").map_err(backend)?;
             let diffs: Value = row.try_get("snapshot_diffs").map_err(backend)?;
-            let lines: Vec<Line> =
-                serde_json::from_value(lines).map_err(|e| corrupt("journal.lines", e))?;
+            let lines = lines_from_json(lines).map_err(|e| corrupt("journal.lines", e))?;
             let snapshot_diffs: Vec<SnapshotDiff> =
                 serde_json::from_value(diffs).map_err(|e| corrupt("journal.snapshot_diffs", e))?;
             let sequence: i64 = row.try_get("sequence").map_err(backend)?;
@@ -74,7 +73,7 @@ impl Store for PgStore {
     /// primary-key violation on the journal fails the statement as a whole,
     /// so a lost race leaves nothing behind.
     async fn commit(&self, commit: Commit) -> Result<CommitOutcome, StoreError> {
-        let lines_json = serde_json::to_value(&commit.lines).map_err(|e| corrupt("lines", e))?;
+        let lines_json = lines_to_json(&commit.lines);
         let diffs_json =
             serde_json::to_value(&commit.snapshot_diffs).map_err(|e| corrupt("diffs", e))?;
         let versions_json =
@@ -129,9 +128,9 @@ impl Store for PgStore {
     async fn batch_sum(&self, batch: BatchKey) -> Result<Vec<(UnitKey, i128)>, StoreError> {
         let probe = serde_json::json!([batch.0]);
         let rows = sqlx::query(
-            "SELECT (l->>4)::bigint AS unit_key, SUM((l->>5)::numeric)::text AS total \
-             FROM journal j, jsonb_array_elements(j.lines) AS l \
-             WHERE jsonb_path_query_array(j.lines, '$[*][0]') @> $1 \
+            "SELECT (l->>1)::bigint AS unit_key, SUM((l->>2)::numeric)::text AS total \
+             FROM journal j, jsonb_each(j.lines) AS o, jsonb_array_elements(o.value) AS l \
+             WHERE jsonb_path_query_array(j.lines, '$.*[*][0]') @> $1 \
                AND (l->>0)::bigint = $2 \
              GROUP BY 1 ORDER BY 1",
         )

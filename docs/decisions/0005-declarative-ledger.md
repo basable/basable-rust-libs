@@ -21,11 +21,15 @@ first.
   in a batch table of their own or encodes or hashes from what names the
   batch), one **ledger** and one **type** (debit, credit or memo), all
   three returned by the `BatchAccount` that names it. That is everything
-  the framework knows about a batch, and it keeps no batch table: every
-  line carries the three, so a key booked under one ledger and type and
-  named under another is rejected. Entities, subledger types, account
-  classes, GL codes and periods are the user's vocabulary for what a batch
-  means, outside the framework.
+  the framework knows about a batch, and it keeps no batch table: a stored
+  line carries the key alone, and the ledger and type are read from the
+  user's batches by it, a table with at least `batch_key`, `ledger` and
+  `batch_type` (since 2026-10-20; until then every line carried the
+  three). A key means one ledger and one type for good, which that table's
+  primary key guarantees; within one call a key named under two is
+  rejected. Entities, subledger types, account classes, GL codes and
+  periods are the user's vocabulary for what a batch means, outside the
+  framework.
 - A batch is **closed** when a booking brings its balance to zero: a claim
   (a VAT return filed for what the month's batch held, a payout for a
   clearing batch) is an object of the user's whose desired state holds
@@ -36,8 +40,8 @@ first.
 - A **position** is the booked balance of one (object, batch, unit): the
   sum of the object's lines, computed from the process's journals on every
   read. No position, balance or booked-state table exists.
-- A **journal** is one row per commit of one process: lines
-  `[batch_key, ledger, batch_type, object_id, unit_key, amount]` and
+- A **journal** is one row per commit of one process: lines grouped by
+  object, `{object_id: [[batch_key, unit_key, amount], ...]}`, and
   snapshot diffs
   `{object_id, type, full | patch}` (RFC 7386 merge patches; the first
   sight of an object is its full JSON). Folding a process's diffs rebuilds
@@ -45,7 +49,10 @@ first.
   booked state and version.
 - **Double entry**: in every desired state and every journal the amounts in
   debit batches sum to the amounts in credit batches per (ledger, unit).
-  Memo batches stand outside. A negative amount is a balance below zero in
+  The engine checks each desired state; a journal is the difference of
+  balanced states under keys that each mean one ledger and one type, so it
+  balances by construction and is not checked (a line carries no type to
+  check it by). Memo batches stand outside. A negative amount is a balance below zero in
   its column, allowed (an open item clearing across objects is exactly
   that) and reported when it ages.
 
@@ -91,7 +98,8 @@ first.
 ## Not in the write path, by design
 
 - **No batch table, no batch status.** The key, the ledger and the type
-  are the user's answers, carried on every line; a batch opens with its
+  are the user's answers, the key carried on every line and the other two
+  read from the user's batches by it; a batch opens with its
   first line and is closed when a booking brings it to zero. The 2026-10-17
   build's `batch` and `batch_claim` tables, string ids with epochs, the
   `Batches` recorder, the open-closed-claimed-consumed lifecycle and the

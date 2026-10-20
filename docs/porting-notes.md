@@ -1025,3 +1025,31 @@ of it changed, in the crates and in the templates:
     `ledger_journal` and `ledger_process_object_version` (a shared
     database, no schema or role placeholder). A change to the crates lands
     in the Go port in the same piece of work, or is recorded here.
+
+96. **A line carries its batch's key alone, and a journal's lines are
+    grouped by object.** The user's direction (2026-10-20): the ledger and
+    the type of a batch are in the user's batches table (at least
+    `batch_key`, `ledger` and `batch_type`, and whatever else they keep),
+    found by the key, so storing them on every line was denormalisation,
+    and repeating the object id on every line of one object was waste. The
+    row's `lines` is now `{"<object_id>": [[batch_key, unit_key, amount],
+    ...], ...}` (`lines_to_json` and `lines_from_json`, objects in id
+    order, `{}` for none, the CHECK asks for an object), about a third
+    smaller than the flat six-element arrays for a typical booking, and
+    `Line::batch` is a `BatchKey`. What left the engine with the stored
+    ledger and type: the per-journal balance check, since the booked
+    positions are the sum of desired states that each balanced and the new
+    desired state balances, so their difference balances as long as a key
+    means one ledger and one type for good, which is the batches table's
+    primary key and not a check the engine can make; the cross-journal
+    "one key under two ledgers or types" rejection and the corrupt-store
+    variant of it, which the fold cannot rebuild from keys (`Balances::note`
+    stays as the in-call check); and `Balances::batch_account`. The
+    batch-sum index is `jsonb_path_query_array(lines, '$.*[*][0]')` and
+    `batch_sum` unnests with `jsonb_each` then `jsonb_array_elements`,
+    reading unit and amount at 1 and 2. The walk's "every journal balances"
+    property resolves ledger and type through the fixture's accounts, the
+    way a user's audit joins their batches. The migration is edited in
+    place, no tenant rows having been written. The Go port (note 95) made
+    the same change in the same piece of work, its migration
+    `20261019000001` likewise in place.

@@ -39,21 +39,21 @@ async fn an_issued_invoice_holds_receivable_revenue_and_vat() {
     assert_eq!(second.sequence, 2);
     assert_eq!(second.lines.len(), 4);
     assert!(second.snapshot_diffs[0].patch.is_some());
-    // Every line carries its batch's ledger and type: the receivable line is
-    // a debit in ledger 1, the VAT line a credit.
-    let receivable = second
-        .lines
-        .iter()
-        .find(|l| l.batch.key == issued.receivable_batch().batch_key())
-        .expect("receivable line");
-    assert_eq!(receivable.batch.ledger, PLATFORM_LEDGER);
-    assert_eq!(receivable.batch.batch_type, BatchType::Debit);
-    let vat = second
-        .lines
-        .iter()
-        .find(|l| l.batch.key == issued.vat_batch().batch_key())
-        .expect("vat line");
-    assert_eq!(vat.batch.batch_type, BatchType::Credit);
+    // A line carries its batch's key; the ledger and type are the account's,
+    // where a reader resolves them by that key. The receivable line is a
+    // debit in ledger 1, the VAT line a credit.
+    let receivable = issued.receivable_batch();
+    assert!(
+        second
+            .lines
+            .iter()
+            .any(|l| l.batch == receivable.batch_key())
+    );
+    assert_eq!(receivable.ledger(), PLATFORM_LEDGER);
+    assert_eq!(receivable.batch_type(), BatchType::Debit);
+    let vat = issued.vat_batch();
+    assert!(second.lines.iter().any(|l| l.batch == vat.batch_key()));
+    assert_eq!(vat.batch_type(), BatchType::Credit);
 }
 
 #[tokio::test]
@@ -306,13 +306,18 @@ async fn memo_batches_stay_outside_the_check() {
     let draft = new_invoice(10_000, 2_100, Currency::Eur);
     let issued = draft.next(InvoiceState::Issued, 0);
     s.booked(issued.clone()).await;
+    // The points line is in the journal, 100 on a batch whose type is memo,
+    // and the booking passed the balance check that would otherwise have
+    // seen 100 on one side with nothing against it.
+    let points = issued.points_batch();
+    assert_eq!(points.batch_type(), BatchType::Memo);
     let b = s.balances(issued.process_id).await;
-    assert_eq!(
-        b.of(issued.id).amount(&issued.points_batch(), UnitKey(1)),
-        100
-    );
-    assert_eq!(
-        b.batch_account(&issued.points_batch()).map(|a| a.1),
-        Some(BatchType::Memo)
+    assert_eq!(b.of(issued.id).amount(&points, UnitKey(1)), 100);
+    let journal = &s.journals(issued.process_id)[0];
+    assert!(
+        journal
+            .lines
+            .iter()
+            .any(|l| l.batch == points.batch_key() && l.amount == 100)
     );
 }

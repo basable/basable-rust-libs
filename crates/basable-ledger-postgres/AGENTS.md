@@ -16,23 +16,25 @@ is `docs/decisions/0005-declarative-ledger.md`.
 
 - `journal (process_id, sequence) PK`: `booked_at` (`clock_timestamp()` at
   insert, the journal's one time; an object's own instants are in its
-  diffs), `lines` jsonb
-  `[[batch_key, ledger, batch_type, object_id, unit_key, amount], …]`
-  (type 1 debit, 2 credit, 3 memo; amounts as decimal strings),
-  `snapshot_diffs` jsonb. `idx_journal_batch_keys` is a GIN index on the
-  expression `jsonb_path_query_array(lines, '$[*][0]')`, the batch keys of
-  a journal's lines and nothing else, so `... @> '[<key>]'` finds a batch's
-  journals and a small key never matches a ledger, a type or a unit that
-  shares its value.
+  diffs), `lines` jsonb grouped by object,
+  `{"<object_id>": [[batch_key, unit_key, amount], …], …}` (amounts as
+  decimal strings; `basable_ledger::lines_to_json` and `lines_from_json`
+  are the row's form), `snapshot_diffs` jsonb. `idx_journal_batch_keys` is
+  a GIN index on the expression `jsonb_path_query_array(lines,
+  '$.*[*][0]')`, the batch keys of a journal's lines and nothing else, so
+  `... @> '[<key>]'` finds a batch's journals and a small key never matches
+  a unit or an amount that shares its value.
 - `process_ledger_object_version (process_id, type_name) PK`, `version`:
   the rules version each type of a process was last evaluated under,
   upserted by the commit's own statement (latest wins) and never read by a
   booking; indexed on `(type_name, version)` as the startup restatement's
   worklist.
 
-No batch table: a batch key is the user's, and every line carries the
-batch's ledger and type with it. No balance table: a position is a sum of
-lines, and so is a claim. A batch at zero is a closed batch.
+No batch table in the framework: a batch key is the user's, a line carries
+it alone, and the batch's ledger and type are in the user's batches table
+(at least `batch_key`, `ledger` and `batch_type`), found by the key. No
+balance table: a position is a sum of lines, and so is a claim. A batch at
+zero is a closed batch.
 
 ## Rules
 
@@ -45,8 +47,9 @@ lines, and so is a claim. A batch at zero is a closed batch.
 - **Amounts travel as strings** inside the jsonb and are summed as
   `numeric` in SQL, so an `i128` never meets a `bigint`.
 - **The batch sum names the index's expression.** The `WHERE` of
-  `batch_sum` is `jsonb_path_query_array(j.lines, '$[*][0]') @> $1` with
-  `$1 = [key]`, then `(l->>0)::bigint = $2` on the unnested lines; change
+  `batch_sum` is `jsonb_path_query_array(j.lines, '$.*[*][0]') @> $1` with
+  `$1 = [key]`, then `(l->>0)::bigint = $2` on the lines unnested with
+  `jsonb_each` and `jsonb_array_elements` (unit at 1, amount at 2); change
   the index and the query together.
 - **sqlx's runtime API only**, never the query macros; `basable_db`'s
   SQLSTATE helpers classify a unique violation.
@@ -61,9 +64,10 @@ lines, and so is a claim. A batch at zero is a closed batch.
 A user may keep a `batch_balance` of their own in the write transaction
 with a trigger: `AFTER INSERT ON journal FOR EACH STATEMENT`, `REFERENCING
 NEW TABLE AS inserted`, one set-based `INSERT INTO batch_balance
-(batch_key, unit_key, amount) SELECT (l->>0)::bigint, (l->>4)::bigint,
-(l->>5)::numeric FROM inserted, jsonb_array_elements(inserted.lines) l ON
-CONFLICT (batch_key, unit_key) DO UPDATE SET amount = batch_balance.amount
+(batch_key, unit_key, amount) SELECT (l->>0)::bigint, (l->>1)::bigint,
+(l->>2)::numeric FROM inserted, jsonb_each(inserted.lines) o,
+jsonb_array_elements(o.value) l ON CONFLICT (batch_key, unit_key) DO UPDATE
+SET amount = batch_balance.amount
 + excluded.amount`, followed by `DELETE FROM batch_balance WHERE amount =
 0` over the keys it touched: a zero balance is a closed batch, and the
 table should hold only the open ones. Always consistent, no process to run.

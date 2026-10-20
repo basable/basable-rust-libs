@@ -258,7 +258,7 @@ impl<S: Store> Ledger<S> {
             .map_err(|rejection| LedgerError::Rejected { process, rejection })?;
         let mut deltas: BTreeMap<(BatchKey, UnitKey), i128> = BTreeMap::new();
         for l in &plan.lines {
-            *deltas.entry((l.batch.key, l.unit)).or_insert(0) += l.amount;
+            *deltas.entry((l.batch, l.unit)).or_insert(0) += l.amount;
         }
         Ok(RestatementPreview {
             objects: plan.restated_objects,

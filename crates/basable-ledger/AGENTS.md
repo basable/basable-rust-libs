@@ -25,11 +25,11 @@ that there is nothing to keep in sync.
 | `Batch`, `BatchKey`, `LedgerKey`, `BatchType`, `UnitKey` | A batch as a line names it (key, ledger, type; `Batch::of(&account)`), and the keys. `BatchKey: From<&impl BatchAccount>`, so a balance lookup takes a key or an account |
 | `Unit` | `unit_key() -> UnitKey(u32)`, what a line carries and what the engine balances by |
 | `Desired`, `balance(account, unit, amount)`, `desired![...]` | The positions of a state: signed amounts in the column of each batch's type. Duplicates of one key are summed |
-| `Balances`, `ObjectBalances` | What `validate_balances` and `Ledger::balances` see: per object, per batch key and unit, computed from the journals; `batch(key or &account, unit)` over the process, `batch_account(key)` the ledger and type the process booked the key under |
+| `Balances`, `ObjectBalances` | What `validate_balances` and `Ledger::balances` see: per object, per batch key and unit, computed from the journals; `batch(key or &account, unit)` over the process |
 | `Ledger<S>`, `Builder`, `Request`, `Outcome` | `Ledger::builder(store).register::<O, A>()...build()`; `book(Request)` books any mix of registered types across processes, one `Outcome` per object: `Booked`, `AlreadyBooked`, `Stale`, `Rejected(reason)`. `balances(process)`, `restate(process)`, `preview_restatement(process)` (the per-process dry run: the net deltas per batch key and unit); `restate_behind()`, called once when a deployment starts, restates every process the store's version index lists behind the running rules of a registered type and reports `RestatementReport { processes, objects, lines }` |
 | `Store` | The persistence interface: `read` (a process's journals, the one read a booking makes), `commit` (the journal row and, in the same statement, the version index row of every type in the process, latest wins), `record_versions` (the index alone, for a restatement with nothing to book), `batch_sum`, `processes_behind` (the startup restatement's worklist, from the index); `Commit`, `CommitOutcome::{Committed, SequenceTaken}` |
 | `InMemoryStore` | The reference store, for tests |
-| `Journal`, `Line`, `SnapshotDiff` | The stored shape: `(process_id, sequence, booked_at, lines, snapshot_diffs)`, lines `[batch_key, ledger, batch_type, object_id, unit_key, amount]` (the type 1 debit, 2 credit, 3 memo), diffs `{object_id, type, full | patch}` |
+| `Journal`, `Line`, `SnapshotDiff`, `lines_to_json`, `lines_from_json` | The stored shape: `(process_id, sequence, booked_at, lines, snapshot_diffs)`, lines grouped by object, `{"<object_id>": [[batch_key, unit_key, amount], ...], ...}` (amounts as decimal strings; a line carries its batch's key alone, the ledger and type are the user's batches table's), diffs `{object_id, type, full | patch}` |
 | `jsonpatch::{diff, apply}` | RFC 7386 merge patch, how diffs are made and folded |
 | `Rejection`, `StoreError`, `LedgerError` | Hand-written errors, no `thiserror` |
 
@@ -38,9 +38,8 @@ that there is nothing to keep in sync.
 1. **Read** every journal of the process (one range scan), fold each
    object's snapshot diffs into its current JSON and apply the reader: the
    booked state and version are what the reader returns on the fold. Sum
-   the lines per (object, batch key, unit) into positions; each line
-   carries its batch's ledger and type, and one key under two of them is a
-   corrupt store. The highest sequence is the process version. Nothing
+   the lines per (object, batch key, unit) into positions; a line carries
+   its batch's key alone. The highest sequence is the process version. Nothing
    else is read: the engine knows no recorded rules version.
 2. **Re-evaluate every current object** under the running rules and queue
    the difference between its desired state and its booked positions.
@@ -51,12 +50,15 @@ that there is nothing to keep in sync.
    is `AlreadyBooked` or `Stale`. Otherwise the next state must be in
    `validate_state_change(current)`; an unchanged state with changed
    amounts needs the current state to list itself. Evaluate the desired
-   state, reject a batch key the process has booked under another ledger
-   or type, check it balances (left equals right per ledger and unit, memo
-   outside), run `validate_balances` against the process as the call
-   leaves it so far, and queue the delta against the object's booked
+   state, reject a batch key the call has already named under another
+   ledger or type, check it balances (left equals right per ledger and
+   unit, memo outside), run `validate_balances` against the process as the
+   call leaves it so far, and queue the delta against the object's booked
    positions. A booked position the desired state no longer names closes
-   through the same batch, whose ledger and type the booked lines carry.
+   through the same batch key. The journal as a whole is not checked: it
+   is the difference of balanced desired states under keys that each mean
+   one ledger and one type for good, which is the user's batches table's
+   primary key, so it balances by construction.
 4. **One rejection rejects the process's part of the call**, naming the
    object and the reason; other processes in the call are unaffected.
 5. **Commit** one journal at `sequence + 1` with every delta line and one

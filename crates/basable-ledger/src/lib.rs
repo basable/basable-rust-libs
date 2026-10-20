@@ -8,10 +8,11 @@
 //! is in each state, and the balance checks a booking must pass. And the
 //! **batches**, [`BatchAccount`]: the only three things the framework knows
 //! about a batch are its key, its ledger and its type, debit, credit or
-//! memo. There is no batch table: the key is the user's, from a table of
-//! their own or encoded from what names the batch, every line carries key,
-//! ledger and type, and a batch is closed when a booking of the user's (a
-//! return filed, a payout made) brings its balance to zero.
+//! memo. There is no batch table in the framework: the key is the user's,
+//! from a batches table of their own (at least the key, the ledger and the
+//! type, found by the key) or encoded from what names the batch; a stored
+//! line carries the key alone, and a batch is closed when a booking of the
+//! user's (a return filed, a payout made) brings its balance to zero.
 //!
 //! The engine owns the rest. A call ([`Request`]) carries any mix of
 //! registered types across processes. Per process it reads every journal,
@@ -53,7 +54,7 @@ pub use accounting::{Accounting, BatchAccount, Unit};
 pub use balances::{Balances, ObjectBalances};
 pub use desired::{Desired, Position, balance};
 pub use error::{LedgerError, Rejection, StoreError};
-pub use journal::{Journal, Line, SnapshotDiff};
+pub use journal::{Journal, Line, SnapshotDiff, lines_from_json, lines_to_json};
 pub use ledger::{
     Builder, DEFAULT_MAX_ATTEMPTS, Ledger, Outcome, Request, Restated, RestatementPreview,
     RestatementReport,

@@ -90,7 +90,7 @@ impl Store for InMemoryStore {
             .values()
             .flat_map(|js| js.iter())
             .flat_map(|j| j.lines.iter())
-            .filter(|l| l.batch.key == batch)
+            .filter(|l| l.batch == batch)
         {
             *sums.entry(line.unit).or_insert(0) += line.amount;
         }

@@ -26,7 +26,7 @@ pub async fn expected_balances<S: Store>(
     for process in processes {
         let journals = store.read(*process).await.expect("read");
         for line in journals.iter().flat_map(|j| j.lines.iter()) {
-            *sums.entry((line.batch.key, line.unit)).or_insert(0) += line.amount;
+            *sums.entry((line.batch, line.unit)).or_insert(0) += line.amount;
         }
     }
     sums.retain(|_, a| *a != 0);

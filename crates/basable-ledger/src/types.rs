@@ -98,8 +98,8 @@ impl fmt::Display for BatchType {
 
 /// A batch as a line names it: the user's key and the two things the
 /// framework knows about the batch, the ledger it balances in and its
-/// column. Every line carries all three, so a journal is checked and read
-/// back from the journal table alone.
+/// column. A desired state names all three; a stored line carries the key
+/// alone, and the user's batches table has the other two by it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Batch {
     /// The user's key.

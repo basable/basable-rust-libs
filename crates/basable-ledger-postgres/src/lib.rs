@@ -29,7 +29,8 @@
 //! zero when it merges), or with a trigger. An `AFTER INSERT ON journal FOR
 //! EACH STATEMENT` trigger with `REFERENCING NEW TABLE AS inserted` and one
 //! set-based `INSERT INTO batch_balance ... SELECT ... FROM inserted,
-//! jsonb_array_elements(inserted.lines) ... ON CONFLICT DO UPDATE SET amount
+//! jsonb_each(inserted.lines) o, jsonb_array_elements(o.value) l ... ON
+//! CONFLICT DO UPDATE SET amount
 //! = batch_balance.amount + excluded.amount` is always consistent and needs
 //! nothing to run; it should end by deleting the rows it brought to zero,
 //! since a zero balance is a closed batch and the table should hold only

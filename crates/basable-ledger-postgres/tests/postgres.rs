@@ -5,7 +5,12 @@
 //! store agreeing with Postgres on a history.
 
 use basable_db::{Nanoservice, Stateful};
-use basable_ledger::{BatchAccount, InMemoryStore, Ledger, Outcome, Request, Store, UnitKey};
+use std::collections::BTreeMap;
+
+use basable_ledger::{
+    BatchAccount, BatchKey, Commit, CommitOutcome, InMemoryStore, Ledger, Line, Outcome, Request,
+    Store, UnitKey,
+};
 use basable_ledger_postgres::{PgStore, SCHEMA_PLACEHOLDER, migrations};
 use basable_ledger_testkit::conformance;
 use basable_ledger_testkit::fixture::{
@@ -281,5 +286,53 @@ async fn postgres_agrees_with_the_in_memory_store() {
     let a = pg.balances(p).await.expect("pg");
     let b = mem.balances(p).await.expect("mem");
     assert_eq!(a, b);
+    db.finish().await;
+}
+
+/// The lines index serves the batch sum: a batch key that also appears as a
+/// unit or an amount in other lines is not matched by them.
+#[tokio::test]
+async fn the_batch_sum_matches_keys_only() {
+    let Some(db) = db().await else {
+        eprintln!("TEST_DATABASE_URL unset: skipping");
+        return;
+    };
+    let store = store(&db).await;
+    let invoice = new_invoice(1, 0, Currency::Eur);
+    // Batch 978 in unit 978 with amount 978, and a line in batch 5 whose
+    // unit is 978: the sum of batch 978 sees the first line only, the sum
+    // of batch 5 the second.
+    let outcome = store
+        .commit(Commit {
+            process_id: invoice.process_id,
+            after_sequence: 0,
+            lines: vec![
+                Line {
+                    batch: BatchKey(978),
+                    object_id: invoice.id,
+                    unit: UnitKey(978),
+                    amount: 978,
+                },
+                Line {
+                    batch: BatchKey(5),
+                    object_id: invoice.id,
+                    unit: UnitKey(978),
+                    amount: 978,
+                },
+            ],
+            snapshot_diffs: Vec::new(),
+            versions: BTreeMap::new(),
+        })
+        .await
+        .expect("commit");
+    assert_eq!(outcome, CommitOutcome::Committed);
+    assert_eq!(
+        store.batch_sum(BatchKey(978)).await.expect("sum"),
+        vec![(UnitKey(978), 978)]
+    );
+    assert_eq!(
+        store.batch_sum(BatchKey(5)).await.expect("sum"),
+        vec![(UnitKey(978), 978)]
+    );
     db.finish().await;
 }

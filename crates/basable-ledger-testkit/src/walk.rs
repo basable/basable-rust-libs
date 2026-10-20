@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use basable_ledger::{Accounting, BatchKey, BatchType, Outcome, UnitKey};
+use basable_ledger::{Accounting, BatchKey, BatchType, LedgerKey, Outcome, UnitKey};
 
 use crate::fixture::{Currency, Invoice, InvoiceLedger, InvoiceState, new_invoice};
 use crate::scenario::Scenario;
@@ -127,13 +127,29 @@ pub async fn check_history(seed: u64, steps: usize) -> usize {
         history.len()
     );
 
+    // Every journal balances per ledger and unit. A line carries its
+    // batch's key alone, so the check resolves the ledger and type the way
+    // a user's audit does, through their batches: here, the accounts every
+    // desired state of the history named.
+    let mut accounts: BTreeMap<BatchKey, (LedgerKey, BatchType)> = BTreeMap::new();
+    for snapshot in &history {
+        for p in InvoiceLedger::desired_state(snapshot.state, snapshot).positions() {
+            accounts.insert(p.batch.key, (p.batch.ledger, p.batch.batch_type));
+        }
+    }
     let journals = scenario.journals(process);
     for journal in &journals {
-        let mut sums: BTreeMap<UnitKey, i128> = BTreeMap::new();
+        let mut sums: BTreeMap<(LedgerKey, UnitKey), i128> = BTreeMap::new();
         for line in &journal.lines {
-            match line.batch.batch_type {
-                BatchType::Debit => *sums.entry(line.unit).or_insert(0) += line.amount,
-                BatchType::Credit => *sums.entry(line.unit).or_insert(0) -= line.amount,
+            let Some((ledger, batch_type)) = accounts.get(&line.batch) else {
+                panic!(
+                    "seed {seed}: journal {} has a line in batch {}, which no desired state of the history named",
+                    journal.sequence, line.batch.0
+                );
+            };
+            match batch_type {
+                BatchType::Debit => *sums.entry((*ledger, line.unit)).or_insert(0) += line.amount,
+                BatchType::Credit => *sums.entry((*ledger, line.unit)).or_insert(0) -= line.amount,
                 BatchType::Memo => {}
             }
         }
