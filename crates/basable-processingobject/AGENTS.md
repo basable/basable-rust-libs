@@ -12,9 +12,10 @@ the pieces it leans on in `basable-core`, `basable-db` and the testkit). The Dir
 Two meta-rules govern any change: an invariant the framework cannot
 mechanically enforce is a comment, and comments rot — enforcement lives in
 the schema, the transaction shape or a check the code performs; and a
-public API without a call site does not land (no framework list-all, no
-process-wide store, no in-process type registry: a nanoservice binds one
-`TypedStore` per type over its own pool and lists through its own tables).
+public API without a call site does not land (no unbounded framework list —
+`list` is a bounded page for screens — no process-wide store, no in-process
+type registry: a nanoservice binds one `TypedStore` per type over its own
+pool and lists by its own columns through its own tables).
 
 ## The eight invariants
 
@@ -63,6 +64,7 @@ migration is a boot failure. The paths:
 | `mark_deleted(&ref)` | `store_mutate.rs` | invariant 6: stamps `deleted_at` and wakes (the idempotent repeat changes nothing and wakes nobody); further intent writes answer `Error::Deleting` |
 | `nudge(&ref)` | `store_mutate.rs` | advances `wake_seq`, makes the object due now, wakes |
 | `read(&ref)` / `read_many(&ids)` | `store_read.rs` | one `REPEATABLE READ READ ONLY` snapshot per call, envelope and typed rows together |
+| `list(&ListQuery)` | `list.rs` | the one framework list, Go's `InspectPage` widened (note 97): one snapshot per page of the type's envelopes newest first by `(created_at, id)`, the typed rows attached through `read_rows`; narrowed by `namespace`, `labels` (the claim scan's containment literal, so it rides the GIN index), `phase` and `Deleting::{Include, Exclude, Only}`; a keyset `Cursor` whose `Display` is the page token, `Page::next` exact; `limit` within `1..=MAX_LIST_LIMIT` (200). For people and their screens, never a reconcile input; a list by typed columns stays a `repository.rs` query plus `read_many`. The unfiltered page and its cursor bound ride `idx_processing_object_created` (`created_at DESC, id DESC` on the envelope parent, a child per partition: the framework's first follow-up migration) |
 | `claim_batch(cfg)` | `claim.rs` | invariant 4, below |
 
 The wake is in process (`wake.rs`, note 81). A store's shared inner holds
@@ -118,6 +120,21 @@ by type (note 14). `write_status` writes every column it owns,
 unconditionally: every status write the framework issues is fenced
 identically, so the adapter never knows who is writing (the payoff of
 invariant 3).
+
+A type whose objects differ in kind keeps the columns only some of them
+have in an optional same-id extension row under the spec or status table,
+reached through an `Option` part of `S` or `T` — the monorepo's cluster
+operator keeps a server's bare-metal observations in `bare_metal_status`
+this way (note 98). The adapter inserts or upserts the row iff the part is
+`Some`, reads it through a `LEFT JOIN` in `read_rows`, and keys it to the
+typed row with `ON DELETE CASCADE` (one FK hop), so a hard delete takes it
+with the rest. The part's presence is a structural fact of the object,
+never writer provenance, which is the one reading of "write every column"
+an optional row admits: a status without the part leaves an existing row
+alone rather than deleting it. The framework knows nothing of the row — it
+names only the partition; the conformance type's `OrderStatus`
+(`conformance_order_status`, `tests/extension.rs` in the testkit) is the
+pinned shape.
 
 The reconciler returns `Result<Outcome<T>, BoxError>` (note 22); an `Err`
 is a `Retry` with no status write. `Outcome<T>` (`outcome.rs`) is an enum
@@ -233,7 +250,8 @@ platform's and has no port here.
 | `src/error.rs` | `Error` |
 | `src/store.rs` | `TypedStore`, `bind`, `create`, `CreateOptions` |
 | `src/store_mutate.rs` | `update_spec`, `mark_deleted`, `nudge` (invariants 2 and 6) |
-| `src/store_read.rs` | `read`, `read_many` |
+| `src/store_read.rs` | `read`, `read_many`, `attach_typed` (the typed-row load `read_many` and `list` share) |
+| `src/list.rs` | `ListQuery`, `Deleting`, `Cursor` + `InvalidCursor`, `Page`, `TypedStore::list`, `DEFAULT_LIST_LIMIT`, `MAX_LIST_LIMIT` |
 | `src/claim.rs` | `claim_batch`, `Claim`, `LeaseHandle`, `heartbeat`, the local proof, `LEASE_SLACK` (invariant 4) |
 | `src/writestatus.rs` | `Claim::write_status` (invariant 3, mid-attempt) |
 | `src/complete.rs` | `Claim::complete`, `Completion`, the completion's wake (invariants 3, 5, 6) |

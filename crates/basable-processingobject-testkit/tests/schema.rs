@@ -107,6 +107,7 @@ async fn a_status_constraint_violation_classifies_as_retry() {
     let good = Status {
         provisioned_widgets: 5,
         external_id: "good".into(),
+        order: None,
     };
     let (_, done) = h
         .drive_once(|_| {
@@ -114,6 +115,7 @@ async fn a_status_constraint_violation_classifies_as_retry() {
                 Ok(Outcome::converged(Some(Status {
                     provisioned_widgets: 5,
                     external_id: "good".into(),
+                    order: None,
                 })))
             })
         })
@@ -128,6 +130,7 @@ async fn a_status_constraint_violation_classifies_as_retry() {
                 Ok(Outcome::converged(Some(Status {
                     provisioned_widgets: -1,
                     external_id: "bad".into(),
+                    order: None,
                 })))
             })
         })
@@ -148,5 +151,71 @@ async fn a_status_constraint_violation_classifies_as_retry() {
         obj.status, good,
         "the rejected write rolled back; the prior status survives"
     );
+    h.finish().await;
+}
+
+/// The envelope page's order rides the partitioned `created_at` index —
+/// `idx_processing_object_created`'s child on the partition, the framework's
+/// first follow-up migration — from the top and from a cursor alike, never
+/// a sort of the partition.
+#[tokio::test]
+async fn the_envelope_page_rides_the_created_at_index() {
+    let Some(h) = Harness::from_env().await else {
+        return;
+    };
+    let (ids, ext) = seed(3000);
+    let su = h.db.superuser();
+    sqlx::query(
+        "INSERT INTO nano_conformance.processing_object_conformance
+             (processing_object_type_key, id, external_id, name, namespace, generation, observed_generation, created_at)
+         SELECT 32000, u, e, 'conformance-' || u::text, $1, 1, 1,
+                now() - (random() * 86400 * 30) * interval '1 second'
+         FROM unnest($2::uuid[], $3::text[]) AS seed(u, e)",
+    )
+    .bind(h.namespace)
+    .bind(&ids)
+    .bind(&ext)
+    .execute(su)
+    .await
+    .unwrap();
+    sqlx::query("ANALYZE nano_conformance.processing_object_conformance")
+        .execute(su)
+        .await
+        .unwrap();
+
+    let (child,): (String,) = sqlx::query_as(
+        "SELECT c.relname FROM pg_inherits i
+         JOIN pg_class c ON c.oid = i.inhrelid
+         JOIN pg_class p ON p.oid = i.inhparent
+         WHERE p.relname = 'idx_processing_object_created' AND c.relname LIKE 'processing_object_conformance%'",
+    )
+    .fetch_one(su)
+    .await
+    .unwrap();
+
+    for bound in [
+        "",
+        "AND (created_at, id) < ('2026-06-01 00:00:00+00'::timestamptz, '00000000-0000-0000-0000-000000000000'::uuid)",
+    ] {
+        let plan: Vec<(String,)> = sqlx::query_as(&format!(
+            "EXPLAIN SELECT id, created_at
+             FROM nano_conformance.processing_object_conformance
+             WHERE TRUE {bound}
+             ORDER BY created_at DESC, id DESC
+             LIMIT 51"
+        ))
+        .fetch_all(su)
+        .await
+        .unwrap();
+        let text: String = plan.into_iter().map(|(l,)| l + "\n").collect();
+        assert!(
+            !text.contains("Seq Scan") && !text.contains("Sort"),
+            "the page must not sort the partition:\n{text}"
+        );
+        assert!(
+            text.contains(&child),
+            "the page must ride the created_at index {child}:\n{text}"
+        );
+    }
     h.finish().await;
 }

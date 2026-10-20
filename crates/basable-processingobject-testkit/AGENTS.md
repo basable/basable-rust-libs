@@ -6,8 +6,8 @@ and, under `tests/`, of the framework conformance suites in
 phase. It is what `basable-processingobject` is tested THROUGH: a reserved
 test-only type, a provider simulator, a harness that builds scenarios, and
 the running side of a worker. The Go testkit's section of the framework's
-`CLAUDE.md` is the specification; `docs/porting-notes.md` 11, 12, 19, 20
-and 33 say what the port changed. The Directive (`docs/DIRECTIVE.md` in every tenant repository, `golang/controller/lib/scaffold/directive.md` in the monorepo) is the contract this crate serves.
+`CLAUDE.md` is the specification; `docs/porting-notes.md` 11, 12, 19, 20,
+33 and 98 say what the port changed. The Directive (`docs/DIRECTIVE.md` in every tenant repository, `golang/controller/lib/scaffold/directive.md` in the monorepo) is the contract this crate serves.
 Every suite below pins one of its eight invariants against a real database.
 
 Nothing here is a `#[cfg(test)]` module: a tenant's own integration tests
@@ -22,7 +22,12 @@ role and schema, its two migrations under `migrations/` (the init and the
 type), the type `conformance` with key `32000` and prefix `ek`, which no
 production type uses, `Spec` / `Status` and the `ConformanceAdapter` (a dumb
 column mapper; status carries no activity marker — an unfenced writer
-would get its own table). `apply_schema(&migrator)` applies the migrations
+would get its own table). `Status` has one optional part, `OrderStatus`,
+kept in the same-id extension row `conformance_order_status` under the
+status row (note 98): written iff the status carries it, read through a
+`LEFT JOIN`, left alone by a status without it, cascaded with the status —
+the shape for the columns only some of a type's objects have, which the
+monorepo's conformance type never needed. `apply_schema(&migrator)` applies the migrations
 on top of the tenant fixture's framework migration, as the migrator;
 `conformance_type()` is the declaration; `identity_name(id)` mints the
 deterministic envelope name a create replay must present again. A `CHECK
@@ -87,7 +92,9 @@ builds one from a closure), and `Gate` holds a pass open (`wait_entered`,
 | `tests/worker.rs` | 10 | `processingobject_worker_test.go` | multi-replica claim exclusivity, crash adoption, panic containment, parallelism-bounded claiming, the in-process wake versus the poll (a nudge through the worker's store is prompt under a 60 s poll, one through `second_store` is not; `converged_after(200 ms)` runs on the completion's timer; `requeue_now` runs its next pass while the first attempt's `after_complete` still runs), the poll alone converging a row no store wrote, `after_complete` containment — the real worker loop |
 | `tests/carveouts.rs` | 6 | `processingobject_carveouts_test.go` | label routing across logical workers, the unroutable unlabelled row, the adoption flag, the status-sighted `update_spec` against a committed status and against an attempt in flight |
 | `tests/commitfault.rs` | 3 | `processingobject_commitfault_test.go` | a completion whose COMMIT ack is lost: applied (adopted, `Unknown`) and rolled back (re-run cleanly); the provider-side twin, an effect whose ack is lost lands once |
-| `tests/schema.rs` | 2 | `processingobject_schema_test.go` | the claim scan rides the partial `due_at` index; a status constraint violation becomes a loud `Retry` |
+| `tests/schema.rs` | 3 | `processingobject_schema_test.go` | the claim scan rides the partial `due_at` index; the envelope page rides the `created_at` index from the top and from a cursor (no Go counterpart); a status constraint violation becomes a loud `Retry` |
+| `tests/list.rs` | 5 | none (`InspectPage` has no Go test) | the envelope page (note 97): newest first with an exact `next`, the cursor as a value under inserts and hard deletes between pages, ties on `created_at` broken by `id`, the namespace, label, phase and deletion-intent filters conjoining, the limit bound |
+| `tests/extension.rs` | 3 | none (the pattern is the cluster operator's adapter, not the Go testkit's) | the optional same-id extension row (note 98): absent or present from birth and attached by `read`, `read_many` and `list`; written whole by a completion and by `write_status`, left alone by a status without the part; cascaded by a hard delete |
 
 Commit faults come from `basable_testkit::CommitFaultProxy`, a loopback
 TCP proxy that drops exactly one COMMIT acknowledgement, applied or rolled

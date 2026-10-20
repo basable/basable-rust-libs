@@ -353,6 +353,7 @@ impl Reconciler<Spec, Status, ConformanceAdapter> for Scheduled {
         let status = Some(Status {
             provisioned_widgets: claim.object.spec.widgets,
             external_id: String::new(),
+            order: None,
         });
         if pass == 1 {
             return Ok((self.first)(status));

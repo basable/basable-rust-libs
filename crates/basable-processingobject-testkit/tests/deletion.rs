@@ -109,6 +109,7 @@ async fn settled_retains_a_parked_tombstone() {
                 Ok(Outcome::settled(Some(Status {
                     provisioned_widgets: 7,
                     external_id: String::new(),
+                    order: None,
                 })))
             })
         })
@@ -156,6 +157,7 @@ async fn a_deletion_during_reconcile_drives_to_finalization() {
         .complete(Ok(Outcome::converged(Some(Status {
             provisioned_widgets: 1,
             external_id: "obs".into(),
+            order: None,
         }))))
         .await
         .unwrap();

@@ -1053,3 +1053,73 @@ of it changed, in the crates and in the templates:
     place, no tenant rows having been written. The Go port (note 95) made
     the same change in the same piece of work, its migration
     `20261019000001` likewise in place.
+
+## After 0.4.0
+
+97. **The typed store lists (2026-10-20).** Go's one framework list is
+    `TypedStore.InspectPage` (`inspect.go`): a keyset page over one type's
+    envelopes, newest first by `(created_at, id)`, the cursor the last
+    item's pair compared as a row value, tombstones included, envelope
+    summaries for the platform's admin dashboard, beside `Inspect`, which
+    renders one object as JSON through the `inspect` struct tags. The
+    port's `TypedStore::list(&ListQuery)` (`list.rs`) is that page — the
+    same order, the same `(created_at, id) < ($at, $id)`, `MAX_LIST_LIMIT`
+    200 as `inspect.MaxLimit`, tombstones included by default — widened
+    for a tenant's own screens, which Go never needed because the
+    platform's screens are the dashboard's: the page carries whole
+    `Object`s, envelope and typed rows from one `REPEATABLE READ READ ONLY`
+    snapshot through the adapter's batched `read_rows` (`attach_typed`,
+    the load `read_many` shares); `ListQuery` narrows by `namespace` (the
+    natural-key index), `labels` (the claim scan's containment literal,
+    `label_selector_sql`, byte-identical to a logical worker's selector
+    and riding the same GIN index), `phase` and `Deleting::{Include,
+    Exclude, Only}`; `Page::next` is exact, the statement asking for one
+    row past the page, where the Go gateway emits a token whenever a page
+    is full and lets the client find the end; and `Cursor` has a
+    `Display`/`FromStr` token (`<microseconds>.<id>`, exact at the
+    column's precision) so a Connect handler passes it through, where the
+    Go gateway encodes base64url JSON. `Inspect` and the tags are not
+    ported: they are reflection over the Go struct for a dashboard that is
+    the platform's. The cursor is a value, never server state: an insert
+    between pages sorts above the first page and shows on the next pass
+    from the top, a hard delete is simply absent, a filter on a mutable
+    column (`phase`, `deleted_at`) can lose an object between pages but
+    never repeat one. A reconciler still never lists; the domain list by
+    typed columns stays a `repository.rs` query plus `read_many`
+    (`store_read.rs`'s doc). The page rides `idx_processing_object_created`
+    (`created_at DESC, id DESC` on the envelope parent, a child per
+    partition), where Go's `InspectPage` sorts the partition; `tests/
+    schema.rs` pins the plan from the top and from a cursor. The index is
+    the framework's first follow-up migration,
+    `20260101000002_basable_processing_object_created_index.sql`: an
+    applied migration is never edited, so it is a file of its own, rendered
+    by the scaffolder beside the framework migration
+    (`FrameworkCreatedIndexMigrationVersion` in the monorepo's
+    `render.go`), vendored in the testkit fixture and the example, and
+    added by hand to a project scaffolded before it (the migration image
+    and the binary's version list are globs over `db/app/migrations`).
+98. **The conformance type carries an optional same-id extension row;
+    Go's does not (2026-10-20).** The pattern is the monorepo's cluster
+    operator's, not the framework's: `bare_metal_status`
+    (`controller/clusteroperator/adapter_server.go`) is a same-id row under
+    `server_status` for what only a bare-metal server observes, reached
+    through the nil-able `Status.BareMetal`, inserted or upserted iff the
+    sub-struct is non-nil, read through a `LEFT JOIN`, cascaded with the
+    status row; a nil sub-struct on write leaves an existing row alone,
+    because its presence is a structural fact of the row and not writer
+    provenance — the intentional reading of the write-every-column rule.
+    The Go framework's conformance type never needed it. The Rust testkit
+    is also the pattern library a tenant's types are written from, so the
+    conformance type pins the shape: `Status.order: Option<OrderStatus>`,
+    the table `conformance_order_status` keyed to `conformance_status`
+    with `ON DELETE CASCADE`, `ConformanceAdapter::write_order` (an
+    `INSERT … ON CONFLICT DO UPDATE` when `Some`, nothing when `None`), the
+    `LEFT JOIN` in `read_rows`; `tests/extension.rs` pins birth with and
+    without the part, the write from a completion and from
+    `write_status`, the `None` that leaves the row, the cascade on a hard
+    delete, and the attachment on `read`, `read_many` and `list`. The
+    framework is unchanged: an `Adapter` was always free to keep more
+    tables than two, it names only the partition. The domain half of Go's
+    row — the `infra_type` copy with its `CHECK`, the ciphered bag — is not
+    ported; a type that needs a kind guard copies the immutable spec column
+    the same way.

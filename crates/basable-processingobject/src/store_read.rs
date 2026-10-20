@@ -4,10 +4,12 @@
 //! from a single snapshot: a [`Meta`] can never describe an older completion
 //! than the status it is returned with.
 //!
-//! There is deliberately no framework list-all: a nanoservice lists through
-//! domain queries on its own typed tables and batch-loads the results with
-//! `read_many`, so filtering SQL stays where the columns live and the
-//! framework read is O(1) queries per batch.
+//! A domain list — by the columns of the typed tables — stays a query on
+//! those tables in the nanoservice's own `repository.rs`, batch-loaded with
+//! `read_many`, so filtering SQL lives where the columns do and the
+//! framework read is O(1) queries per batch. The one framework list is the
+//! envelope page of `list.rs`: newest first, by namespace, labels, phase and
+//! deletion intent, which are the envelope's columns.
 
 use std::collections::HashMap;
 
@@ -115,13 +117,34 @@ where
         if found.is_empty() {
             return Ok(Vec::new());
         }
+        // Input order, the gone skipped: absence is the caller's normal case.
+        let envelopes: Vec<(Uuid, Meta)> = ids
+            .iter()
+            .filter_map(|id| metas.remove(id).map(|meta| (*id, meta)))
+            .collect();
+        self.attach_typed(&mut tx, &op, envelopes).await
+    }
+
+    /// Loads the typed rows of `envelopes` in one adapter call inside `tx`
+    /// and pairs them up, keeping the envelopes' order. An envelope whose
+    /// typed row is missing is [`Error::Invariant`]. Shared by `read_many`
+    /// and `list`, which differ only in how they pick and order envelopes.
+    pub(crate) async fn attach_typed(
+        &self,
+        tx: &mut PgConnection,
+        op: &str,
+        envelopes: Vec<(Uuid, Meta)>,
+    ) -> Result<Vec<Object<S, T>>, Error> {
+        if envelopes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<Uuid> = envelopes.iter().map(|(id, _)| *id).collect();
         let typed = {
-            let conn: &mut PgConnection = &mut tx;
-            let mut rtx = Tx::new(conn);
+            let mut rtx = Tx::new(tx);
             self.inner
                 .decl
                 .adapter
-                .read_rows(&mut rtx, &found)
+                .read_rows(&mut rtx, &ids)
                 .await
                 .map_err(|e| Error::sql(format!("{op}: typed rows"), e))?
         };
@@ -129,20 +152,17 @@ where
         for row in typed {
             by_id.insert(row.id, (row.spec, row.status));
         }
-        let mut objs = Vec::with_capacity(found.len());
-        for id in ids {
-            let Some(meta) = metas.remove(id) else {
-                continue; // gone; absence is the caller's normal case
-            };
-            let Some((spec, status)) = by_id.remove(id) else {
+        let mut objs = Vec::with_capacity(envelopes.len());
+        for (id, meta) in envelopes {
+            let Some((spec, status)) = by_id.remove(&id) else {
                 return Err(Error::Invariant(format!(
                     "envelope {} has no typed row",
-                    self.r#ref(*id)
+                    self.r#ref(id)
                 )));
             };
             objs.push(Object {
                 meta,
-                id: *id,
+                id,
                 spec,
                 status,
             });

@@ -61,7 +61,8 @@ ownership and its commit-ambiguity handling against a real database.
   ack; a rolled-back fault loses the row and the ack alike.
 - `tests/fixtures/migrations`: the scaffolder's templates rendered for two
   nanoservices, `orders` (one processing-object type, one config type) and
-  `inventory` (one plain table), on top of the framework migration;
+  `inventory` (one plain table), on top of the framework migration and
+  its first follow-up, the envelope page's `created_at` index;
   `tests/common/mod.rs` has their `Nanoservice` markers and `fixture_db()`.
 
 ## Porting notes

@@ -200,6 +200,7 @@ async fn status_sighted_cas() {
             Ok(Outcome::converged(Some(Status {
                 provisioned_widgets: 3,
                 external_id: String::new(),
+                order: None,
             })))
         })
     })
@@ -297,6 +298,7 @@ async fn status_sighted_cas_vs_in_flight_attempt() {
         .complete(Ok(Outcome::converged(Some(Status {
             provisioned_widgets: 2,
             external_id: String::new(),
+            order: None,
         }))))
         .await
         .unwrap();

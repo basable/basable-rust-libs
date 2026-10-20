@@ -103,6 +103,7 @@ impl Reconciler<Spec, Status, ConformanceAdapter> for ExampleReconciler {
         Ok(Outcome::converged(Some(Status {
             provisioned_widgets: claim.object.spec.widgets,
             external_id: key,
+            order: None,
         })))
     }
 }

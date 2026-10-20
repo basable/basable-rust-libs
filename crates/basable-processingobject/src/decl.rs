@@ -27,6 +27,15 @@ use crate::tx::Tx;
 /// [`Tx`], and never touch envelope columns (invariant 1). The Go original
 /// checked five function fields for nil at bind; here a missing one does
 /// not compile.
+///
+/// The framework names only the partition; the typed tables are the
+/// adapter's. A type whose objects differ in kind keeps the columns only
+/// some of them have in an optional same-id extension row under a typed
+/// table, reached through an `Option` part of `S` or `T`: upserted iff the
+/// part is `Some`, read through a `LEFT JOIN`, cascaded with its typed row,
+/// and left alone by a value without the part, since whether an object has
+/// the part is a fact about the object, not the writer (the crate guide's
+/// adapter section; the conformance type's `OrderStatus` is the shape).
 pub trait Adapter<S, T>: Send + Sync + 'static {
     /// Inserts the typed spec row at create, in the envelope's transaction.
     fn insert_spec(

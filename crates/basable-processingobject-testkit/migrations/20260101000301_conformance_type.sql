@@ -11,6 +11,15 @@
 -- framework's status savepoint converts the class-23 violation into a loud
 -- Retry — the seam the status-constraint conformance test drives.
 --
+-- conformance_order_status is the optional same-id extension row, the
+-- shape for the columns only some of a type's objects have (the monorepo's
+-- cluster operator keeps a server's bare-metal observations this way): what
+-- an object provisioned through a keyed order observes. Keyed by the status
+-- row, one FK hop, so it cascades with the status when the envelope goes;
+-- present iff the status carries the part. Its presence is a structural
+-- fact of the object, never writer provenance: the adapter upserts it when
+-- the status carries the part and leaves it alone otherwise.
+--
 -- conformance_archive is deliberately NOT foreign-keyed to the envelope: it
 -- is the durable teardown tombstone finalize_delete writes, and it must
 -- outlive the deleted object.
@@ -50,6 +59,13 @@ CREATE TABLE conformance_status (
         ON DELETE CASCADE
 );
 
+CREATE TABLE conformance_order_status (
+    id UUID PRIMARY KEY REFERENCES conformance_status (id) ON DELETE CASCADE,
+    order_key TEXT NOT NULL,
+    order_id TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+
 CREATE TABLE conformance_archive (
     id UUID PRIMARY KEY,
     widgets INTEGER NOT NULL,
@@ -64,6 +80,7 @@ RESET ROLE;
 SET LOCAL ROLE nano_conformance;
 SET LOCAL search_path = nano_conformance;
 DROP TABLE IF EXISTS conformance_archive;
+DROP TABLE IF EXISTS conformance_order_status;
 DROP TABLE IF EXISTS conformance_status;
 DROP TABLE IF EXISTS conformance_spec;
 RESET ROLE;

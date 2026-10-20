@@ -18,6 +18,7 @@ fn status(w: i32, e: &str) -> Status {
     Status {
         provisioned_widgets: w,
         external_id: e.into(),
+        order: None,
     }
 }
 

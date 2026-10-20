@@ -3,6 +3,15 @@
 //! is a dumb column mapper (the payoff of invariant 3): every status write
 //! reaches the database under exact claim authority, so there are no
 //! provenance flags, no monotonic merges, no conditional column guards.
+//!
+//! The status has one optional part, [`OrderStatus`], kept in a same-id
+//! extension row (`conformance_order_status`): the shape for the columns
+//! only some of a type's objects have (the monorepo's cluster operator keeps
+//! a server's bare-metal observations this way). The row is written iff the
+//! status carries the part and read through a `LEFT JOIN`; its presence is
+//! a structural fact of the object, not writer provenance, so a status
+//! without the part leaves an existing row alone — the one reading of
+//! "write every column" an optional row admits (porting note 98).
 
 use std::path::Path;
 
@@ -45,12 +54,56 @@ pub struct Status {
     pub provisioned_widgets: i32,
     /// The provider's id for the resource.
     pub external_id: String,
+    /// What only an object provisioned through a keyed order observes,
+    /// `None` for the rest; the same-id extension row.
+    pub order: Option<OrderStatus>,
 }
 
-/// The adapter over `conformance_spec`, `conformance_status` and the
-/// archive.
+/// The optional part of [`Status`]: the keyed order the widgets came
+/// through, kept in `conformance_order_status` under the status row and
+/// present iff the status carries it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OrderStatus {
+    /// The idempotency key the order was placed under.
+    pub key: String,
+    /// The provider's id for the order.
+    pub order_id: String,
+}
+
+/// The adapter over `conformance_spec`, `conformance_status`, the optional
+/// `conformance_order_status` and the archive.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ConformanceAdapter;
+
+impl ConformanceAdapter {
+    /// The extension row, inserted or replaced whole when the status
+    /// carries the part. `None` writes nothing: whether an object has the
+    /// part is a fact about the object, not about this writer, so a status
+    /// without it never removes a row.
+    async fn write_order(
+        tx: &mut Tx<'_>,
+        id: Uuid,
+        order: Option<&OrderStatus>,
+    ) -> Result<(), sqlx::Error> {
+        let Some(order) = order else {
+            return Ok(());
+        };
+        sqlx::query(
+            "INSERT INTO conformance_order_status (id, order_key, order_id)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (id) DO UPDATE
+                 SET order_key = EXCLUDED.order_key,
+                     order_id = EXCLUDED.order_id,
+                     updated_at = clock_timestamp()",
+        )
+        .bind(id)
+        .bind(&order.key)
+        .bind(&order.order_id)
+        .execute(tx)
+        .await
+        .map(|_| ())
+    }
+}
 
 impl Adapter<Spec, Status> for ConformanceAdapter {
     async fn insert_spec(&self, tx: &mut Tx<'_>, r: &Ref, spec: &Spec) -> Result<(), sqlx::Error> {
@@ -75,9 +128,9 @@ impl Adapter<Spec, Status> for ConformanceAdapter {
         .bind(r.id)
         .bind(status.provisioned_widgets)
         .bind(&status.external_id)
-        .execute(tx)
-        .await
-        .map(|_| ())
+        .execute(&mut *tx)
+        .await?;
+        Self::write_order(tx, r.id, status.order.as_ref()).await
     }
 
     async fn read_rows(
@@ -86,9 +139,11 @@ impl Adapter<Spec, Status> for ConformanceAdapter {
         ids: &[Uuid],
     ) -> Result<Vec<Row<Spec, Status>>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT s.id, s.widgets, s.content, t.provisioned_widgets, t.external_id
+            "SELECT s.id, s.widgets, s.content, t.provisioned_widgets, t.external_id,
+                    o.order_key, o.order_id
              FROM conformance_spec s
              JOIN conformance_status t USING (id)
+             LEFT JOIN conformance_order_status o USING (id)
              WHERE s.id = ANY($1)",
         )
         .bind(ids)
@@ -96,6 +151,8 @@ impl Adapter<Spec, Status> for ConformanceAdapter {
         .await?;
         rows.iter()
             .map(|row| {
+                let order_key: Option<String> = row.try_get("order_key")?;
+                let order_id: Option<String> = row.try_get("order_id")?;
                 Ok(Row {
                     id: row.try_get("id")?,
                     spec: Spec {
@@ -105,6 +162,9 @@ impl Adapter<Spec, Status> for ConformanceAdapter {
                     status: Status {
                         provisioned_widgets: row.try_get("provisioned_widgets")?,
                         external_id: row.try_get("external_id")?,
+                        order: order_key
+                            .zip(order_id)
+                            .map(|(key, order_id)| OrderStatus { key, order_id }),
                     },
                 })
             })
@@ -124,7 +184,8 @@ impl Adapter<Spec, Status> for ConformanceAdapter {
         .map(|_| ())
     }
 
-    /// Every column written unconditionally. The status CHECK
+    /// Every column written unconditionally, the extension row upserted
+    /// iff the status carries the part. The status CHECK
     /// (`provisioned_widgets >= 0`) lets a test drive the savepoint-rollback
     /// to Retry path by returning a negative value.
     async fn write_status(
@@ -141,9 +202,9 @@ impl Adapter<Spec, Status> for ConformanceAdapter {
         .bind(r.id)
         .bind(status.provisioned_widgets)
         .bind(&status.external_id)
-        .execute(tx)
-        .await
-        .map(|_| ())
+        .execute(&mut *tx)
+        .await?;
+        Self::write_order(tx, r.id, status.order.as_ref()).await
     }
 
     /// A durable archive row that outlives the deleted envelope, written

@@ -66,6 +66,7 @@ mod claim;
 mod complete;
 pub mod decl;
 mod error;
+mod list;
 mod model;
 mod outcome;
 mod store;
@@ -80,6 +81,9 @@ pub use claim::{Claim, LEASE_SLACK, LeaseHandle};
 pub use complete::Completion;
 pub use decl::{Adapter, Backoff, ProcessingObjectType, WorkerConfig};
 pub use error::Error;
+pub use list::{
+    Cursor, DEFAULT_LIST_LIMIT, Deleting, InvalidCursor, ListQuery, MAX_LIST_LIMIT, Page,
+};
 pub use model::{
     Meta, NamespacedName, Object, Phase, Ref, Row, SCHEDULE_IMMEDIATE, SCHEDULE_PARKED,
     SCHEDULE_PARKED_SQL,

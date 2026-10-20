@@ -44,6 +44,7 @@ async fn completion_retries_and_converges(mode: CommitFault) {
         .complete(Ok(Outcome::converged(Some(Status {
             provisioned_widgets: widgets,
             external_id: "done".into(),
+            order: None,
         }))))
         .await
         .expect("the completion resolves after retrying the ambiguous commit");
