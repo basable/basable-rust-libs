@@ -5,20 +5,32 @@
 - **Database**: CNPG mints the `app-postgres-app` Secret (`username`,
   `password`, `uri`) when it bootstraps the cluster; the migration Job and
   the app read `uri`. Nobody generates a password; rotation is CNPG's.
-- **Kratos**: the cookie-signing secret is generated inside the cluster by
+- **Kratos**: the cookie-signing secret (`cookie-secret`) and the cipher
+  secret (`cipher-secret`, 32 characters: Kratos encrypts its OIDC state and
+  tokens with it) are generated inside the cluster by
   `k8s/kratos/secret-job.yaml` (wave -2) on the first deploy and kept
   thereafter: the Job creates the `kratos-secrets` Secret only when it is
-  absent, so it exists nowhere but the cluster. Deleting the Secret makes
-  the next deploy mint a new one, which signs every user out. Kratos
-  reaches its own `kratos` database as the CNPG `app` login (the same
-  Secret as above); there is no cipher secret because OIDC token
-  encryption is not used.
+  absent (and adds a missing `cipher-secret` to one), so it exists nowhere
+  but the cluster. Deleting the Secret makes the next deploy mint new ones,
+  which signs every user out. Kratos reaches its own `kratos` database as
+  the CNPG `app` login (the same Secret as above).
 - **Mail**: the Kratos courier reads its SMTP connection from the
   `app-secrets` key `SMTP_CONNECTION_URI` (`k8s/kratos/deployment.yaml`, an
   OPTIONAL `secretKeyRef`, so the first deploy does not wait for it). Add it
   in the editor's Secrets action (an `smtps://user:pass@host:465/` URI);
   until then the ConfigMap's localhost placeholder applies and sign-in codes
   appear in the Kratos pod's logs only.
+- **Sign in with Basable**: the platform writes the `basable-login` Secret
+  (`BASABLE_LOGIN_ISSUER`, `BASABLE_LOGIN_CLIENT_ID`,
+  `BASABLE_LOGIN_CLIENT_SECRET`) into every environment's cluster and keeps
+  it there: an OpenID client of Basable's own sign-in, one per environment,
+  whose callbacks are this app's hostnames. Kratos's `basable` provider is
+  built from it (`k8s/kratos/deployment.yaml`), so the sign-in page offers
+  "Sign in with Basable" with no setup and no SMTP: single sign-on with
+  every app on Basable, the person's verified email copied into the
+  identity's traits (`oidc.basable.jsonnet`). The person stays a user of
+  THIS app; email codes work on the same identity. Never declare that
+  Secret in `k8s/`.
 - **User-supplied secrets** (a provider's API key, a webhook's
   verification secret, anything under `externalSystems`): each lives in the
   `app-secrets` Secret in the `default` namespace of each environment's

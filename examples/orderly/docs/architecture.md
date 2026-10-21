@@ -58,7 +58,7 @@ Books orders and payments on the ledger.
 - `app/`: the binary, `replicas: 2`, every nanoservice in every replica.
 - `frontend/static/`: plain HTML/CSS/JS, uploaded by the workflow as the `static` artifact and served at `/` from the environment's public bucket (no image, no pod); a page at `docs/index.html` answers `/docs/`.
 - `k8s/postgres/`: one CNPG cluster, 1 instance(s), a schema and a role per stateful nanoservice (`nano_catalog`, `nano_order`, `nano_accounting`).
-- `k8s/kratos/`: Ory Kratos identity (passwordless email code + passkeys), its own database.
+- `k8s/kratos/`: Ory Kratos identity (passwordless email code + passkeys + Sign in with Basable, from the platform's `basable-login` Secret), its own database. The sign-in pages Kratos sends the browser to (`/auth/login`, `/auth/register`, `/auth/settings`, `/auth/error`) are drawn by the frontend from the flow's own nodes (`frontend/static/auth.js`).
 - `k8s/httproute.yaml`: `/api/` → app, `/.ory/` → Kratos; `/` is the platform's own route to the bucket, never claimed here.
 
 See `docs/platform-contract.md` for the rules the platform enforces on this

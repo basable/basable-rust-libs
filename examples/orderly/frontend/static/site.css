@@ -15,3 +15,10 @@ nav a:hover { color: var(--accent); }
 .panel { max-width: 48rem; margin: 3rem auto; padding: 2rem; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; backdrop-filter: blur(12px); }
 code { background: rgba(0, 0, 0, 0.3); padding: 0.1rem 0.3rem; border-radius: 4px; }
 [data-when] { display: none; }
+/* The sign-in pages (auth.js). */
+.auth { display: grid; gap: 0.75rem; margin: 1.5rem 0; }
+.auth label { display: grid; gap: 0.25rem; color: var(--muted); }
+.auth input { padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border); background: rgba(0, 0, 0, 0.3); color: var(--text); font: inherit; }
+.auth button { padding: 0.6rem 1rem; border-radius: 6px; border: 1px solid var(--border); background: var(--accent); color: var(--bg); font: inherit; font-weight: 600; cursor: pointer; }
+.notice { color: var(--muted); }
+.notice-error { color: #fca5a5; }

@@ -1,10 +1,19 @@
-# Kratos: passwordless email code + passkeys, the identity schema, the
-# self-service flows. TENANT_DOMAIN_PLACEHOLDER is replaced by the platform
-# with the environment's hostname at deploy. The courier SMTP connection
-# below is a localhost placeholder: k8s/kratos/deployment.yaml overrides it
-# with the app-secrets key SMTP_CONNECTION_URI when the user has added one
-# (docs/operations.md); until then sign-in codes are visible in the Kratos
-# logs only.
+# Kratos: passwordless email code + passkeys + Sign in with
+# Basable, the identity schema, the self-service flows.
+# TENANT_DOMAIN_PLACEHOLDER is replaced by the platform with the environment's
+# hostname at deploy. The courier SMTP connection below is a localhost
+# placeholder: k8s/kratos/deployment.yaml overrides it with the app-secrets key
+# SMTP_CONNECTION_URI when the user has added one (docs/operations.md); until
+# then sign-in codes are visible in the Kratos logs only.
+#
+# Sign in with Basable: the platform's OpenID provider, single sign-on with
+# every app on Basable. The `oidc` method is enabled here and its one
+# provider is configured in k8s/kratos/deployment.yaml, from the
+# `basable-login` Secret the platform writes into every environment's
+# cluster (issuer, client id, client secret): no setup, and no SMTP needed
+# for it. The person keeps a LOCAL identity in this Kratos; the mapper below
+# copies their verified email into its traits, and email codes or a passkey
+# work on the same identity afterwards.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -33,6 +42,9 @@ data:
             code:
               hooks:
                 - hook: session
+            oidc:
+              hooks:
+                - hook: session
         login:
           ui_url: https://TENANT_DOMAIN_PLACEHOLDER/auth/login
         logout:
@@ -59,6 +71,11 @@ data:
               id: TENANT_DOMAIN_PLACEHOLDER
               origins:
                 - https://TENANT_DOMAIN_PLACEHOLDER
+        oidc:
+          # The provider list is SELFSERVICE_METHODS_OIDC_CONFIG_PROVIDERS in
+          # k8s/kratos/deployment.yaml (its secret comes from a Secret). To
+          # offer another provider beside Basable, add it to that list.
+          enabled: true
     identity:
       default_schema_id: default
       schemas:
@@ -102,4 +119,17 @@ data:
           "additionalProperties": false
         }
       }
+    }
+  # Sign in with Basable's claims onto the identity's traits: the platform's
+  # id token carries the person's email, verified by the platform's own
+  # sign-in (email_verified is always true). The sub is the person's id for
+  # THIS project; Kratos keys the OIDC credential by it.
+  oidc.basable.jsonnet: |
+    local claims = std.extVar('claims');
+    {
+      identity: {
+        traits: {
+          email: claims.email,
+        },
+      },
     }

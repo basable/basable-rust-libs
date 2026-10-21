@@ -1123,3 +1123,18 @@ of it changed, in the crates and in the templates:
     row — the `infra_type` copy with its `CHECK`, the ciphered bag — is not
     ported; a type that needs a kind guard copies the immutable spec column
     the same way.
+99. **Go's `lib/auth` now carries the session's email too (2026-10-21);
+    the crate always did.** `basable-auth`'s `Identity { id, email }` put
+    the email on `Ctx` from the start, while Go's middleware put only the
+    Kratos id on the context. The platform's OpenID provider ("Sign in with
+    Basable", the monorepo's `docs/18-authentication-flows.md` §18.7) needs
+    the signed-in user's address at consent, as their session gives it, so
+    Go gained `WithUserEmail` / `UserEmailFromContext`, set beside the id
+    wherever a session is validated (HTTP, gRPC unary and stream). The two
+    now agree; nothing changes in the crate. The same work changed the
+    scaffold's Kratos (the `oidc` method with a `basable` provider read
+    from the `basable-login` Secret every environment carries, a
+    `cipher-secret` from the secret job, a sign-in page drawn from Kratos's
+    flow nodes, `basableLogin` on by default with `auth: kratos`), which
+    is why `examples/orderly` was re-rendered: its k8s/kratos/, its static
+    frontend and two docs, no Rust.

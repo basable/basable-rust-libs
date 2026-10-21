@@ -48,13 +48,46 @@ spec:
             - name: DSN
               value: postgres://$(PGUSER):$(PGPASSWORD)@app-postgres-rw:5432/kratos?sslmode=require&max_conns=10&max_idle_conns=2
             # Kratos maps SECRETS_COOKIE_0 onto secrets.cookie[0]. The value
-            # is generated in-cluster by kratos/secret-job.yaml; no cipher
-            # secret because OIDC token encryption is not used.
+            # is generated in-cluster by kratos/secret-job.yaml.
             - name: SECRETS_COOKIE_0
               valueFrom:
                 secretKeyRef:
                   name: kratos-secrets
                   key: cookie-secret
+            # secrets.cipher[0]: 32 characters, generated with the cookie
+            # secret. Kratos encrypts its OIDC state and the provider's tokens
+            # with it; OIDC sign-in refuses to run without one.
+            - name: SECRETS_CIPHER_0
+              valueFrom:
+                secretKeyRef:
+                  name: kratos-secrets
+                  key: cipher-secret
+            # Sign in with Basable. The platform writes the `basable-login`
+            # Secret into every environment's cluster (issuer, client id,
+            # client secret: preview and live have their own client) and
+            # keeps it there, so these are read, never written, here. The
+            # provider list below is the oidc method's whole configuration;
+            # $(VAR) expands the three variables above it. `pkce: force`
+            # makes Kratos's callback the generic
+            # /.ory/self-service/methods/oidc/callback, the redirect URI the
+            # platform registers on every hostname of the environment.
+            - name: BASABLE_LOGIN_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: basable-login
+                  key: BASABLE_LOGIN_ISSUER
+            - name: BASABLE_LOGIN_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: basable-login
+                  key: BASABLE_LOGIN_CLIENT_ID
+            - name: BASABLE_LOGIN_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: basable-login
+                  key: BASABLE_LOGIN_CLIENT_SECRET
+            - name: SELFSERVICE_METHODS_OIDC_CONFIG_PROVIDERS
+              value: '[{"id":"basable","provider":"generic","label":"Basable","issuer_url":"$(BASABLE_LOGIN_ISSUER)","client_id":"$(BASABLE_LOGIN_CLIENT_ID)","client_secret":"$(BASABLE_LOGIN_CLIENT_SECRET)","scope":["openid","email"],"pkce":"force","mapper_url":"file:///etc/kratos/oidc.basable.jsonnet"}]'
             # The courier's SMTP connection (courier.smtp.connection_uri), a
             # user-supplied secret: OPTIONAL, so the first deploy does not
             # wait for it; absent, the ConfigMap's localhost placeholder
