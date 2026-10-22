@@ -493,6 +493,7 @@ async fn the_test_bypass_is_a_fixed_identity() {
     let validator = Validator::bypassed_for_tests(Identity {
         id: "test-user".into(),
         email: "t@example.com".into(),
+        email_verified: true,
     });
     let running = app
         .serve()
