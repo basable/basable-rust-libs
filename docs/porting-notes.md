@@ -1154,3 +1154,20 @@ of it changed, in the crates and in the templates:
     `oidc.basable.jsonnet` now refuses a sign-in whose id token carries no
     verified email, which is why `examples/orderly` was re-rendered (its
     Kratos ConfigMap and `docs/operations.md`, no Rust).
+
+101. **Sliding sessions, on both sides (2026-10-22).** Go's `lib/auth`
+    gained `WithSessionExtension(adminURL, within)`: a session it validates
+    with less than `within` left is extended through Kratos's admin API
+    (`PATCH /admin/sessions/{id}/extend`), so it ends after a whole
+    `session.lifespan` without use rather than a lifespan after its
+    sign-in. The platform uses it (lifespan 720h, `earliest_possible_extend`
+    696h, which `within` must equal: Kratos ignores an extension before
+    it). `basable-auth` has the same, opt-in: `Validator::extend_sessions`,
+    the session's `expires_at` now read from whoami (`KratosSession`
+    gained the field; chrono parses it), the extension after the hook, a
+    failure logged and the request served. The scaffold does not enable it:
+    a tenant app's Kratos keeps its own lifespan until a project asks.
+    Kratos re-issues the browser's cookie at the next whoami whose session
+    outlives it, which a test against the platform's Kratos image pins
+    (`golang/test/kratossession`). `examples/orderly` re-rendered for the
+    crate's new chrono dependency in its lockfile.

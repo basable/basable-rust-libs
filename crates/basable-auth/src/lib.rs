@@ -13,6 +13,11 @@
 //! request path: the seam for first-touch user provisioning. It must not
 //! fail the request and must be quick on the common path.
 //!
+//! Sessions can slide ([`Validator::extend_sessions`]): a validated session
+//! with less than a window left is extended through Kratos's admin API, so
+//! it ends after a whole `session.lifespan` without use instead of a
+//! lifespan after its sign-in.
+//!
 //! The test bypass ([`Validator::bypassed_for_tests`]) exists only behind
 //! the `test-bypass` feature, which `basable-testkit` enables.
 
@@ -42,6 +47,18 @@ pub const NEGATIVE_WINDOW: Duration = Duration::from_secs(5);
 
 /// The negative cache's size bound; it is cleared when full.
 const NEGATIVE_CAPACITY: usize = 4096;
+
+/// Where and when sessions are extended ([`Validator::extend_sessions`]).
+struct Extension {
+    admin: String,
+    within: Duration,
+}
+
+/// What a validated session's extension needs: its id and expiry.
+struct SessionTiming {
+    id: String,
+    expires_at: Option<chrono::DateTime<chrono::FixedOffset>>,
+}
 
 /// The header a native app sends its Kratos session token in
 /// (`X-Session-Token`): what an API (native) login flow hands out where a
@@ -119,6 +136,9 @@ pub struct KratosSession {
     pub active: bool,
     /// The identity.
     pub identity: KratosIdentity,
+    /// When the session ends unless it is extended (RFC 3339).
+    #[serde(default)]
+    pub expires_at: String,
 }
 
 /// The identity in a Kratos session.
@@ -255,6 +275,7 @@ pub struct Validator {
     public_prefixes: Vec<String>,
     hook: Option<SessionHook>,
     negative: Mutex<HashMap<u64, Instant>>,
+    extension: Option<Extension>,
 }
 
 impl fmt::Debug for Validator {
@@ -304,7 +325,29 @@ impl Validator {
             public_prefixes: Vec::new(),
             hook: None,
             negative: Mutex::new(HashMap::new()),
+            extension: None,
         }
+    }
+
+    /// Makes sessions slide, as Go's `WithSessionExtension`: a validated
+    /// session with less than `within` left is extended through Kratos's
+    /// admin API at `admin_url` (`PATCH /admin/sessions/{id}/extend`, the
+    /// in-cluster admin port, never public), so it ends after a whole
+    /// `session.lifespan` without use. `within` must equal Kratos's
+    /// `session.earliest_possible_extend`, before which Kratos ignores an
+    /// extension. Best effort: a failed extension is logged and the request
+    /// goes on. The browser's cookie follows at its next whoami, which
+    /// re-issues it for the renewed session.
+    pub fn extend_sessions(mut self, admin_url: &str, within: Duration) -> Validator {
+        assert!(
+            !admin_url.is_empty() && !within.is_zero(),
+            "extend_sessions needs Kratos's admin URL and a positive window"
+        );
+        self.extension = Some(Extension {
+            admin: admin_url.trim_end_matches('/').to_string(),
+            within,
+        });
+        self
     }
 
     /// Adds exact paths that bypass authentication.
@@ -340,21 +383,22 @@ impl Validator {
     }
 
     /// Validates a request's credential ([`Credential::from_headers`]). On
-    /// success the hook has fired.
+    /// success the hook has fired, and the session was extended if it was
+    /// due ([`Validator::extend_sessions`]).
     pub async fn authenticate(
         &self,
         credential: Option<&Credential>,
     ) -> Result<Identity, AuthError> {
-        let identity = match &self.mode {
+        let (identity, due) = match &self.mode {
             #[cfg(feature = "test-bypass")]
-            Mode::Bypass(identity) => identity.clone(),
+            Mode::Bypass(identity) => (identity.clone(), None),
             Mode::Kratos { whoami, client } => {
                 let credential = credential.ok_or(AuthError::NoSession)?;
                 if self.recently_rejected(credential) {
                     return Err(AuthError::Rejected("recently rejected".to_string()));
                 }
                 match whoami_call(client, whoami, credential).await {
-                    Ok(identity) => identity,
+                    Ok((identity, timing)) => (identity, Some((client, timing))),
                     Err(e @ AuthError::Rejected(_)) => {
                         self.remember_rejected(credential);
                         return Err(e);
@@ -366,7 +410,56 @@ impl Validator {
         if let Some(hook) = &self.hook {
             hook(&identity);
         }
+        if let Some((client, timing)) = due {
+            self.extend_if_due(client, &timing).await;
+        }
         Ok(identity)
+    }
+
+    /// Extends a session with less than the window left. A failure is
+    /// logged: the session is valid either way, and its next request tries
+    /// again.
+    async fn extend_if_due(&self, client: &reqwest::Client, session: &SessionTiming) {
+        let (Some(extension), Some(expires_at)) = (&self.extension, session.expires_at) else {
+            return;
+        };
+        // Kratos's session ids are UUIDs: anything else is not put in a path.
+        if session.id.is_empty()
+            || !session
+                .id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
+            return;
+        }
+        let left = expires_at.signed_duration_since(chrono::Utc::now());
+        match chrono::TimeDelta::from_std(extension.within) {
+            Ok(within) if left < within => {}
+            _ => return,
+        }
+        let url = format!("{}/admin/sessions/{}/extend", extension.admin, session.id);
+        match client
+            .patch(&url)
+            .header(header::ACCEPT, "application/json")
+            .send()
+            .await
+        {
+            Ok(resp)
+                if resp.status() == StatusCode::NO_CONTENT || resp.status() == StatusCode::OK =>
+            {
+                tracing::debug!(session = %session.id, "session extended");
+            }
+            Ok(resp) => tracing::warn!(
+                session = %session.id,
+                status = %resp.status(),
+                "extending the session failed; the next request tries again"
+            ),
+            Err(e) => tracing::warn!(
+                session = %session.id,
+                error = %e,
+                "extending the session failed; the next request tries again"
+            ),
+        }
     }
 
     fn recently_rejected(&self, credential: &Credential) -> bool {
@@ -410,7 +503,7 @@ async fn whoami_call(
     client: &reqwest::Client,
     whoami: &str,
     credential: &Credential,
-) -> Result<Identity, AuthError> {
+) -> Result<(Identity, SessionTiming), AuthError> {
     let (name, value) = match credential {
         Credential::Token(token) => (SESSION_TOKEN_HEADER, token),
         Credential::Cookie(cookie) => (header::COOKIE.as_str(), cookie),
@@ -447,11 +540,18 @@ async fn whoami_call(
         ));
     }
     let email_verified = session.identity.email_verified();
-    Ok(Identity {
-        id: session.identity.id,
-        email: session.identity.traits.email,
-        email_verified,
-    })
+    let timing = SessionTiming {
+        expires_at: chrono::DateTime::parse_from_rfc3339(&session.expires_at).ok(),
+        id: session.id,
+    };
+    Ok((
+        Identity {
+            id: session.identity.id,
+            email: session.identity.traits.email,
+            email_verified,
+        },
+        timing,
+    ))
 }
 
 async fn authenticate(
@@ -603,6 +703,73 @@ mod tests {
             format!("{:?}", Credential::Cookie("secret".into())),
             "Cookie(..)"
         );
+    }
+
+    /// A fake Kratos on loopback: whoami answers a session expiring in
+    /// `expires_in`, the admin API counts its extensions.
+    async fn fake_kratos(expires_in: chrono::TimeDelta) -> (String, Arc<Mutex<Vec<String>>>) {
+        let extended = Arc::new(Mutex::new(Vec::new()));
+        let seen = extended.clone();
+        let expires_at = (chrono::Utc::now() + expires_in).to_rfc3339();
+        let app = axum::Router::new()
+            .route(
+                "/sessions/whoami",
+                axum::routing::get(move || {
+                    let expires_at = expires_at.clone();
+                    async move {
+                        axum::Json(serde_json::json!({
+                            "id": "8d2c1c3e-1111-4222-8333-444455556666",
+                            "active": true,
+                            "expires_at": expires_at,
+                            "identity": { "id": "kratos-1", "traits": { "email": "u@example.com" } },
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/admin/sessions/{id}/extend",
+                axum::routing::patch(move |axum::extract::Path(id): axum::extract::Path<String>| {
+                    let seen = seen.clone();
+                    async move {
+                        seen.lock().unwrap().push(id);
+                        StatusCode::NO_CONTENT
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (url, extended)
+    }
+
+    // A session with less than the window left is extended through the
+    // admin API, one with more is left alone, and nothing is extended
+    // without the option: Go's TestSessionExtension.
+    #[tokio::test]
+    async fn a_due_session_is_extended_through_the_admin_api() {
+        let window = Duration::from_secs(29 * 24 * 3600);
+        let cookie = Credential::Cookie("ory_kratos_session=s".into());
+
+        let (url, extended) =
+            fake_kratos(chrono::TimeDelta::days(29) - chrono::TimeDelta::minutes(1)).await;
+        let v = Validator::kratos(&url).extend_sessions(&format!("{url}/"), window);
+        v.authenticate(Some(&cookie)).await.unwrap();
+        assert_eq!(
+            *extended.lock().unwrap(),
+            ["8d2c1c3e-1111-4222-8333-444455556666"]
+        );
+
+        let (url, extended) = fake_kratos(chrono::TimeDelta::days(30)).await;
+        let v = Validator::kratos(&url).extend_sessions(&url, window);
+        v.authenticate(Some(&cookie)).await.unwrap();
+        assert!(extended.lock().unwrap().is_empty());
+
+        let (url, extended) = fake_kratos(chrono::TimeDelta::minutes(1)).await;
+        Validator::kratos(&url)
+            .authenticate(Some(&cookie))
+            .await
+            .unwrap();
+        assert!(extended.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

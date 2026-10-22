@@ -2,7 +2,7 @@
   "binary_crates": [
     "connectrpc-codegen 0.9.0"
   ],
-  "checksum": "1adfb25a78d3de5f940c17aaa9e9b0cc2b769ec95ca96474d89fd871afaf5d7f",
+  "checksum": "f4592b1b932684cca00a5a2d31e6fcdd2c220774d1c173a9256c2b6d5170a2ee",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -1015,6 +1015,10 @@
           {
             "id": "axum 0.8.9",
             "target": "axum"
+          },
+          {
+            "id": "chrono 0.4.45",
+            "target": "chrono"
           },
           {
             "id": "http 1.5.0",
