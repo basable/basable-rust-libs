@@ -46,8 +46,8 @@ admission argument, made here where its validation rules and probes live:
 when they coincide. The remaining clauses are plain fields: `key`,
 `late_call` (`Convergent` / `KeyScoped` / `Compensated`), `irreversible`
 (restricts strategies to `KeyedReplay` and `Declared`, and makes the
-ack-loss probes mandatory), `call_timeout` (tightened at dispatch to the
-remaining ownership deadline).
+ack-loss probes mandatory), `call_timeout` (the step is also dropped the
+moment the ownership deadline passes unrenewed).
 
 ## The helpers
 
@@ -55,7 +55,9 @@ remaining ownership deadline).
 named). On the handle:
 
 - `dispatch(ctx, proof, args)` — `check_ownership` → the step bounded by
-  min(`call_timeout`, remaining deadline) and the context's cancellation →
+  `call_timeout`, the context's cancellation and the claim's ownership (the
+  deadline re-read when it arrives, since a heartbeat moves it: renewed, the
+  step runs on; not, it is dropped as an ambiguous `Cancelled`; note 102) →
   send → classify. `DispatchError::{OwnershipLost, ReplayWindowElapsed,
   Ambiguous(e), Definitive(e)}`: the match Go left to `IsAmbiguous`
   discipline is forced by the type. `Display` of the last two is the

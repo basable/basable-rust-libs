@@ -86,7 +86,7 @@ builds one from a closure), and `Gate` holds a pass open (`wait_entered`,
 | File | Tests | Ported from | Covers |
 |---|---|---|---|
 | `tests/store.rs` | 10 | `processingobject_store_test.go` | envelope identity round trip, name conflicts and adoption, release by deletion intent, the create carve-outs, the intent writes, the read model, identity across an ambiguous create commit in both commit-fault modes, a create waking the worker running on its store |
-| `tests/fencing.rs` | 10 | `processingobject_fencing_test.go` | the token fence, lease adoption, the local proof, superseded and woken completions — through manual `claim_batch`, `complete` and `heartbeat` plus raw SQL |
+| `tests/fencing.rs` | 11 | `processingobject_fencing_test.go` | the token fence, lease adoption, the local proof, the fixed 90s lease, superseded and woken completions — through manual `claim_batch`, `complete` and `heartbeat` plus raw SQL |
 | `tests/writestatus.rs` | 10 | `processingobject_writestatus_test.go` | the mid-attempt write: durable across a dropped claim, fenced after a lease steal, envelope untouched, lands under a superseded generation, a rejected row writes nothing, the no-status completion forms preserve it, a deleting object takes the marker |
 | `tests/deletion.rs` | 5 | `processingobject_deletion_test.go` | one-way deletion, intent guards, hard delete versus a settled tombstone, the savepoint rollback of a failed finalizer |
 | `tests/worker.rs` | 10 | `processingobject_worker_test.go` | multi-replica claim exclusivity, crash adoption, panic containment, parallelism-bounded claiming, the in-process wake versus the poll (a nudge through the worker's store is prompt under a 60 s poll, one through `second_store` is not; `converged_after(200 ms)` runs on the completion's timer; `requeue_now` runs its next pass while the first attempt's `after_complete` still runs), the poll alone converging a row no store wrote, `after_complete` containment — the real worker loop |
@@ -108,6 +108,7 @@ back (note 12: pgx's dial hook has no sqlx equivalent).
   wake can explain a prompt pass.
 - The suites need `TEST_DATABASE_URL` and return early without it; `bazel
   test //crates/basable-processingobject-testkit/...` alone is not the gate.
-- `fast_config()` shortens the lease and the attempt timeout; a scenario
+- `fast_config()` shortens the attempt timeout (the lease is the
+  framework's fixed 90s, so a successor needs `force_expire_claim`); a scenario
   that reads the clock must use the harness's readers, not its own
   arithmetic.

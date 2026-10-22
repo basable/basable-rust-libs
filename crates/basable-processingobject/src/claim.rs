@@ -46,10 +46,23 @@ use crate::store::TypedStore;
 use crate::store_read::{META_COLUMNS, scan_meta};
 use crate::tx::Tx;
 
-/// How far the database lease outlives the attempt timeout. The margin
-/// absorbs completion latency: an attempt that used its full budget still
-/// gets its completion transaction in before successors may adopt.
-pub const LEASE_SLACK: Duration = Duration::from_secs(30);
+/// The claim lease: how long the database lease, and the local proof
+/// measured from before the request, run from a claim, a heartbeat or a
+/// `write_status`. It is short and independent of `attempt_timeout`. The
+/// worker heartbeats every [`HEARTBEAT_INTERVAL`] for as long as an attempt
+/// runs, so a long attempt stays owned, while a holder that dies without
+/// completing (a crash, an OOM kill, a lost node) releases its objects
+/// within one lease rather than one attempt budget. Until 2026-10-22 the
+/// lease was `attempt_timeout` + 30s, renewed in full.
+///
+/// Two missed heartbeats still leave a beat of margin, and the completion
+/// fits in what is left after the last one.
+pub const LEASE: Duration = Duration::from_secs(90);
+
+/// The worker's heartbeat cadence, and the bound on one heartbeat: a stalled
+/// one gives way to the next tick instead of holding the pump until the
+/// proof runs out.
+pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(LEASE.as_secs() / 3);
 
 /// Renders a validated, non-empty label selector as the claim scan's
 /// containment predicate — a SQL LITERAL, so a per-partition partial index
@@ -67,16 +80,14 @@ pub(crate) fn label_selector_sql(selector: &Labels) -> Result<String, Error> {
 /// heartbeats with while the reconciler holds the claim.
 pub(crate) struct Lease {
     pub(crate) token: Uuid,
-    pub(crate) duration: Duration,
     proof: Mutex<Option<Deadline>>,
     closed: AtomicBool,
 }
 
 impl Lease {
-    fn new(token: Uuid, duration: Duration, proof: Deadline) -> Lease {
+    fn new(token: Uuid, proof: Deadline) -> Lease {
         Lease {
             token,
-            duration,
             proof: Mutex::new(Some(proof)),
             closed: AtomicBool::new(false),
         }
@@ -141,9 +152,10 @@ pub struct LeaseHandle {
 }
 
 impl LeaseHandle {
-    /// Extends the claim's database lease and local ownership proof. A
-    /// worker calls it on a fixed interval while the attempt runs; a third
-    /// of the lease is comfortable.
+    /// Extends the claim's database lease and local ownership proof to one
+    /// [`LEASE`] from now. A worker calls it every [`HEARTBEAT_INTERVAL`]
+    /// (a third of the lease) while the attempt runs, each call bounded by
+    /// that interval.
     ///
     /// `Ok`: the lease was extended and the proof now ends one lease after
     /// the instant just before the request was sent. [`Error::Fenced`]:
@@ -154,13 +166,13 @@ impl LeaseHandle {
     /// so persistent failure converges on self-fencing by itself.
     pub async fn heartbeat(&self) -> Result<(), Error> {
         self.lease.require_proof()?;
-        let pre_send = Deadline::after(self.lease.duration);
+        let pre_send = Deadline::after(LEASE);
         let done = sqlx::query(&format!(
             "UPDATE {} SET lease_expires_at = clock_timestamp() + make_interval(secs => $1)
              WHERE id = $2 AND claim_token = $3",
             self.partition
         ))
-        .bind(self.lease.duration.as_secs_f64())
+        .bind(LEASE.as_secs_f64())
         .bind(self.id)
         .bind(self.lease.token)
         .execute(&self.pool)
@@ -273,13 +285,12 @@ where
     /// landed, the claims expire unheartbeaten and are adopted.
     pub async fn claim_batch(&self, cfg: WorkerConfig) -> Result<Vec<Claim<S, T, A>>, Error> {
         let cfg = cfg.validated()?;
-        let lease = cfg.attempt_timeout + LEASE_SLACK;
         let name = self.inner.decl.name;
         let op = format!("claim {name} batch");
 
         // The local proof is measured from BEFORE any database work, so it
         // can only underestimate the database lease, never outlive it.
-        let proof = Deadline::after(lease);
+        let proof = Deadline::after(LEASE);
 
         let selector = if cfg.label_selector.is_empty() {
             String::new()
@@ -329,7 +340,7 @@ where
              RETURNING {meta_o}, o.claim_token, due.adopted"
         ))
         .bind(i64::from(cfg.batch_size))
-        .bind(lease.as_secs_f64())
+        .bind(LEASE.as_secs_f64())
         .fetch_all(&mut *tx)
         .await
         .map_err(|e| Error::sql(format!("{op}: scan"), e))?;
@@ -402,7 +413,7 @@ where
                     status: row.status,
                 },
                 store: self.clone(),
-                lease: Arc::new(Lease::new(tokens[&id], lease, proof)),
+                lease: Arc::new(Lease::new(tokens[&id], proof)),
                 cfg: lease_shared_cfg.clone(),
                 adopted: adopted_ids.contains(&id),
             });
@@ -479,11 +490,7 @@ mod tests {
 
     #[test]
     fn a_lease_fences_once_and_stays_fenced() {
-        let lease = Lease::new(
-            Uuid::new_v4(),
-            Duration::from_secs(1),
-            Deadline::after(Duration::from_secs(60)),
-        );
+        let lease = Lease::new(Uuid::new_v4(), Deadline::after(Duration::from_secs(60)));
         assert!(lease.require_proof().is_ok());
         lease.close();
         assert!(matches!(lease.require_proof(), Err(Error::Fenced)));
@@ -491,11 +498,7 @@ mod tests {
         lease.extend(Deadline::after(Duration::from_secs(60)));
         assert!(matches!(lease.require_proof(), Err(Error::Fenced)));
 
-        let lapsed = Lease::new(
-            Uuid::new_v4(),
-            Duration::from_secs(1),
-            Deadline::after(Duration::ZERO),
-        );
+        let lapsed = Lease::new(Uuid::new_v4(), Deadline::after(Duration::ZERO));
         std::thread::sleep(Duration::from_millis(2));
         assert!(matches!(lapsed.require_proof(), Err(Error::Fenced)));
     }

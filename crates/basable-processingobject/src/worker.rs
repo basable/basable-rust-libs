@@ -31,7 +31,7 @@ use basable_core::{BoxError, Ctx};
 use tokio::sync::Notify;
 use tokio::task::{JoinError, JoinSet};
 
-use crate::claim::{Claim, LEASE_SLACK};
+use crate::claim::{Claim, HEARTBEAT_INTERVAL};
 use crate::complete::Completion;
 use crate::decl::{Adapter, WorkerConfig};
 use crate::error::Error;
@@ -325,22 +325,24 @@ async fn attempt<S, T, A, R, F>(
     // exits when the attempt context ends — cancelled once the reconciler
     // returns, so a finished attempt issues no further heartbeats — and a
     // fenced heartbeat cancels the attempt: the work is already forfeit, so
-    // stop paying for it. Transient errors just wait for the next tick; the
-    // proof countdown self-limits a real outage.
+    // stop paying for it. Transient errors (a stalled heartbeat among them,
+    // cut at HEARTBEAT_INTERVAL) just wait for the next tick; the proof
+    // countdown self-limits a real outage.
     let pump = {
         let handle = claim.lease_handle();
-        let tick = (inner.cfg.attempt_timeout + LEASE_SLACK) / 3;
         let pump_ctx = attempt_ctx.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
                     _ = pump_ctx.cancelled() => return,
-                    _ = tokio::time::sleep(tick) => {}
+                    _ = tokio::time::sleep(HEARTBEAT_INTERVAL) => {}
                 }
                 if pump_ctx.is_done() {
                     return;
                 }
-                if let Err(Error::Fenced) = handle.heartbeat().await {
+                if let Ok(Err(Error::Fenced)) =
+                    tokio::time::timeout(HEARTBEAT_INTERVAL, handle.heartbeat()).await
+                {
                     pump_ctx.cancel();
                     return;
                 }
@@ -353,8 +355,7 @@ async fn attempt<S, T, A, R, F>(
     // concurrently with (or outlive) the completion, and once the attempt
     // returns, no task of it may still touch the pool. Abort rather than
     // wait — a heartbeat stalled on a dead connection would otherwise hold
-    // the completion for the rest of the attempt budget, burning the lease
-    // slack the completion needs.
+    // the completion back, burning the lease the completion needs.
     attempt_ctx.cancel();
     pump.abort();
     let _ = pump.await;

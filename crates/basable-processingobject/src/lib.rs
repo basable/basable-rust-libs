@@ -77,7 +77,7 @@ mod wake;
 mod worker;
 mod writestatus;
 
-pub use claim::{Claim, LEASE_SLACK, LeaseHandle};
+pub use claim::{Claim, HEARTBEAT_INTERVAL, LEASE, LeaseHandle};
 pub use complete::Completion;
 pub use decl::{Adapter, Backoff, ProcessingObjectType, WorkerConfig};
 pub use error::Error;

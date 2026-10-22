@@ -1171,3 +1171,37 @@ of it changed, in the crates and in the templates:
     outlives it, which a test against the platform's Kratos image pins
     (`golang/test/kratossession`). `examples/orderly` re-rendered for the
     crate's new chrono dependency in its lockfile.
+
+## After 0.6.0
+
+102. **The lease is short and fixed, and a call follows it (2026-10-22).**
+    Both sides change together. The claim lease was `attempt_timeout` +
+    30s (`LEASE_SLACK`), renewed in full by every heartbeat, so a holder
+    that died without completing kept its object for its whole attempt
+    budget: 45½ minutes for the platform's bare-metal servers. It is now
+    `LEASE` (90s, Go's unexported `leaseDuration`), independent of
+    `attempt_timeout`: the worker heartbeats every `HEARTBEAT_INTERVAL`
+    (30s), each beat bounded by that interval so a stalled one gives way
+    to the next tick, and the claim, the heartbeat and `write_status` all
+    lease 90s from now. `LEASE_SLACK` is gone; `Lease` lost its `duration`
+    field. `attempt_timeout` now bounds the attempt only.
+    The effect bound had to change with it: `dispatch` (and `resolve`,
+    `lookup`, `resolve_keyed`) capped a step at the ownership deadline it
+    STARTED under, which a 90s lease would make shorter than most remote
+    calls (the platform's run to 45 minutes). The step is now bounded by
+    `call_timeout` and dropped the moment the deadline passes UNRENEWED:
+    `bounded` re-reads `Owner::ownership_deadline` when it arrives and
+    sleeps on while a heartbeat has moved it. A lapse is an ambiguous
+    `Cancelled` (it may have landed), as the cap's `TimedOut` was. Go does
+    the same with one `time.AfterFunc` per call that re-arms itself, so
+    the library still runs no goroutine of its own between calls. Shape
+    difference: Go's lapse surfaces as `context.Canceled` through the
+    step's context; Rust drops the step future in the `select!`.
+    Owed with the release that ships this: the Directive's policy rule
+    (§4 "What each invariant obliges the author to do", point 4) gives "replicas that disagree
+    steal each other's live leases" as the reason `attempt_timeout` must
+    match on every replica. True of 0.6.0, which projects pin today; after
+    this change a disagreeing `attempt_timeout` no longer touches the
+    lease, so the reason becomes the schedule and attempt budget the
+    replicas fight over. Change it in `docs/DIRECTIVE.md`, the monorepo's
+    vendored copy and `DirectiveVersion` together with the version bump.

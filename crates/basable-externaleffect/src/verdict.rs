@@ -199,9 +199,9 @@ impl Error for TransportError {
     }
 }
 
-/// A dispatch that reached its bound (the smaller of the adapter's
-/// `call_timeout` and the remaining ownership deadline) before the send
-/// answered. The send was dropped mid-flight: ambiguous by construction.
+/// A dispatch that reached its bound (the adapter's `call_timeout`) before
+/// the send answered. The send was dropped mid-flight: ambiguous by
+/// construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimedOut {
     /// The bound that elapsed.
@@ -216,8 +216,9 @@ impl fmt::Display for TimedOut {
 
 impl Error for TimedOut {}
 
-/// A dispatch whose context was cancelled before the send answered. The
-/// send was dropped mid-flight: ambiguous by construction.
+/// A dispatch whose context was cancelled, or whose claim's lease lapsed
+/// unrenewed, before the send answered. The send was dropped mid-flight:
+/// ambiguous by construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Cancelled;
 

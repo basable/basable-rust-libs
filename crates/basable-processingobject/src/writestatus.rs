@@ -16,7 +16,7 @@
 use basable_core::Deadline;
 use sqlx::PgConnection;
 
-use crate::claim::Claim;
+use crate::claim::{Claim, LEASE};
 use crate::decl::Adapter;
 use crate::error::Error;
 use crate::tx::Tx;
@@ -51,7 +51,7 @@ where
         let r = self.r#ref();
         let op = format!("write status {r}");
         let partition = self.store.inner.partition.clone();
-        let pre_send = Deadline::after(self.lease.duration);
+        let pre_send = Deadline::after(LEASE);
 
         let mut tx = self
             .store
@@ -100,7 +100,7 @@ where
              WHERE id = $1"
         ))
         .bind(self.object.id)
-        .bind(self.lease.duration.as_secs_f64())
+        .bind(LEASE.as_secs_f64())
         .execute(&mut *tx)
         .await
         .map_err(|e| Error::sql(format!("{op}: extend lease"), e))?;

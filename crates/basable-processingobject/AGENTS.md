@@ -104,7 +104,16 @@ itself, and the proof only ever revokes. There is deliberately no release:
 a claim ends by completion or by lease expiry, so crash, shutdown
 mid-attempt and lost completion all converge on one abandonment path.
 `Claim` and `LeaseHandle` implement `basable_externaleffect::Owner` (note
-47), which is how an effect `dispatch` is bounded by the remaining lease.
+47), which is how an effect `dispatch` is bounded by the lease: a call is
+dropped the moment the deadline passes unrenewed (note 102).
+
+The lease is short and fixed: `LEASE` (90s), independent of
+`attempt_timeout`. The worker heartbeats every `HEARTBEAT_INTERVAL` (30s,
+each beat bounded by it) for as long as the attempt runs, so a long attempt
+stays owned while a holder that dies without completing releases its
+objects within 90s. Until 2026-10-22 it was `attempt_timeout` + 30s
+(`LEASE_SLACK`, removed), so a crash held a long attempt's object for its
+whole budget (note 102).
 
 ## The adapter and outcome contract
 
@@ -200,9 +209,10 @@ Result<Outcome<T>, BoxError>> + Send` and `AfterComplete::after_complete`
 are traits with `impl Future` methods (note 27); `NoAfterComplete` is the
 no-op. Per attempt (`worker.rs`):
 
-1. a heartbeat pump task on the `LeaseHandle` ticks at `(attempt_timeout +
-   LEASE_SLACK) / 3`; a transient error waits for the next tick, a fenced
-   heartbeat cancels the attempt (note 30);
+1. a heartbeat pump task on the `LeaseHandle` ticks every
+   `HEARTBEAT_INTERVAL`, each beat bounded by it; a transient error (a
+   stalled beat among them) waits for the next tick, a fenced heartbeat
+   cancels the attempt (notes 30, 102);
 2. the pass runs under `catch_unwind` on a context bounded by
    `attempt_timeout`; a panic completes as a loud `Retry` without a stack
    (note 28), a deadline or cancellation drops the pass future (note 29);
@@ -252,7 +262,7 @@ platform's and has no port here.
 | `src/store_mutate.rs` | `update_spec`, `mark_deleted`, `nudge` (invariants 2 and 6) |
 | `src/store_read.rs` | `read`, `read_many`, `attach_typed` (the typed-row load `read_many` and `list` share) |
 | `src/list.rs` | `ListQuery`, `Deleting`, `Cursor` + `InvalidCursor`, `Page`, `TypedStore::list`, `DEFAULT_LIST_LIMIT`, `MAX_LIST_LIMIT` |
-| `src/claim.rs` | `claim_batch`, `Claim`, `LeaseHandle`, `heartbeat`, the local proof, `LEASE_SLACK` (invariant 4) |
+| `src/claim.rs` | `claim_batch`, `Claim`, `LeaseHandle`, `heartbeat`, the local proof, `LEASE` and `HEARTBEAT_INTERVAL` (invariant 4) |
 | `src/writestatus.rs` | `Claim::write_status` (invariant 3, mid-attempt) |
 | `src/complete.rs` | `Claim::complete`, `Completion`, the completion's wake (invariants 3, 5, 6) |
 | `src/wake.rs` | The in-process wake: `Wakes` (the store's registered workers, `signal`, the timer), the `Registration` guard, `Wake::for_next_pass` — all crate-internal |

@@ -220,7 +220,7 @@ impl Fnv64a {
 /// The reconcile and runtime policy for one type, supplied where its worker
 /// is registered. The scheduling fields — `resync`, `backoff`,
 /// `max_attempts`, `attempt_timeout` — are written into shared envelope
-/// state or anchor the claim lease, so every replica of one logical worker
+/// state or bound what an attempt may spend, so every replica of one logical worker
 /// (one distinct `label_selector`; the whole type when empty) must run
 /// identical values. `poll_interval`, `batch_size`, `parallelism` and
 /// `after_complete_timeout` are per-replica tuning and may differ.
@@ -234,7 +234,10 @@ pub struct WorkerConfig {
     /// one generation; zero means unbounded. Never applies to a deleting
     /// object.
     pub max_attempts: u32,
-    /// Bounds one attempt and anchors the claim lease. Default 5 minutes.
+    /// Bounds one attempt. It does not size the claim lease (invariant 4):
+    /// the lease is a fixed [`crate::LEASE`] that heartbeats renew for as
+    /// long as the attempt runs, so a long budget costs nothing after a
+    /// crash. Default 5 minutes.
     pub attempt_timeout: Duration,
     /// The claim loop's scan cadence; wakes are a latency hint on top. A
     /// completion due again within one interval arms a timer instead of

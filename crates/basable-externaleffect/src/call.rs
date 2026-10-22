@@ -214,9 +214,9 @@ impl<A, RA, R> Call<A, RA, R> {
         }
     }
 
-    /// The fenced send: [`check_ownership`], a context bounded by the
-    /// smaller of `call_timeout` and the remaining ownership deadline, the
-    /// send, then classification. For `Declared { Hold }` adapters every
+    /// The fenced send: [`check_ownership`], a context bounded by
+    /// `call_timeout` and dropped if the ownership deadline passes
+    /// unrenewed, the send, then classification. For `Declared { Hold }` adapters every
     /// send error returns ambiguous.
     pub async fn dispatch(
         &self,
@@ -224,7 +224,7 @@ impl<A, RA, R> Call<A, RA, R> {
         proof: &dyn Owner,
         args: A,
     ) -> Result<R, DispatchError> {
-        let deadline = check_ownership(proof)?;
+        check_ownership(proof)?;
         if let Strategy::KeyedReplay {
             window, intent_age, ..
         } = &self.a.strategy
@@ -239,10 +239,7 @@ impl<A, RA, R> Call<A, RA, R> {
             }
         }
         let op = self.a.operation.as_str();
-        match self
-            .bounded(ctx, deadline, |c| (self.a.send)(c, args))
-            .await
-        {
+        match self.bounded(ctx, proof, |c| (self.a.send)(c, args)).await {
             Ok(res) => {
                 tracing::debug!(target: METRICS_TARGET, operation = op, verdict = "sent", "effect attempt");
                 Ok(res)
@@ -299,11 +296,9 @@ impl<A, RA, R> Call<A, RA, R> {
             ),
             other => self.wrong_strategy("resolve", other),
         };
-        let deadline = check_ownership(proof)?;
+        check_ownership(proof)?;
         let slot = slot.clone();
-        let res = self
-            .bounded(ctx, deadline, |c| resolver(c, args, slot))
-            .await;
+        let res = self.bounded(ctx, proof, |c| resolver(c, args, slot)).await;
         let state = match &res {
             Ok(r) => r.state().as_str(),
             Err(_) => "error",
@@ -382,8 +377,8 @@ impl<A, RA, R> Call<A, RA, R> {
             Strategy::LookBeforeAct { lookup } => lookup,
             other => self.wrong_strategy("lookup", other),
         };
-        let deadline = check_ownership(proof)?;
-        let res = self.bounded(ctx, deadline, |c| lookup(c, args)).await;
+        check_ownership(proof)?;
+        let res = self.bounded(ctx, proof, |c| lookup(c, args)).await;
         let outcome = match &res {
             Ok(Some(_)) => "found",
             Ok(None) => "absent",
@@ -407,10 +402,8 @@ impl<A, RA, R> Call<A, RA, R> {
             Strategy::KeyedReplay { resolve, .. } => resolve,
             other => self.wrong_strategy("resolve_keyed", other),
         };
-        let deadline = check_ownership(proof)?;
-        let res = self
-            .bounded(ctx, deadline, |c| resolve(c, provider_id))
-            .await;
+        check_ownership(proof)?;
+        let res = self.bounded(ctx, proof, |c| resolve(c, provider_id)).await;
         let state = if res.is_ok() { "succeeded" } else { "error" };
         tracing::debug!(target: METRICS_TARGET, operation = self.a.operation.as_str(), state, "effect resolution");
         res.map_err(ResolveError::Failed)
@@ -462,23 +455,36 @@ impl<A, RA, R> Call<A, RA, R> {
         }
     }
 
-    /// Runs one remote step under the bound: `call_timeout`, tightened to
-    /// the remaining ownership deadline, so no call outlives the lease that
-    /// fenced it (clause 6); and the caller's context, whose cancellation
-    /// drops the step. Both produce the transport-shaped markers
-    /// ([`TimedOut`], [`Cancelled`]) the classifier floor holds. The
-    /// context handed to the step carries the bound as its deadline.
+    /// Runs one remote step under the bound: `call_timeout`; the claim's
+    /// ownership, so no call outlives the lease that fenced it (clause 6);
+    /// and the caller's context, whose cancellation drops the step. Each
+    /// produces a transport-shaped marker ([`TimedOut`], [`Cancelled`]) the
+    /// classifier floor holds. The context handed to the step carries
+    /// `call_timeout` as its deadline.
+    ///
+    /// The ownership deadline is a moving horizon — a heartbeat renews a
+    /// claim's lease while the attempt runs — so it is re-read when it
+    /// arrives: renewed, the step runs on; not renewed (or fenced), the step
+    /// is dropped as [`Cancelled`], ambiguous since it may have landed. A
+    /// step is therefore no longer cut at the deadline it started under,
+    /// which the short lease would make shorter than most remote calls.
     async fn bounded<T>(
         &self,
         ctx: &Ctx,
-        deadline: Deadline,
+        proof: &dyn Owner,
         step: impl FnOnce(Ctx) -> BoxFuture<'static, Result<T, BoxError>>,
     ) -> Result<T, BoxError> {
-        let budget = self.a.call_timeout.min(deadline.remaining());
+        let budget = self.a.call_timeout;
         let fut = step(ctx.with_timeout(budget));
+        let lapsed = async {
+            while let Some(deadline) = proof.ownership_deadline().filter(Deadline::is_live) {
+                tokio::time::sleep(deadline.remaining()).await;
+            }
+        };
         tokio::select! {
             biased;
             _ = ctx.cancelled() => Err(Box::new(Cancelled) as BoxError),
+            _ = lapsed => Err(Box::new(Cancelled) as BoxError),
             out = tokio::time::timeout(budget, fut) => match out {
                 Ok(out) => out,
                 Err(_) => Err(Box::new(TimedOut { after: budget }) as BoxError),
@@ -715,26 +721,69 @@ mod tests {
         );
     }
 
+    /// A claim whose heartbeat moves its deadline, as a processing-object
+    /// claim's does.
+    struct Renewing(std::sync::Mutex<Deadline>);
+
+    impl Renewing {
+        fn after(d: Duration) -> Arc<Renewing> {
+            Arc::new(Renewing(std::sync::Mutex::new(Deadline::after(d))))
+        }
+
+        fn renew(&self, d: Duration) {
+            *self.0.lock().unwrap() = Deadline::after(d);
+        }
+    }
+
+    impl Owner for Renewing {
+        fn ownership_deadline(&self) -> Option<Deadline> {
+            Some(*self.0.lock().unwrap())
+        }
+    }
+
     #[tokio::test]
     async fn dispatch_bounds_the_step() {
-        // The lease bounds the call when it is sooner than call_timeout.
-        let seen = Arc::new(std::sync::Mutex::new(None::<Duration>));
-        let sink = Arc::clone(&seen);
-        let call = idempotent(
-            send_fn(move |ctx, s: String| {
-                *sink.lock().unwrap() = ctx.deadline().map(|d| d.remaining());
-                async move { Ok(s) }
+        // A step that answers after 300ms.
+        let slow = idempotent(
+            send_fn(|_ctx, s: String| async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                Ok(s)
             }),
             Classifier::transport(),
         );
-        let lease = Proof(Deadline::after(Duration::from_millis(200)));
-        call.dispatch(&Ctx::background(), &lease, "x".into())
+
+        // A lease renewed while the step runs: it outlives the deadline it
+        // started under and finishes.
+        let renewed = Renewing::after(Duration::from_millis(50));
+        let beat = Arc::clone(&renewed);
+        let heartbeat = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                beat.renew(Duration::from_millis(50));
+            }
+        });
+        let res = slow
+            .dispatch(&Ctx::background(), renewed.as_ref(), "x".into())
+            .await;
+        heartbeat.abort();
+        assert!(res.is_ok(), "a step under a renewed lease was cut: {res:?}");
+
+        // A lease that lapses: the step is dropped when it does, not at
+        // call_timeout, as an ambiguous Cancelled (it may have landed).
+        let lapsing = Renewing::after(Duration::from_millis(50));
+        let start = std::time::Instant::now();
+        let err = slow
+            .dispatch(&Ctx::background(), lapsing.as_ref(), "x".into())
             .await
-            .unwrap();
-        let remaining = seen.lock().unwrap().expect("the send saw a deadline");
+            .unwrap_err();
+        assert!(err.is_ambiguous(), "{err}");
         assert!(
-            remaining <= Duration::from_millis(200),
-            "the step outlives the lease: {remaining:?}"
+            err.provider_error().is_some_and(|e| e.is::<Cancelled>()),
+            "{err}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_millis(250),
+            "the step ran past a lease that lapsed at 50ms"
         );
 
         // call_timeout bounds it otherwise, and a send that never answers

@@ -284,6 +284,47 @@ async fn a_heartbeat_extends_the_proof_and_keeps_the_lease() {
     h.finish().await;
 }
 
+/// The lease is the framework's fixed 90s, not the attempt budget: a claim
+/// under a 45-minute `attempt_timeout` leases its object for 90s, and a
+/// heartbeat renews it to 90s from now, so a holder that dies releases the
+/// object within 90s. Until 2026-10-22 the lease was `attempt_timeout` + 30s.
+#[tokio::test]
+async fn the_lease_is_short_and_independent_of_the_attempt_timeout() {
+    let Some(h) = Harness::from_env().await else {
+        return;
+    };
+    let r = h
+        .create(Spec {
+            widgets: 1,
+            content: "lease".into(),
+        })
+        .await
+        .unwrap();
+    let mut cfg = h.config();
+    cfg.attempt_timeout = Duration::from_secs(45 * 60);
+    let claim = h.store.claim_batch(cfg).await.unwrap().remove(0);
+
+    let meta = h.store.read(&r).await.unwrap().meta;
+    let leased = meta.lease_expires_at.unwrap() - meta.claimed_at.unwrap();
+    assert!(
+        (leased.num_milliseconds() - 90_000).abs() <= 1_000,
+        "the database lease runs 90s from the claim, whatever the attempt budget: {leased}"
+    );
+    let proof = claim.ownership_deadline().unwrap().remaining();
+    assert!(
+        proof > Duration::from_secs(80) && proof <= Duration::from_secs(90),
+        "the local proof ends no later than the lease: {proof:?}"
+    );
+
+    claim.heartbeat().await.unwrap();
+    let remaining = h.lease_expires_at(&r).await.unwrap() - Utc::now();
+    assert!(
+        (remaining.num_milliseconds() - 90_000).abs() <= 3_000,
+        "a heartbeat renews the lease to 90s from now: {remaining}"
+    );
+    h.finish().await;
+}
+
 /// Behaviour 10: generation_changed_at tracks accepted intent only.
 #[tokio::test]
 async fn generation_changed_at_tracks_intent_only() {
