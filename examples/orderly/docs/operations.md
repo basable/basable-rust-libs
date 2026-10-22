@@ -28,7 +28,8 @@
   built from it (`k8s/kratos/deployment.yaml`), so the sign-in page offers
   "Sign in with Basable" with no setup and no SMTP: single sign-on with
   every app on Basable, the person's verified email copied into the
-  identity's traits (`oidc.basable.jsonnet`). The person stays a user of
+  identity's traits (`oidc.basable.jsonnet`, which refuses a sign-in
+  whose id token carries no verified email). The person stays a user of
   THIS app; email codes work on the same identity. Never declare that
   Secret in `k8s/`.
 - **User-supplied secrets** (a provider's API key, a webhook's

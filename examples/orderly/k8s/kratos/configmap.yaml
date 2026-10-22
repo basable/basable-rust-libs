@@ -121,12 +121,16 @@ data:
       }
     }
   # Sign in with Basable's claims onto the identity's traits: the platform's
-  # id token carries the person's email, verified by the platform's own
-  # sign-in (email_verified is always true). The sub is the person's id for
-  # THIS project; Kratos keys the OIDC credential by it.
+  # id token carries the person's email only when the platform saw it proven
+  # (email_verified true), and a sign-in without one is refused here, since
+  # the email is what this app's code sign-in finds the person by. The sub
+  # is the person's id for THIS project; Kratos keys the OIDC credential by
+  # it.
   oidc.basable.jsonnet: |
     local claims = std.extVar('claims');
-    {
+    if !std.objectHas(claims, 'email') || !std.objectHas(claims, 'email_verified') || claims.email_verified != true then
+      error 'Basable sent no verified email address: sign in to Basable with an email code, then try again'
+    else {
       identity: {
         traits: {
           email: claims.email,

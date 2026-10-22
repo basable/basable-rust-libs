@@ -246,6 +246,7 @@ mod tests {
         ext.insert(Identity {
             id: "user-1".into(),
             email: String::new(),
+            email_verified: false,
         });
         let rc = RequestContext::new(http::HeaderMap::new())
             .with_extensions(ext)

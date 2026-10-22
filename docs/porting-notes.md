@@ -1138,3 +1138,19 @@ of it changed, in the crates and in the templates:
     flow nodes, `basableLogin` on by default with `auth: kratos`), which
     is why `examples/orderly` was re-rendered: its k8s/kratos/, its static
     frontend and two docs, no Rust.
+
+100. **Whether the session's email is verified, on both sides (2026-10-22).**
+    Go's `lib/auth` reads the whoami answer's `verifiable_addresses` and
+    puts beside the email whether Kratos marked that very address verified
+    (`KratosIdentity.EmailVerified`, `UserEmailVerifiedFromContext`); the
+    platform's OpenID provider hands an app the address only when it is,
+    because a settings change sets one without proof. `basable-auth` does
+    the same: `KratosIdentity::email_verified` (the address compared
+    without case, `via` email) and `Identity::email_verified`, a new public
+    field, so a literal `Identity { .. }` names it (basable-connect's test
+    did). Go's other change in that work, `BearerToken` and
+    `BearerChallenge` exported for the OpenID provider's userinfo, has no
+    crate counterpart: the crate protects no bearer resource. The scaffold's
+    `oidc.basable.jsonnet` now refuses a sign-in whose id token carries no
+    verified email, which is why `examples/orderly` was re-rendered (its
+    Kratos ConfigMap and `docs/operations.md`, no Rust).

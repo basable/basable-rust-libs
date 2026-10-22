@@ -102,6 +102,10 @@ pub struct Identity {
     pub id: String,
     /// The `traits.email` of the identity schema, empty when absent.
     pub email: String,
+    /// Whether Kratos marked that address verified (an email code typed
+    /// back proves it; a passkey registration or a settings change does
+    /// not). See [`KratosIdentity::email_verified`].
+    pub email_verified: bool,
 }
 
 /// The response of `GET /sessions/whoami`.
@@ -125,6 +129,36 @@ pub struct KratosIdentity {
     /// The schema's traits.
     #[serde(default)]
     pub traits: KratosTraits,
+    /// The identity's addresses and whether Kratos has seen each proven.
+    #[serde(default)]
+    pub verifiable_addresses: Vec<KratosVerifiableAddress>,
+}
+
+/// One of an identity's verifiable addresses.
+#[derive(Debug, Default, Deserialize)]
+pub struct KratosVerifiableAddress {
+    /// The address.
+    #[serde(default)]
+    pub value: String,
+    /// How it is verified: `email` for an email address.
+    #[serde(default)]
+    pub via: String,
+    /// Whether Kratos saw it proven.
+    #[serde(default)]
+    pub verified: bool,
+}
+
+impl KratosIdentity {
+    /// Whether the email trait is an address Kratos marked verified,
+    /// compared without case. An address set without proof is not.
+    pub fn email_verified(&self) -> bool {
+        let email = &self.traits.email;
+        !email.is_empty()
+            && self
+                .verifiable_addresses
+                .iter()
+                .any(|a| a.via == "email" && a.verified && a.value.eq_ignore_ascii_case(email))
+    }
 }
 
 /// The traits the platform's identity schema defines.
@@ -412,9 +446,11 @@ async fn whoami_call(
             "session has no identity id".to_string(),
         ));
     }
+    let email_verified = session.identity.email_verified();
     Ok(Identity {
         id: session.identity.id,
         email: session.identity.traits.email,
+        email_verified,
     })
 }
 
@@ -479,6 +515,29 @@ mod tests {
         if let Mode::Kratos { whoami, .. } = &v.mode {
             assert_eq!(whoami, "http://kratos:4433/sessions/whoami");
         }
+    }
+
+    // A session's email counts as verified only when Kratos marked that
+    // very address verified, as Go's KratosIdentity.EmailVerified does.
+    #[test]
+    fn the_email_is_verified_only_when_kratos_says_so() {
+        let identity = |email: &str, addresses: &[(&str, bool)]| -> KratosIdentity {
+            serde_json::from_value(serde_json::json!({
+                "id": "k",
+                "traits": { "email": email },
+                "verifiable_addresses": addresses
+                    .iter()
+                    .map(|(v, ok)| serde_json::json!({ "value": v, "via": "email", "verified": ok }))
+                    .collect::<Vec<_>>(),
+            }))
+            .unwrap()
+        };
+        assert!(identity("a@x.test", &[("a@x.test", true)]).email_verified());
+        assert!(identity("A@x.test", &[("a@x.test", true)]).email_verified());
+        assert!(!identity("a@x.test", &[("a@x.test", false)]).email_verified());
+        assert!(!identity("b@x.test", &[("a@x.test", true)]).email_verified());
+        assert!(!identity("a@x.test", &[]).email_verified());
+        assert!(!identity("", &[("", true)]).email_verified());
     }
 
     fn headers(pairs: &[(&str, &str)]) -> http::HeaderMap {
@@ -574,6 +633,7 @@ mod tests {
         let v = Validator::bypassed_for_tests(Identity {
             id: "user-1".into(),
             email: "u@example.com".into(),
+            email_verified: true,
         })
         .session_hook(move |i| s.lock().unwrap().push(i.id.clone()));
         let id = v.authenticate(None).await.unwrap();
