@@ -1,4 +1,4 @@
-# basable-messenger (crates 0.5.0)
+# basable-messenger (crates 0.6.0)
 
 The messenger is generated at build from `routing.yaml` by
 `basable-messenger-gen` (see `tools/messenger.bzl`). Two crates come out:

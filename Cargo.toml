@@ -29,7 +29,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 # connect-rust's MSRV; the rules_rust toolchain (MODULE.bazel) is newer.
 rust-version = "1.88"
@@ -42,26 +42,26 @@ authors = ["basable"]
 # a tenant project inherits the same table, so the agent rarely needs a new
 # crate. Never openssl, never a crate that needs a system library.
 [workspace.dependencies]
-basable-core = { version = "=0.5.0", path = "crates/basable-core" }
-basable-publicid = { version = "=0.5.0", path = "crates/basable-publicid" }
-basable-db = { version = "=0.5.0", path = "crates/basable-db" }
-basable-testkit = { version = "=0.5.0", path = "crates/basable-testkit" }
-basable-ledger = { version = "=0.5.0", path = "crates/basable-ledger" }
-basable-ledger-testkit = { version = "=0.5.0", path = "crates/basable-ledger-testkit" }
-basable-ledger-postgres = { version = "=0.5.0", path = "crates/basable-ledger-postgres" }
-basable-processingobject = { version = "=0.5.0", path = "crates/basable-processingobject" }
-basable-processingobject-testkit = { version = "=0.5.0", path = "crates/basable-processingobject-testkit" }
-basable-externaleffect = { version = "=0.5.0", path = "crates/basable-externaleffect" }
-basable-effecttest = { version = "=0.5.0", path = "crates/basable-effecttest" }
-basable-config = { version = "=0.5.0", path = "crates/basable-config" }
-basable-messenger = { version = "=0.5.0", path = "crates/basable-messenger" }
-basable-messenger-codegen = { version = "=0.5.0", path = "crates/basable-messenger-codegen" }
-basable-messenger-gen = { version = "=0.5.0", path = "crates/basable-messenger-gen" }
-basable-pubsub = { version = "=0.5.0", path = "crates/basable-pubsub" }
-basable-app = { version = "=0.5.0", path = "crates/basable-app" }
-basable-auth = { version = "=0.5.0", path = "crates/basable-auth" }
-basable-connect = { version = "=0.5.0", path = "crates/basable-connect" }
-basable-protoc-gen-buffa = { version = "=0.5.0", path = "crates/basable-protoc-gen-buffa" }
+basable-core = { version = "=0.6.0", path = "crates/basable-core" }
+basable-publicid = { version = "=0.6.0", path = "crates/basable-publicid" }
+basable-db = { version = "=0.6.0", path = "crates/basable-db" }
+basable-testkit = { version = "=0.6.0", path = "crates/basable-testkit" }
+basable-ledger = { version = "=0.6.0", path = "crates/basable-ledger" }
+basable-ledger-testkit = { version = "=0.6.0", path = "crates/basable-ledger-testkit" }
+basable-ledger-postgres = { version = "=0.6.0", path = "crates/basable-ledger-postgres" }
+basable-processingobject = { version = "=0.6.0", path = "crates/basable-processingobject" }
+basable-processingobject-testkit = { version = "=0.6.0", path = "crates/basable-processingobject-testkit" }
+basable-externaleffect = { version = "=0.6.0", path = "crates/basable-externaleffect" }
+basable-effecttest = { version = "=0.6.0", path = "crates/basable-effecttest" }
+basable-config = { version = "=0.6.0", path = "crates/basable-config" }
+basable-messenger = { version = "=0.6.0", path = "crates/basable-messenger" }
+basable-messenger-codegen = { version = "=0.6.0", path = "crates/basable-messenger-codegen" }
+basable-messenger-gen = { version = "=0.6.0", path = "crates/basable-messenger-gen" }
+basable-pubsub = { version = "=0.6.0", path = "crates/basable-pubsub" }
+basable-app = { version = "=0.6.0", path = "crates/basable-app" }
+basable-auth = { version = "=0.6.0", path = "crates/basable-auth" }
+basable-connect = { version = "=0.6.0", path = "crates/basable-connect" }
+basable-protoc-gen-buffa = { version = "=0.6.0", path = "crates/basable-protoc-gen-buffa" }
 
 uuid = { version = "1", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }

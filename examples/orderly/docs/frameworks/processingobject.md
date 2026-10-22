@@ -1,4 +1,4 @@
-# basable-processingobject (crates 0.5.0)
+# basable-processingobject (crates 0.6.0)
 
 The lifecycle framework. A nanoservice declares a type, an adapter and a
 reconciler; the framework owns identity, generation, scheduling, retry,

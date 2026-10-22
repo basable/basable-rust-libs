@@ -161,7 +161,7 @@ dependencies = [
 
 [[package]]
 name = "basable-app"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "axum",
  "basable-auth",
@@ -183,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "basable-auth"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "axum",
  "basable-core",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "basable-config"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "basable-core",
  "basable-db",
@@ -215,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "basable-connect"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "axum",
  "basable-auth",
@@ -236,11 +236,11 @@ dependencies = [
 
 [[package]]
 name = "basable-core"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "basable-db"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "basable-core",
  "futures-core",
@@ -251,7 +251,7 @@ dependencies = [
 
 [[package]]
 name = "basable-effecttest"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "basable-core",
  "basable-externaleffect",
@@ -262,7 +262,7 @@ dependencies = [
 
 [[package]]
 name = "basable-externaleffect"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "basable-core",
  "chrono",
@@ -272,7 +272,7 @@ dependencies = [
 
 [[package]]
 name = "basable-ledger"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "basable-core",
  "chrono",
@@ -284,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "basable-ledger-postgres"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "basable-core",
  "basable-db",
@@ -300,7 +300,7 @@ dependencies = [
 
 [[package]]
 name = "basable-ledger-testkit"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "basable-ledger",
  "chrono",
@@ -312,11 +312,11 @@ dependencies = [
 
 [[package]]
 name = "basable-messenger"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "basable-messenger-codegen"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "jsonschema",
  "prettyplease 0.3.0",
@@ -329,14 +329,14 @@ dependencies = [
 
 [[package]]
 name = "basable-messenger-gen"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "basable-messenger-codegen",
 ]
 
 [[package]]
 name = "basable-processingobject"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "basable-core",
  "basable-db",
@@ -353,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "basable-processingobject-testkit"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "axum",
  "basable-core",
@@ -374,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "basable-protoc-gen-buffa"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "buffa",
  "buffa-codegen",
@@ -382,7 +382,7 @@ dependencies = [
 
 [[package]]
 name = "basable-publicid"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "basable-core",
  "uuid",
@@ -390,7 +390,7 @@ dependencies = [
 
 [[package]]
 name = "basable-pubsub"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "basable-core",
  "basable-db",
@@ -403,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "basable-testkit"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "basable-core",
  "basable-db",
