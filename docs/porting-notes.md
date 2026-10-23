@@ -1197,11 +1197,11 @@ of it changed, in the crates and in the templates:
     the library still runs no goroutine of its own between calls. Shape
     difference: Go's lapse surfaces as `context.Canceled` through the
     step's context; Rust drops the step future in the `select!`.
-    Owed with the release that ships this: the Directive's policy rule
-    (§4 "What each invariant obliges the author to do", point 4) gives "replicas that disagree
-    steal each other's live leases" as the reason `attempt_timeout` must
-    match on every replica. True of 0.6.0, which projects pin today; after
-    this change a disagreeing `attempt_timeout` no longer touches the
-    lease, so the reason becomes the schedule and attempt budget the
-    replicas fight over. Change it in `docs/DIRECTIVE.md`, the monorepo's
-    vendored copy and `DirectiveVersion` together with the version bump.
+    Released in 0.7.0, with the Directive's policy rule (§4 "What each
+    invariant obliges the author to do", point 4): it gave "replicas that
+    disagree steal each other's live leases" as the reason
+    `attempt_timeout` must match on every replica, true until this change;
+    it now reads "fight over each object's schedule and attempt budget".
+    The Directive's source is the monorepo's `lib/scaffold/directive.md`
+    (`DirectiveVersion` 0.7.0); `examples/orderly/docs/DIRECTIVE.md` is its
+    render.

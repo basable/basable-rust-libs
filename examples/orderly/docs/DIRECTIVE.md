@@ -138,7 +138,7 @@ a code-review note.
    `nudge`, never into `<type>_status`.
 4. Policy discipline: `WorkerConfig`'s `resync`, `backoff`, `max_attempts`
    and `attempt_timeout` identical on every replica — replicas that disagree
-   steal each other's live leases.
+   fight over each object's schedule and attempt budget.
 5. Return exactly one `Outcome` per pass and let the framework commit typed
    status and envelope scheduling together; never persist status yourself.
 6. A teardown returns `Delete`/`Settled` only on confirmed absence — never
