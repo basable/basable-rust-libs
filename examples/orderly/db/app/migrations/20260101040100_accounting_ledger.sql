@@ -1,6 +1,6 @@
 -- migrate:up
 
--- Vendored from basable-ledger-postgres 0.7.0 (its `MIGRATION`
+-- Vendored from basable-ledger-postgres 0.8.0 (its `MIGRATION`
 -- constant, with `nano_ledger` replaced by this nanoservice's schema and role).
 -- The ledger owned by nanoservice `accounting`: its tables live in
 -- nano_accounting like every table it owns (the Directive §2, §11).

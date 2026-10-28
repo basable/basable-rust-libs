@@ -2,7 +2,7 @@
   "binary_crates": [
     "connectrpc-codegen 0.9.0"
   ],
-  "checksum": "88cb6f06377620400008c81fdc972ce893390ce1c4735a1c8d6ac12f6679f075",
+  "checksum": "f36f93c3dc69a969a48f7638dc26ce55ae3a96d459c88b611aaf4af8b673b28c",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -955,7 +955,7 @@
       ],
       "version": "0.5.6"
     },
-    "basable-app 0.7.0": {
+    "basable-app 0.8.0": {
       "common_attrs": {
         "deps": [
           {
@@ -1027,9 +1027,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-auth 0.7.0": {
+    "basable-auth 0.8.0": {
       "common_attrs": {
         "deps": [
           {
@@ -1085,9 +1085,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-config 0.7.0": {
+    "basable-config 0.8.0": {
       "common_attrs": {
         "deps": [
           {
@@ -1139,9 +1139,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-connect 0.7.0": {
+    "basable-connect 0.8.0": {
       "common_attrs": {
         "deps": [
           {
@@ -1213,9 +1213,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-core 0.7.0": {
+    "basable-core 0.8.0": {
       "common_attrs": {
         "edition": "2024"
       },
@@ -1235,9 +1235,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-db 0.7.0": {
+    "basable-db 0.8.0": {
       "common_attrs": {
         "deps": [
           {
@@ -1275,9 +1275,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-effecttest 0.7.0": {
+    "basable-effecttest 0.8.0": {
       "common_attrs": {
         "deps": [
           {
@@ -1307,9 +1307,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-externaleffect 0.7.0": {
+    "basable-externaleffect 0.8.0": {
       "common_attrs": {
         "deps": [
           {
@@ -1343,9 +1343,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-ledger 0.7.0": {
+    "basable-ledger 0.8.0": {
       "common_attrs": {
         "deps": [
           {
@@ -1389,9 +1389,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-ledger-postgres 0.7.0": {
+    "basable-ledger-postgres 0.8.0": {
       "common_attrs": {
         "deps": [
           {
@@ -1435,9 +1435,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-ledger-testkit 0.7.0": {
+    "basable-ledger-testkit 0.8.0": {
       "common_attrs": {
         "deps": [
           {
@@ -1479,9 +1479,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-messenger 0.7.0": {
+    "basable-messenger 0.8.0": {
       "common_attrs": {
         "edition": "2024"
       },
@@ -1501,9 +1501,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-messenger-codegen 0.7.0": {
+    "basable-messenger-codegen 0.8.0": {
       "common_attrs": {
         "deps": [
           {
@@ -1553,9 +1553,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-messenger-gen 0.7.0": {
+    "basable-messenger-gen 0.8.0": {
       "common_attrs": {
         "edition": "2024"
       },
@@ -1581,9 +1581,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-processingobject 0.7.0": {
+    "basable-processingobject 0.8.0": {
       "common_attrs": {
         "deps": [
           {
@@ -1633,9 +1633,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-processingobject-testkit 0.7.0": {
+    "basable-processingobject-testkit 0.8.0": {
       "common_attrs": {
         "deps": [
           {
@@ -1693,9 +1693,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-protoc-gen-buffa 0.7.0": {
+    "basable-protoc-gen-buffa 0.8.0": {
       "common_attrs": {
         "deps": [
           {
@@ -1731,9 +1731,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-publicid 0.7.0": {
+    "basable-publicid 0.8.0": {
       "common_attrs": {
         "deps": [
           {
@@ -1759,9 +1759,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-pubsub 0.7.0": {
+    "basable-pubsub 0.8.0": {
       "common_attrs": {
         "deps": [
           {
@@ -1799,9 +1799,9 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
-    "basable-testkit 0.7.0": {
+    "basable-testkit 0.8.0": {
       "common_attrs": {
         "deps": [
           {
@@ -1839,7 +1839,7 @@
           }
         }
       ],
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
     "base64 0.22.1": {
       "common_attrs": {
@@ -19288,25 +19288,25 @@
     "futures 0.3.34"
   ],
   "workspace_members": {
-    "basable-app 0.7.0": "crates/basable-app",
-    "basable-auth 0.7.0": "crates/basable-auth",
-    "basable-config 0.7.0": "crates/basable-config",
-    "basable-connect 0.7.0": "crates/basable-connect",
-    "basable-core 0.7.0": "crates/basable-core",
-    "basable-db 0.7.0": "crates/basable-db",
-    "basable-effecttest 0.7.0": "crates/basable-effecttest",
-    "basable-externaleffect 0.7.0": "crates/basable-externaleffect",
-    "basable-ledger 0.7.0": "crates/basable-ledger",
-    "basable-ledger-postgres 0.7.0": "crates/basable-ledger-postgres",
-    "basable-ledger-testkit 0.7.0": "crates/basable-ledger-testkit",
-    "basable-messenger 0.7.0": "crates/basable-messenger",
-    "basable-messenger-codegen 0.7.0": "crates/basable-messenger-codegen",
-    "basable-messenger-gen 0.7.0": "crates/basable-messenger-gen",
-    "basable-processingobject 0.7.0": "crates/basable-processingobject",
-    "basable-processingobject-testkit 0.7.0": "crates/basable-processingobject-testkit",
-    "basable-protoc-gen-buffa 0.7.0": "crates/basable-protoc-gen-buffa",
-    "basable-publicid 0.7.0": "crates/basable-publicid",
-    "basable-pubsub 0.7.0": "crates/basable-pubsub",
-    "basable-testkit 0.7.0": "crates/basable-testkit"
+    "basable-app 0.8.0": "crates/basable-app",
+    "basable-auth 0.8.0": "crates/basable-auth",
+    "basable-config 0.8.0": "crates/basable-config",
+    "basable-connect 0.8.0": "crates/basable-connect",
+    "basable-core 0.8.0": "crates/basable-core",
+    "basable-db 0.8.0": "crates/basable-db",
+    "basable-effecttest 0.8.0": "crates/basable-effecttest",
+    "basable-externaleffect 0.8.0": "crates/basable-externaleffect",
+    "basable-ledger 0.8.0": "crates/basable-ledger",
+    "basable-ledger-postgres 0.8.0": "crates/basable-ledger-postgres",
+    "basable-ledger-testkit 0.8.0": "crates/basable-ledger-testkit",
+    "basable-messenger 0.8.0": "crates/basable-messenger",
+    "basable-messenger-codegen 0.8.0": "crates/basable-messenger-codegen",
+    "basable-messenger-gen 0.8.0": "crates/basable-messenger-gen",
+    "basable-processingobject 0.8.0": "crates/basable-processingobject",
+    "basable-processingobject-testkit 0.8.0": "crates/basable-processingobject-testkit",
+    "basable-protoc-gen-buffa 0.8.0": "crates/basable-protoc-gen-buffa",
+    "basable-publicid 0.8.0": "crates/basable-publicid",
+    "basable-pubsub 0.8.0": "crates/basable-pubsub",
+    "basable-testkit 0.8.0": "crates/basable-testkit"
   }
 }

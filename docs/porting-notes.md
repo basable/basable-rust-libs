@@ -1217,12 +1217,17 @@ of it changed, in the crates and in the templates:
     OpenTelemetry span, a global `SdkMeterProvider` takes the app's own
     metrics, both exported by `opentelemetry-otlp` over HTTP protobuf
     (0.33; no gRPC stack, rustls through the shared reqwest), on the
-    SDK's own threads. `service.name` is `OTEL_SERVICE_NAME`, else the
-    binary's name; `Running::shutdown` flushes them last
-    (`basable_app::tracing::shutdown`). Without the variable nothing
-    changes. **Go has no counterpart, on purpose for now:** the Go side
-    of this is `lib/server`, whose one user is the platform's controller
-    on mgmt, where no endpoint is injected and `WithTracing` already
-    exports to the mgmt collector; no Go tenant scaffold ships. When one
-    does, its server library starts the SDK from the same variable.
-    Released in 0.8.0 (owed).
+    SDK's own threads. `service.name` is the SDK's default resource:
+    `OTEL_SERVICE_NAME` (or `OTEL_RESOURCE_ATTRIBUTES`) when set, else
+    `unknown_service:<binary>`, which the node agent replaces with the
+    pod's workload name, the name the app's logs carry too (the monorepo's
+    ce2e66fc). The crate named the service after its binary until the
+    release; that name differed from the logs'. `Running::shutdown`
+    flushes them last (`basable_app::tracing::shutdown`). Without the
+    variable nothing changes. **Go has no counterpart, on purpose for
+    now:** the Go side of this is `lib/server`, whose one user is the
+    platform's controller on mgmt, where no endpoint is injected and
+    `WithTracing` already exports to the mgmt collector; no Go tenant
+    scaffold ships. When one does, its server library starts the SDK from
+    the same variable and leaves `service.name` to the SDK the same way.
+    Released in 0.8.0.

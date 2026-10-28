@@ -7,7 +7,9 @@
 //! OpenTelemetry SDK: every `tracing` span becomes an OpenTelemetry span, and
 //! a global meter provider takes the app's own metrics
 //! (`opentelemetry::global::meter`), both exported over OTLP HTTP protobuf.
-//! `service.name` is `OTEL_SERVICE_NAME`, else the binary's name. The run's
+//! `service.name` is the SDK's: `OTEL_SERVICE_NAME` when set, else
+//! `unknown_service:<binary>`, which the platform's node agent replaces
+//! with the pod's workload name, the name its logs carry too. The run's
 //! drain flushes them ([`shutdown`]). Without the variable nothing changes:
 //! logs go to stdout, which the platform collects either way.
 
@@ -38,7 +40,7 @@ pub fn init_json() {
             if let Some(started) = OTLP.get() {
                 return Some(started.tracer());
             }
-            match Otlp::start(&endpoint, &service_name()) {
+            match Otlp::start(&endpoint) {
                 Ok(otlp) => {
                     otlp.install_globals();
                     let tracer = otlp.tracer();
@@ -78,19 +80,6 @@ pub fn shutdown() {
     }
 }
 
-/// The service's name: `OTEL_SERVICE_NAME`, else the binary's.
-fn service_name() -> String {
-    if let Ok(name) = std::env::var("OTEL_SERVICE_NAME")
-        && !name.trim().is_empty()
-    {
-        return name;
-    }
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.file_stem().map(|s| s.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "app".to_string())
-}
-
 /// The OpenTelemetry providers: spans and metrics to one OTLP endpoint.
 struct Otlp {
     tracer: SdkTracerProvider,
@@ -100,12 +89,11 @@ struct Otlp {
 impl Otlp {
     /// Builds both providers for `endpoint` (`http://host:4318`, the paths
     /// `/v1/traces` and `/v1/metrics` appended). Their exports run on the
-    /// SDK's own threads, not the async runtime's.
-    fn start(endpoint: &str, service: &str) -> Result<Otlp, BoxError> {
+    /// SDK's own threads, not the async runtime's. The resource is the
+    /// SDK's default (`OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`).
+    fn start(endpoint: &str) -> Result<Otlp, BoxError> {
         let base = endpoint.trim().trim_end_matches('/');
-        let resource = Resource::builder()
-            .with_service_name(service.to_string())
-            .build();
+        let resource = Resource::builder().build();
         let spans = opentelemetry_otlp::SpanExporter::builder()
             .with_http()
             .with_protocol(Protocol::HttpBinary)
@@ -208,7 +196,7 @@ mod tests {
     #[test]
     fn spans_and_metrics_are_sent_to_the_endpoint_as_otlp() {
         let (endpoint, seen) = collector();
-        let otlp = Otlp::start(&endpoint, "orders").expect("start");
+        let otlp = Otlp::start(&endpoint).expect("start");
 
         let subscriber = tracing_subscriber::registry()
             .with(tracing_opentelemetry::layer().with_tracer(otlp.tracer()));
