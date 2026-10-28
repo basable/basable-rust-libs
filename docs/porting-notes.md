@@ -1205,3 +1205,24 @@ of it changed, in the crates and in the templates:
     The Directive's source is the monorepo's `lib/scaffold/directive.md`
     (`DirectiveVersion` 0.7.0); `examples/orderly/docs/DIRECTIVE.md` is its
     render.
+
+## After 0.7.0
+
+103. **The OpenTelemetry SDK starts from the injected endpoint (2026-10-28).**
+    The platform now gives every container of a project
+    `OTEL_EXPORTER_OTLP_ENDPOINT` (`http://<node>:4318`, the node agent on
+    its own node; the monorepo's `docs/todo/observability-plan-2.md` §6),
+    and `basable_app::tracing::init_json` starts the SDK when it is set:
+    `tracing-opentelemetry` turns every `tracing` span into an
+    OpenTelemetry span, a global `SdkMeterProvider` takes the app's own
+    metrics, both exported by `opentelemetry-otlp` over HTTP protobuf
+    (0.33; no gRPC stack, rustls through the shared reqwest), on the
+    SDK's own threads. `service.name` is `OTEL_SERVICE_NAME`, else the
+    binary's name; `Running::shutdown` flushes them last
+    (`basable_app::tracing::shutdown`). Without the variable nothing
+    changes. **Go has no counterpart, on purpose for now:** the Go side
+    of this is `lib/server`, whose one user is the platform's controller
+    on mgmt, where no endpoint is injected and `WithTracing` already
+    exports to the mgmt collector; no Go tenant scaffold ships. When one
+    does, its server library starts the SDK from the same variable.
+    Released in 0.8.0 (owed).

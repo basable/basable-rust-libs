@@ -74,6 +74,14 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 futures-core = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+# The OpenTelemetry SDK basable-app starts when the platform injects an OTLP
+# endpoint (OTEL_EXPORTER_OTLP_ENDPOINT, the node agent): spans of every
+# tracing span and a meter provider, over OTLP HTTP protobuf. No gRPC
+# stack, and rustls through the shared reqwest.
+opentelemetry = { version = "0.33", default-features = false, features = ["trace", "metrics"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "metrics"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace", "metrics"] }
+tracing-opentelemetry = "0.34"
 # HTTP, for the simulators and later the Connect glue and Kratos client.
 axum = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2"] }

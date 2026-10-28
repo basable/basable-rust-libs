@@ -266,6 +266,8 @@ impl Running {
         };
         self.pool.close().await;
         tracing::info!(stuck = stuck.len(), "shutdown complete");
+        // Last, so the spans of the drain itself are sent too.
+        crate::tracing::shutdown();
         if !stuck.is_empty() {
             return Err(Error::Stuck(stuck));
         }

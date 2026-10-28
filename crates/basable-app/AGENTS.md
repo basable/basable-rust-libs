@@ -62,7 +62,7 @@ name there.
 | `Components` | `fn loops(&'static self) -> Vec<(&'static str, Loops)>`: every component's loops under its `routing.yaml` name. The generated messenger implements it; nothing else needs to |
 | `Loops` | `Loops::new()` (or `Default`), `.worker(Worker)` named by its type (woken in process by writes through the store it was built on, so the app runs no wake listener and the budget counts none — note 81), `.ticker(Ticker)` named by its name; type-erased, so workers over different types and tickers sit side by side |
 | `Ticker::new(name, every, \|ctx\| Box::pin(..))` | An immediate first tick, then one per interval; a failing tick is logged and retried next time; joined on shutdown. Never a CronJob |
-| `basable_app::tracing::init_json()` / `init_pretty()` | JSON logs for production, pretty for a terminal |
+| `basable_app::tracing::init_json()` / `init_pretty()` | JSON logs for production, pretty for a terminal. With `OTEL_EXPORTER_OTLP_ENDPOINT` set (the platform injects the node agent's, `http://<node>:4318`, into every container), `init_json` also starts the OpenTelemetry SDK: every `tracing` span an OpenTelemetry span, a global meter provider (`opentelemetry::global::meter`) for the app's own metrics, both over OTLP HTTP protobuf on the SDK's own threads, `service.name` from `OTEL_SERVICE_NAME` or the binary's name, W3C trace context as the propagator. An endpoint the SDK cannot use is reported on stderr and logging goes on. `basable_app::tracing::shutdown()` flushes it; `Running::shutdown` calls it last |
 | `Error` | `DatabaseUrl`, `Connect { attempts, source }`, `Migrations`, `Pool { nanoservice, source }`, `ConnectionBudget { requested, budget }`, `Bind`, `Server`, `DuplicateLoop(name)`, `Stuck(names)` |
 
 Re-exported for `main.rs`: `Validator`, `Identity`, `AuthCtx`
@@ -121,5 +121,5 @@ that ignores its context is named `<component>/<ticker>` in
 | `src/component.rs` | `Component`, `Components`, `Loops` (the named, type-erased loops) |
 | `src/serve.rs` | `Serve`, `Running`, the probes, the loop registry and its duplicate check, shutdown |
 | `src/ticker.rs` | `Ticker`, `TickFuture` |
-| `src/logging.rs` (`basable_app::tracing`) | `init_json`, `init_pretty` |
+| `src/logging.rs` (`basable_app::tracing`) | `init_json`, `init_pretty`, `shutdown`; the OpenTelemetry providers (`Otlp`), tested against a local HTTP collector |
 | `src/error.rs` | `Error` |
