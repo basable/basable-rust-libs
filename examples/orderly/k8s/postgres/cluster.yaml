@@ -11,6 +11,31 @@ metadata:
     basable.com/apply-wave: "-2"
 spec:
   instances: 1
+  # Postgres writes each entry as one JSON line whose own msg is always
+  # "record" and level always "info", the text and the real level under
+  # `record`: this tells the platform's log collector so, on every instance
+  # pod. Without it every line reads "record" at info, an error included.
+  inheritedMetadata:
+    annotations:
+      io.opentelemetry.discovery.logs.postgres/config: |
+        operators:
+          - type: json_parser
+            on_error: send_quiet
+          - type: move
+            if: 'attributes.record?.message != nil'
+            from: attributes.record.message
+            to: body
+          - type: severity_parser
+            if: 'attributes.record?.error_severity != nil'
+            parse_from: attributes.record.error_severity
+            mapping: {fatal: [FATAL, PANIC], error: ERROR, warn: WARNING, info: [LOG, INFO, NOTICE], debug: [DEBUG1, DEBUG2, DEBUG3, DEBUG4, DEBUG5]}
+          - type: move
+            if: 'attributes.record == nil and attributes.msg != nil'
+            from: attributes.msg
+            to: body
+          - type: severity_parser
+            if: 'attributes.record == nil and attributes.level != nil'
+            parse_from: attributes.level
   storage:
     size: 5Gi
   bootstrap:
