@@ -71,10 +71,18 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+          # CPU limits are sized to the free tier's namespace quota: the
+          # platform allows the environment's CPU times 1.5 as burst (3000m
+          # at 2000m) beside the vCluster control plane. App 2 x 500m,
+          # Postgres 1000m, Kratos 250m leave room for a rolling update's
+          # surge pod (wave 1) or a wave-0 Job (250m each); 2 x 1000m plus
+          # Kratos did not even admit Kratos (first tenant deploy,
+          # 2026-10-29). Requests are what is guaranteed; raise the limits
+          # with the environment's CPU in .basable/config.yaml.
           resources:
             requests:
               cpu: 200m
               memory: 256Mi
             limits:
-              cpu: "1"
+              cpu: 500m
               memory: 256Mi

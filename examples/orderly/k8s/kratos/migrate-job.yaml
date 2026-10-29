@@ -38,10 +38,12 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+          # The CPU limit fits the free tier's quota beside the running
+          # app on a redeploy (k8s/app/deployment.yaml).
           resources:
             requests:
               cpu: 50m
               memory: 64Mi
             limits:
-              cpu: 500m
+              cpu: 250m
               memory: 128Mi
