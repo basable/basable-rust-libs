@@ -6,17 +6,19 @@
 
 use uuid::Uuid;
 
-use crate::model::*;
+// Rows are `model::<Table>`, qualified: the component struct below and a
+// message type in `messages` may carry the same name as a table.
+use crate::model;
 use crate::Order;
 
 impl Order {
     // --- order_audit ---
 
-    pub async fn insert_order_audit(&self, _row: &OrderAudit) -> Result<(), sqlx::Error> {
+    pub async fn insert_order_audit(&self, _row: &model::OrderAudit) -> Result<(), sqlx::Error> {
         todo!("insert into order_audit: fill the columns in the migration and model.rs first")
     }
 
-    pub async fn get_order_audit(&self, _id: Uuid) -> Result<Option<OrderAudit>, sqlx::Error> {
+    pub async fn get_order_audit(&self, _id: Uuid) -> Result<Option<model::OrderAudit>, sqlx::Error> {
         todo!("select from order_audit")
     }
 }

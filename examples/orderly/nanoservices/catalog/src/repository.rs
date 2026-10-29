@@ -6,13 +6,15 @@
 
 use uuid::Uuid;
 
-use crate::model::*;
+// Rows are `model::<Table>`, qualified: the component struct below and a
+// message type in `messages` may carry the same name as a table.
+use crate::model;
 use crate::Catalog;
 
 impl Catalog {
     // --- product ---
 
-    pub async fn insert_product(&self, row: &Product) -> Result<(), sqlx::Error> {
+    pub async fn insert_product(&self, row: &model::Product) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO product (id, sku, price_cents) VALUES ($1, $2, $3)",
         )
@@ -24,8 +26,8 @@ impl Catalog {
         Ok(())
     }
 
-    pub async fn get_product(&self, id: Uuid) -> Result<Option<Product>, sqlx::Error> {
-        sqlx::query_as::<_, Product>("SELECT id, sku, price_cents FROM product WHERE id = $1")
+    pub async fn get_product(&self, id: Uuid) -> Result<Option<model::Product>, sqlx::Error> {
+        sqlx::query_as::<_, model::Product>("SELECT id, sku, price_cents FROM product WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
             .await
