@@ -36,6 +36,15 @@ spec:
               value: /migrations
             - name: DBMATE_NO_DUMP_SCHEMA
               value: "true"
+            # Schema-qualified on purpose: dbmate resolves an unqualified
+            # ledger name through current_schema() inside each migration's
+            # transaction, and a nanoservice migration has SET LOCAL
+            # search_path to its own schema by then, so the version insert
+            # looked for nano_<name>.schema_migrations and the Job failed on
+            # the first nanoservice type migration (first tenant deploy,
+            # 2026-10-29). The app's boot check reads this same table.
+            - name: DBMATE_MIGRATIONS_TABLE
+              value: public.schema_migrations
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
