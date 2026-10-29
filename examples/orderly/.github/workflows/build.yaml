@@ -30,6 +30,11 @@ jobs:
     # pick with runs-on; a job container is how a job builds on one.
     container:
       image: docker.io/library/debian:13.7@sha256:913f6706df59a68922d1dd08f78c2476560a8d367897200a6005b00e5f67c2d5
+    # The runner's default shell inside a job container is sh, and the steps
+    # below are bash (`${repo,,}`, `set -o pipefail`); Debian ships bash.
+    defaults:
+      run:
+        shell: bash
     permissions:
       contents: read
       # The job's OIDC identity token is what logs in to the platform
