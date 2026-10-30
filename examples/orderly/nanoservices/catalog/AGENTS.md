@@ -20,7 +20,7 @@ Config catalogs: `pricing_rule` (`config/base/pricing_rule.json`).
 | `src/lib.rs` | The `Catalog` struct, its constructor (pools, providers, calls), the schema marker, and its `basable_app::Component` impl: `loops()` lists every worker and ticker it runs (none for a plain executor). |
 | `src/handlers.rs` | `impl CatalogHandler<R>`: one `handle_<snake_message>` per handled message. Intent only — `create` / `update_spec` / `mark_deleted` / `nudge`; never a status write. |
 | `src/repository.rs` / `src/model.rs` | Typed sqlx queries over this nanoservice's pool; the row structs. |
-| `src/config.rs` | The config type declarations and their readers. |
+| `src/config.rs` | The config type declarations, their binders, and `register`, which `app/src/main.rs` calls before the seed loads; the handlers read the catalogs through the `config` repository the constructor takes. |
 | `tests/integration.rs` | Integration tests on the testkit (a database per test). |
 | `flows.md` | State machines, sequences, edge cases. |
 

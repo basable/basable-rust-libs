@@ -1,0 +1,18 @@
+# The declarative configuration seed (config/base): a filegroup for the
+# tests' runfiles and a layer that puts it at /config/base in the app image,
+# where the binary reads it at boot (CONFIG_SEED_DIR, k8s/app/deployment.yaml).
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+
+filegroup(
+    name = "seed",
+    srcs = glob(["base/**"]),
+    visibility = ["//visibility:public"],
+)
+
+pkg_tar(
+    name = "seed_layer",
+    srcs = [":seed"],
+    package_dir = "/config",
+    strip_prefix = ".",
+    visibility = ["//visibility:public"],
+)

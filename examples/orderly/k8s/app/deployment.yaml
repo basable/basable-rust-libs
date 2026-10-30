@@ -47,6 +47,10 @@ spec:
               value: https://TENANT_DOMAIN_PLACEHOLDER
             - name: KRATOS_PUBLIC_URL
               value: http://kratos-public:4433
+            # The config seed the image carries (config/BUILD.bazel), applied
+            # at boot; CONFIG_ENV (default prod) picks the files.
+            - name: CONFIG_SEED_DIR
+              value: /config/base
             - name: RUST_LOG
               value: info
             # A user-supplied secret (a provider's API key, a webhook's

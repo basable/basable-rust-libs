@@ -102,6 +102,7 @@ dependencies = [
  "axum",
  "basable-app",
  "basable-auth",
+ "basable-config",
  "basable-connect",
  "basable-core",
  "basable-db",

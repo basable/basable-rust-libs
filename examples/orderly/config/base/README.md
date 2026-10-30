@@ -9,7 +9,9 @@ configuration message in protobuf JSON with an `@type` naming the message
 name), its `name` and its `labels`. A field that references another object
 holds `#{Type:namespace:name}` and arrives in the app as that object's id.
 
-`basable-config`'s loader applies the directory at boot in one transaction,
+`basable-config`'s loader applies the directory at boot (`app/src/main.rs`,
+from `CONFIG_SEED_DIR`, which the image sets to `/config/base`; `CONFIG_ENV`
+picks the files, `prod` by default) in one transaction,
 dependencies first, and prunes every object it manages that the files no
 longer declare: removing an item is the delete. A re-run that changes
 nothing writes nothing; a change is a closed version in the history table.

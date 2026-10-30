@@ -35,5 +35,12 @@ def nanoservice_crate(name, deps = [], data = []):
             deps = [":" + name] + all_crate_deps(normal = True, normal_dev = True) + deps,
             proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
             env_inherit = ["TEST_DATABASE_URL"],
-            tags = ["requires-network"],
+            # One suite at a time: every test opens its own pools on the one
+            # Postgres (a database per test), and several suites at once
+            # exhaust a server's default hundred connections, the CI's
+            # service included.
+            tags = [
+                "requires-network",
+                "exclusive",
+            ],
         )

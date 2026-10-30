@@ -9,5 +9,8 @@ nanoservice_crate(
         "//crates/interfaces",
         "//crates/proto",
     ],
-    data = ["//db/app:migrations"],
+    data = [
+        "//db/app:migrations",
+        "//config:seed",
+    ],
 )

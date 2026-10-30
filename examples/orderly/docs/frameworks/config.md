@@ -44,3 +44,13 @@ adopts one the first time the files declare its name.
 
 Who may write a catalog at runtime is the nanoservice's decision,
 documented in its AGENTS.md.
+
+**At boot**, `app/src/main.rs` registers every nanoservice's binders on
+one `ConfigTypesBuilder` (the scaffolder wires each `config::register`
+between the `basable:config-register` markers), applies the seed with
+`load_seed` from `CONFIG_SEED_DIR` (`config/base` in the repository,
+`/config/base` in the image, a layer `config/BUILD.bazel` adds) for the
+environment `CONFIG_ENV` names (`prod` by default), and hands a
+`Repository` to the constructor of every nanoservice that owns config
+types, which reads its catalogs through it. A seed that cannot be applied
+is a boot failure, exit 3.

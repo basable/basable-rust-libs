@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 basable-core = { workspace = true }
 basable-app = { workspace = true }
+basable-config = { workspace = true }
 basable-db = { workspace = true }
 basable-auth = { workspace = true }
 basable-connect = { workspace = true }

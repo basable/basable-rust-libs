@@ -7,7 +7,7 @@ base as user 65532, exposes 8080, and mints the push targets `//:push` runs.
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 load("//k8s/infra:image.bzl", "image")
 
-def rust_server(name, srcs, deps, aliases = {}, proc_macro_deps = [], repositories = [], visibility = None):
+def rust_server(name, srcs, deps, aliases = {}, proc_macro_deps = [], repositories = [], visibility = None, extra_tars = []):
     rust_binary(
         name = name,
         srcs = srcs,
@@ -23,4 +23,5 @@ def rust_server(name, srcs, deps, aliases = {}, proc_macro_deps = [], repositori
         exposed_ports = ["8080"],
         user = "65532",
         repositories = repositories,
+        extra_tars = extra_tars,
     )

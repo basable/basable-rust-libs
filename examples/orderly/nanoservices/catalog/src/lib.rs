@@ -30,13 +30,18 @@ impl Stateful for Schema {}
 /// or atomics and never held across an `.await`).
 pub struct Catalog {
     pub(crate) pool: NanoPool<Schema>,
+    /// The catalogs this nanoservice owns, read per request (`config.rs`).
+    pub(crate) config: basable_config::Repository,
 }
 
 impl Catalog {
     /// Builds the component. Called once from `app/src/main.rs`.
-    pub fn new(_app: &basable_app::App, pool: NanoPool<Schema>) -> Self {
+    /// `config` is the repository main built over every registered config
+    /// type, the seed applied.
+    pub fn new(_app: &basable_app::App, pool: NanoPool<Schema>, config: basable_config::Repository) -> Self {
         Self {
             pool,
+            config,
         }
     }
 }

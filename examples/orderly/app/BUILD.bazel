@@ -36,5 +36,7 @@ rust_server(
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
     repositories = ["registry.test.local/abandon-above-tilt/shop"],
+    # The config seed at /config/base, read at boot (CONFIG_SEED_DIR).
+    extra_tars = ["//config:seed_layer"],
     visibility = ["//visibility:public"],
 )
