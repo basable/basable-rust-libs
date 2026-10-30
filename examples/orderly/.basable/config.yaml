@@ -24,3 +24,11 @@ spec:
         storage: "10Gi"
         maxPods: 30
       objectStorage: {}
+      # Live's alerts (a container crash-looping or out of memory, a route
+      # answering mostly 5xx, a volume over 90% full, and the project's own
+      # rules) are mailed to the organisation's contact address; without
+      # this nobody is told. Rules and a webhook go here too
+      # (/help/observability).
+      alerts:
+        email:
+          enabled: true
