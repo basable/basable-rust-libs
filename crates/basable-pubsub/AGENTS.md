@@ -1,14 +1,15 @@
-# basable-pubsub — cross-replica broadcast over Postgres LISTEN/NOTIFY
+# basable-pubsub — publish/subscribe across replicas
 
-The port of the monorepo's `golang/lib/pubsub`. A nanoservice project runs
-as several identical replicas; the `Bus` lets one replica broadcast a
-message that handlers on every replica receive, with Postgres as the
-transport and no broker. One `Bus` per process multiplexes every logical
-channel over one listen connection and runs as a background task. This is
-the BROADCAST channel (SSE fan-out, cross-replica cancels). A
-processing-object wake does not travel over Postgres at all: it is in
-process, from a store to the workers running on it (`docs/porting-notes.md`
-63, 81).
+The port of the monorepo's `golang/lib/pubsub` (both rebuilt 2026-10-31;
+until then they were `LISTEN`/`NOTIFY`). A nanoservice project runs as
+several identical replicas. A subscription is a row in Postgres naming the
+channel and the replica; a publish reads the channel's subscribers there and
+sends the message straight to each over a connection of their own. Postgres
+is the directory, never the transport: messages are whole (up to 16 MiB),
+and only the replicas that subscribed receive them. This is the channel
+between replicas (SSE fan-out, cross-replica cancels). A processing-object
+wake does not travel over it: it is in process, from a store to the workers
+running on it (`docs/porting-notes.md` 81).
 
 The Directive (`docs/DIRECTIVE.md` in every tenant repository,
 `golang/controller/lib/scaffold/directive.md` in the monorepo) is the
@@ -18,57 +19,73 @@ contract this crate serves.
 
 | Item | What it is |
 |---|---|
-| `Bus::new(pool)` | A bus over the pool; `instance_id()` is its random UUID, the origin prefix on every payload it publishes |
-| `subscribe(channel, handler)` | Registers a `Handler` (`Box<dyn Fn(Message) + Send + Sync>`) for a channel, BEFORE `run`; `SubscribeError::{AfterRun, InvalidChannel}` |
-| `on_reconnect(hook)` | Registers a `ReconnectHook` run after the listen connection is re-established, before `run` only. Notifications may have been missed during the gap; a subscriber that needs gap recovery (a resync broadcast) registers here |
-| `deliver_to_self()` | Receive own messages too (off by default) |
-| `publish(channel, data)` | `pg_notify` from the pool with the origin prefix; `PublishError::{PayloadTooLarge, InvalidChannel, Database}` |
-| `publish_tx(tx: &mut PgConnection, channel, data, delivery)` | Queues the notification in the caller's transaction: Postgres delivers it only if that transaction commits. `Delivery::ExcludeSelf` (siblings only) or `IncludeSelf` (the nil origin, so the publisher receives it even with dedup on) |
-| `run(ctx)` | Listens on every subscribed channel and dispatches until `ctx` is cancelled, reconnecting after `RECONNECT_DELAY` (3 s) on a connection error and firing the hooks after each re-establishment; with no subscriptions it idles |
-| `is_listening()`, `listening().await` | Whether the `LISTEN` is in place; a publish before that is silently lost |
-| `Message { channel, origin, data }` | A received notification; `data` is the application payload exactly as published |
-| `NOTIFY_MAX_BYTES` (8000), `MAX_DATA_BYTES` (8000 − 36 − 64) | Postgres's hard limit and the largest payload `publish` accepts; a bigger payload is truncated by the caller first |
+| `Bus::new(pool, Config).await` | Registers this process as a replica (a uuid made at start, the address its peers dial, its certificate's SHA-256) and opens its listener. `Config`: `listen_address` (`0.0.0.0:0` by default: the kernel picks the port, which the directory publishes), `advertise_host` (the pod IP; `None` takes the listener's host or 127.0.0.1), `heartbeat_interval` (60 s), `expiry` (120 s), `send_timeout` (5 s) |
+| `Bus::local()` | A bus of one process, no directory, no peers: a publish reaches this process's own subscribers. For tests without a database |
+| `subscribe(channel, handler).await` | Adds a `Handler` (`Arc<dyn Fn(&Message) + Send + Sync>`); the replica's row for the channel is written with the first handler on it. Any time, before or after `run`. Returns a `Subscription` |
+| `Subscription::unsubscribe().await` | Removes that handler; the row goes with the channel's last one. Dropping a subscription does not unsubscribe |
+| `publish(channel, data).await` | Sends to every subscriber, this replica's own in process first, and returns how many replicas took it; an unreachable one is logged and not counted |
+| `on_reregister(hook)` | Runs after this replica registers again, having found itself swept (its heartbeat late past the expiry): what was published to it meanwhile was lost |
+| `run(ctx).await` | Serves the peers, heartbeats this replica and sweeps the dead ones until `ctx` is cancelled, then closes its connections and deregisters it. A local bus only waits |
+| `replica_id()`, `address()` | This replica's id (every message's `origin`) and the address the directory lists |
+| `Message { channel, origin, data }` | A delivered message; `data` is the bytes as published |
+| `Error` | `InvalidChannel`, `MessageTooLarge`, `Config`, `Database`, `Io`, `Tls` |
+| `MAX_MESSAGE_BYTES` (16 MiB), `MAX_CHANNEL_BYTES` (512) | The limits |
 
 ## Rules
 
-- **Subscribe before run.** The channel set is fixed once the connection
-  listens; a later `subscribe` is `AfterRun`, not a panic.
-- **Handlers do not block.** They run on the bus's listen task; slow work
-  goes to its own task.
-- **Payloads are text.** A `NOTIFY` payload is a string, so `publish`
-  takes `&str` and a `Message` carries a `String`; the wire form is
-  `<origin uuid><data>`, and junk without a well-formed origin is dropped.
-- **A bus needs a pool.** Go's nil-pool "stub mode" is gone; a test that
-  wants no database does not build a bus.
-- **Wait for `listening()` in tests.** Go's tests slept; here the signal
-  says when the first publish will be heard.
+- **The directory is the framework's.** `basable.pubsub_replica` and
+  `basable.pubsub_subscription`, the framework migration
+  `20260101000003_basable_pubsub_directory.sql` (the scaffold renders it;
+  a project scaffolded before it adds the file unchanged), read and written
+  as the `app` login. No nanoservice touches them.
+- **The database is the trust anchor.** Each replica makes a key pair and a
+  self-signed certificate at start and lists the certificate's SHA-256 in
+  its row; peers talk mutual TLS 1.3 (ring) and accept only the listed
+  certificate for the replica at the other end, checking the handshake
+  signature against it. A reused pod IP cannot receive a message meant for
+  the pod that had it.
+- **At most once, in order per publisher.** One connection per peer, one
+  frame at a time, each acknowledged; a peer that does not acknowledge
+  within `send_timeout` is dropped and dialled afresh. A replica that needs
+  what it missed resyncs in its `on_reregister` hook, or from a durable log.
+- **A publish reaches the publisher's own subscribers.** In process, before
+  the directory is read; there is no separate local path to add beside a
+  subscription.
+- **Handlers do not block.** They run on the publisher's task (in process)
+  or on the peer connection's reader; slow work goes to its own task.
 - **Do not use it for wakes.** A processing object's store wakes the
   workers running on it after each commit that makes an object due, and
-  the poll covers every other replica; a cross-replica wake would only
-  help a replica whose own worker is full, where raising its parallelism
-  is the answer (note 81). A nanoservice never sends a wake by hand.
+  the poll covers every other replica (note 81). A nanoservice never sends
+  a wake by hand.
 
 ## What the tests pin
 
-- `src/lib.rs`: the wire payload carries the origin and bounds the data;
-  dispatch skips own messages unless asked and tolerates junk; subscribing
-  after run or on a bad channel is refused.
-- `tests/bus.rs` (two buses over one database): a publish reaches the
-  sibling and not the publisher; `deliver_to_self` and `IncludeSelf` reach
-  the publisher too; a killed listen connection (its backend terminated)
-  comes back and fires the reconnect hook.
+- `src/lib.rs`: a local bus delivers to every handler and counts the
+  replica once; a message carries the replica as its origin; unsubscribing
+  stops only that handler; bad channels and oversized messages are refused;
+  the advertised address.
+- `src/peer.rs`: a publish frame round-trips (up to 3 MiB); bad frames are
+  refused; the pin accepts only the listed certificate.
+- `tests/bus.rs` (replicas over one database and localhost, as `app`): a
+  message reaches every subscribed replica whole (1 MiB); only the
+  channel's subscribers receive it, the publisher's own included; a
+  publisher's 200 messages arrive in order; a replica that unsubscribes or
+  stops is forgotten; one that stopped heartbeating is swept; one swept
+  while alive registers again and runs its hook; a peer whose listed
+  certificate is not its own is refused, both ways.
 
 ## Porting notes
 
-`docs/porting-notes.md` 63 (the Go bus one to one: origin prefix, dedup,
-the payload bound, the reconnect delay; added `listening()` and the
-`SubscribeError`; reconnection is sqlx's `PgListener`, so
-`db.ReleaseListenConn` has no counterpart here); 81 (the processing-object
-wake is in process, so this bus is the only `LISTEN` a process holds).
+`docs/porting-notes.md` 104 (the rebuild: the directory, the wire, what
+went: `publish_tx`, `Delivery`, `deliver_to_self`, `on_reconnect`,
+`listening()`, the 8000-byte bound); 63 is the `LISTEN`/`NOTIFY` bus it
+replaced; 81 (the processing-object wake is in process).
 
 ## File map
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `Bus`, `Delivery`, `Message`, `Handler`, `ReconnectHook`, `SubscribeError`, `PublishError`, the constants, `run`'s listen loop |
-| `tests/bus.rs` | The two-replica suite over `TEST_DATABASE_URL` |
+| `src/lib.rs` | `Bus`, `Config`, `Message`, `Handler`, `ReregisterHook`, `Subscription`, `Error`, the constants, `run`'s heartbeat loop |
+| `src/directory.rs` | Registration, the subscription rows, heartbeat, sweep, the subscriber lookup, the fingerprint lookup |
+| `src/peer.rs` | The identity (rcgen certificate, rustls configurations, the pinning verifiers), the wire, dialling and publishing to a peer, serving the ones that dial in |
+| `tests/bus.rs` | The suite across replicas over `TEST_DATABASE_URL` |

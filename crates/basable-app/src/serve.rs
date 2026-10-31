@@ -205,7 +205,7 @@ pub struct Running {
     ctx: Ctx,
     health: Arc<Health>,
     server: JoinHandle<Result<(), std::io::Error>>,
-    bus: Arc<Bus>,
+    bus: Bus,
     bus_task: JoinHandle<()>,
     tasks: Vec<(String, JoinHandle<()>)>,
     pool: PgPool,
@@ -226,7 +226,7 @@ impl Running {
     }
 
     /// The pubsub bus.
-    pub fn bus(&self) -> &Arc<Bus> {
+    pub fn bus(&self) -> &Bus {
         &self.bus
     }
 

@@ -31,8 +31,11 @@
 //!   generated messenger implements from `routing.yaml`.
 //! - `/healthz` answers while the process lives; `/readyz` once wiring is
 //!   done, the database answers and every loop is alive.
-//! - [`basable_pubsub::Bus`] through [`App::bus`], for cross-replica
-//!   broadcast.
+//! - [`basable_pubsub::Bus`] through [`App::bus`], this process's replica
+//!   on the cross-replica bus: subscribe to a channel, publish to its
+//!   subscribers (the directory is the framework migration
+//!   `20260101000003_basable_pubsub_directory.sql`; the Deployment passes
+//!   `POD_IP`).
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

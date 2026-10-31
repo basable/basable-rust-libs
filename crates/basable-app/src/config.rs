@@ -26,6 +26,9 @@ pub mod var {
     pub const BOOT_WAIT_SECS: &str = "DATABASE_BOOT_WAIT_SECS";
     /// How long shutdown waits for workers to drain; default 30 seconds.
     pub const SHUTDOWN_GRACE_SECS: &str = "SHUTDOWN_GRACE_SECS";
+    /// The pod's IP, where the other replicas reach this one's pubsub bus
+    /// (the Deployment's downward API, `status.podIP`); unset, 127.0.0.1.
+    pub const POD_IP: &str = "POD_IP";
 }
 
 /// The framework configuration.
@@ -55,6 +58,10 @@ pub struct Config {
     /// stuck ones.
     #[serde(default = "default_shutdown_grace")]
     pub shutdown_grace_secs: u64,
+    /// The pod's IP, which the pubsub bus publishes in its directory with
+    /// the port its listener got; `None` outside a cluster (127.0.0.1).
+    #[serde(default)]
+    pub pod_ip: Option<IpAddr>,
 }
 
 fn default_host() -> IpAddr {
@@ -87,6 +94,7 @@ impl Config {
             connection_budget: default_budget(),
             boot_wait_secs: default_boot_wait(),
             shutdown_grace_secs: default_shutdown_grace(),
+            pod_ip: None,
         }
     }
 
@@ -110,6 +118,9 @@ impl Config {
         }
         if let Some(v) = optional(var::SHUTDOWN_GRACE_SECS)? {
             cfg.shutdown_grace_secs = parse(var::SHUTDOWN_GRACE_SECS, &v)?;
+        }
+        if let Some(v) = optional(var::POD_IP)? {
+            cfg.pod_ip = Some(parse(var::POD_IP, &v)?);
         }
         cfg.validate()?;
         Ok(cfg)

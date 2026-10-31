@@ -1,489 +1,642 @@
-//! Cross-replica publish/subscribe over Postgres `LISTEN`/`NOTIFY`, the port
-//! of the monorepo's `golang/lib/pubsub`. A nanoservice project runs as
-//! several identical replicas; the [`Bus`] lets one replica broadcast a
-//! message that handlers on every replica receive, with Postgres as the
-//! transport and no broker.
+//! Cross-replica publish/subscribe, the port of the monorepo's
+//! `golang/lib/pubsub` (both rebuilt 2026-10-31; until then they were
+//! `LISTEN`/`NOTIFY`).
 //!
-//! One `Bus` per process multiplexes every logical channel over one listen
-//! connection and runs as a background task ([`Bus::run`]). Every
-//! [`Bus::subscribe`] and [`Bus::on_reconnect`] happens BEFORE `run`: the
-//! set of channels is fixed once the connection listens. Own-message dedup
-//! is built in: every payload carries the publishing bus's instance id and
-//! a bus skips its own messages unless [`Bus::deliver_to_self`] was set.
+//! A subscription is a row in Postgres naming the channel and the replica
+//! that subscribed; a publish reads the channel's subscribers there and sends
+//! the message over a connection straight to each of them. Postgres is the
+//! directory, never the transport: no payload passes through it, so a message
+//! may be up to [`MAX_MESSAGE_BYTES`], and only the replicas that subscribed
+//! to a channel receive what is published on it.
 //!
-//! This is the broadcast channel (SSE fan-out, cross-replica cancels). A
-//! processing-object wake never travels over it: that wake is in process,
-//! from a store to the workers running on it.
+//! Each process is one replica. [`Bus::new`] registers it: an id made at
+//! start, the address its peers dial (the advertised host and the port its
+//! listener got), and the fingerprint of the certificate it made at start.
+//! [`Bus::run`] heartbeats it, deletes any replica whose heartbeat is older
+//! than the expiry (its subscriptions with it), and deregisters it when it
+//! returns. Peers talk mutual TLS 1.3, each side accepting only the
+//! certificate the directory lists for the replica at the other end: the
+//! database is the trust anchor.
+//!
+//! Delivery is at most once. A publish reaches every subscriber, this
+//! replica's own included (in process), and returns how many replicas took
+//! the message. Messages from one publisher to one replica arrive in the
+//! order they were published. A replica that finds it was swept registers
+//! again and runs its [`Bus::on_reregister`] hooks, where a subscriber that
+//! needs gap recovery resyncs.
+//!
+//! The directory is the framework's tables `basable.pubsub_replica` and
+//! `basable.pubsub_subscription` (the scaffold's framework migration
+//! `20260101000003_basable_pubsub_directory.sql`), read and written as the
+//! `app` login.
+//!
+//! This is the channel between replicas (SSE fan-out, cross-replica
+//! cancels). A processing-object wake never travels over it: that wake is in
+//! process, from a store to the workers running on it.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use std::collections::BTreeMap;
+mod directory;
+mod peer;
+
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use basable_core::Ctx;
-use sqlx::postgres::PgListener;
-use sqlx::{PgConnection, PgPool};
-use tokio::sync::watch;
+use sqlx::PgPool;
+use tokio::net::TcpListener;
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
-/// Postgres's hard limit on a `NOTIFY` payload.
-pub const NOTIFY_MAX_BYTES: usize = 8000;
+/// How often a running replica heartbeats its row and sweeps the directory.
+pub const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+/// How old a replica's heartbeat may be before the sweep deletes it, and
+/// before a publish stops counting it as a subscriber.
+pub const DEFAULT_EXPIRY: Duration = Duration::from_secs(120);
+/// Bounds one delivery to one replica: the dial, the write and the
+/// acknowledgement.
+pub const DEFAULT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The fixed length of the canonical UUID origin prefix on every wire
-/// payload.
-const ORIGIN_LEN: usize = 36;
+/// The largest message [`Bus::publish`] accepts.
+pub const MAX_MESSAGE_BYTES: usize = 16 << 20;
+/// The longest channel name.
+pub const MAX_CHANNEL_BYTES: usize = 512;
 
-/// The largest application payload [`Bus::publish`] accepts: the `NOTIFY`
-/// limit less the origin prefix and a safety margin. A caller with a bigger
-/// payload truncates to this budget first.
-pub const MAX_DATA_BYTES: usize = NOTIFY_MAX_BYTES - ORIGIN_LEN - 64;
-
-/// Paces reconnecting after the listen connection fails.
-const RECONNECT_DELAY: Duration = Duration::from_secs(3);
-
-/// Whether a notification published inside a transaction reaches the
-/// publishing bus as well as its siblings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Delivery {
-    /// Siblings only: the publisher already acted locally.
-    ExcludeSelf,
-    /// Every replica including the publisher, whatever
-    /// [`Bus::deliver_to_self`] says: the origin is the nil UUID.
-    IncludeSelf,
+/// A replica's place on the network and its timings.
+#[derive(Debug, Clone)]
+pub struct Config {
+    /// Where the replica accepts its peers, `host:port`; port 0 lets the
+    /// kernel pick one, which the directory then publishes.
+    pub listen_address: String,
+    /// The host its peers dial, the pod IP. `None` takes the listener's own
+    /// host, or 127.0.0.1 when that is unspecified.
+    pub advertise_host: Option<String>,
+    /// [`DEFAULT_HEARTBEAT_INTERVAL`] by default.
+    pub heartbeat_interval: Duration,
+    /// [`DEFAULT_EXPIRY`] by default; must exceed the heartbeat interval.
+    pub expiry: Duration,
+    /// [`DEFAULT_SEND_TIMEOUT`] by default.
+    pub send_timeout: Duration,
 }
 
-/// A received notification.
+impl Default for Config {
+    fn default() -> Config {
+        Config {
+            listen_address: "0.0.0.0:0".to_string(),
+            advertise_host: None,
+            heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
+            expiry: DEFAULT_EXPIRY,
+            send_timeout: DEFAULT_SEND_TIMEOUT,
+        }
+    }
+}
+
+/// One delivered message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
     /// The channel.
     pub channel: String,
-    /// The instance id of the publishing bus (the nil UUID for an
-    /// `IncludeSelf` publish).
+    /// The id of the replica that published it.
     pub origin: String,
-    /// The application payload exactly as published.
-    pub data: String,
+    /// The message as published.
+    pub data: Vec<u8>,
 }
 
-/// Handles a received [`Message`]. It runs on the bus's listen task, so it
-/// must not block; slow work goes to its own task.
-pub type Handler = Box<dyn Fn(Message) + Send + Sync>;
+/// Handles a delivered [`Message`]. It runs on the task that delivers it
+/// (the publisher's own for an in-process delivery, the peer connection's
+/// reader otherwise), so it must not block: messages from one peer wait
+/// behind it. Slow work goes to its own task.
+pub type Handler = Arc<dyn Fn(&Message) + Send + Sync>;
 
-/// A hook run after the bus re-establishes its listen connection:
-/// notifications may have been missed during the gap, so a subscriber that
-/// needs gap recovery (a resync broadcast, say) registers here.
-pub type ReconnectHook = Box<dyn Fn() + Send + Sync>;
+/// A hook run after the replica registers again, having found itself swept
+/// from the directory: messages published to it in the meantime were lost.
+pub type ReregisterHook = Arc<dyn Fn() + Send + Sync>;
 
-/// Why a subscription was refused.
+/// Why a bus call failed.
 #[derive(Debug)]
-pub enum SubscribeError {
-    /// [`Bus::run`] has started; the channel set is fixed.
-    AfterRun,
-    /// The channel name is empty or contains a NUL.
+pub enum Error {
+    /// The channel name is empty, longer than [`MAX_CHANNEL_BYTES`], or
+    /// holds a NUL.
     InvalidChannel(String),
-}
-
-impl fmt::Display for SubscribeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SubscribeError::AfterRun => f.write_str("pubsub: subscribe after run"),
-            SubscribeError::InvalidChannel(c) => write!(f, "pubsub: invalid channel name {c:?}"),
-        }
-    }
-}
-
-impl std::error::Error for SubscribeError {}
-
-/// Why a publish failed.
-#[derive(Debug)]
-pub enum PublishError {
-    /// The payload exceeds [`MAX_DATA_BYTES`].
-    PayloadTooLarge {
-        /// The payload's length in bytes.
+    /// The message exceeds [`MAX_MESSAGE_BYTES`].
+    MessageTooLarge {
+        /// The message's length in bytes.
         len: usize,
     },
-    /// The channel name is empty or contains a NUL.
-    InvalidChannel(String),
-    /// The `pg_notify` failed.
+    /// The configuration cannot work.
+    Config(String),
+    /// The directory could not be read or written.
     Database(sqlx::Error),
+    /// The listener could not be opened.
+    Io(std::io::Error),
+    /// The replica's certificate or TLS configuration could not be made.
+    Tls(String),
 }
 
-impl fmt::Display for PublishError {
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PublishError::PayloadTooLarge { len } => {
-                write!(f, "pubsub: payload of {len} bytes exceeds {MAX_DATA_BYTES}")
+            Error::InvalidChannel(c) => write!(f, "pubsub: invalid channel name {c:?}"),
+            Error::MessageTooLarge { len } => {
+                write!(
+                    f,
+                    "pubsub: message of {len} bytes exceeds {MAX_MESSAGE_BYTES}"
+                )
             }
-            PublishError::InvalidChannel(c) => write!(f, "pubsub: invalid channel name {c:?}"),
-            PublishError::Database(e) => write!(f, "pubsub publish: {e}"),
+            Error::Config(e) => write!(f, "pubsub: {e}"),
+            Error::Database(e) => write!(f, "pubsub: directory: {e}"),
+            Error::Io(e) => write!(f, "pubsub: listen: {e}"),
+            Error::Tls(e) => write!(f, "pubsub: tls: {e}"),
         }
     }
 }
 
-impl std::error::Error for PublishError {
+impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            PublishError::Database(e) => Some(e),
+            Error::Database(e) => Some(e),
+            Error::Io(e) => Some(e),
             _ => None,
         }
     }
 }
 
-/// A cross-replica pub/sub bus over Postgres `LISTEN`/`NOTIFY`.
+impl From<sqlx::Error> for Error {
+    fn from(e: sqlx::Error) -> Error {
+        Error::Database(e)
+    }
+}
+
+/// One replica's membership: its subscriptions, its connections to its peers
+/// and its row in the directory. Cheap to clone; every clone is the same
+/// replica.
+#[derive(Clone)]
 pub struct Bus {
-    pool: PgPool,
-    instance_id: String,
-    deliver_self: bool,
-    handlers: Mutex<BTreeMap<String, Vec<Handler>>>,
-    on_reconnect: Mutex<Vec<ReconnectHook>>,
-    started: AtomicBool,
-    listening: watch::Sender<bool>,
+    inner: Arc<Inner>,
 }
 
 impl fmt::Debug for Bus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Bus")
-            .field("instance_id", &self.instance_id)
-            .field("deliver_self", &self.deliver_self)
+            .field("replica", &self.inner.id)
+            .field("address", &self.inner.address)
             .finish_non_exhaustive()
     }
 }
 
+struct Inner {
+    /// The database holding the directory; `None` for a local bus.
+    pool: Option<PgPool>,
+    cfg: Config,
+    id: Uuid,
+    address: String,
+    /// Taken by [`Bus::run`].
+    listener: Mutex<Option<TcpListener>>,
+    /// The certificate and TLS configuration; `None` for a local bus.
+    identity: Option<peer::Identity>,
+    /// Serialises the directory writes that mirror `subs` (the first handler
+    /// on a channel inserts its row, the last one out deletes it, a
+    /// registration inserts every channel), so the rows and the map agree.
+    dir: tokio::sync::Mutex<()>,
+    subs: RwLock<BTreeMap<String, Vec<(u64, Handler)>>>,
+    next_subscription: AtomicU64,
+    hooks: Mutex<Vec<ReregisterHook>>,
+    /// This replica's connections to the others, dialled on first publish.
+    peers: tokio::sync::Mutex<HashMap<Uuid, Arc<peer::Peer>>>,
+}
+
 impl Bus {
-    /// A bus over `pool`: the app login, which may `NOTIFY` and `LISTEN`.
-    /// The listen connection is taken from this pool while [`Bus::run`]
-    /// runs and returned with its subscriptions cleared.
-    pub fn new(pool: PgPool) -> Bus {
+    /// Registers this process as a replica in the directory and opens its
+    /// listener. Subscriptions may be made at once; peers are served, and the
+    /// replica heartbeated, once [`Bus::run`] runs.
+    pub async fn new(pool: PgPool, cfg: Config) -> Result<Bus, Error> {
+        if cfg.expiry <= cfg.heartbeat_interval {
+            return Err(Error::Config(format!(
+                "expiry {:?} must exceed the heartbeat interval {:?}",
+                cfg.expiry, cfg.heartbeat_interval
+            )));
+        }
+        let id = Uuid::new_v4();
+        let identity = peer::Identity::new(id)?;
+        let listener = TcpListener::bind(&cfg.listen_address)
+            .await
+            .map_err(Error::Io)?;
+        let address = advertised_address(
+            listener.local_addr().map_err(Error::Io)?,
+            cfg.advertise_host.as_deref(),
+        );
+        let bus = Bus::with(Some(pool), cfg, id, address, Some(listener), Some(identity));
+        {
+            let _dir = bus.inner.dir.lock().await;
+            directory::register(&bus.inner).await?;
+        }
+        tracing::info!(replica = %id, address = %bus.inner.address, "pubsub: registered");
+        Ok(bus)
+    }
+
+    /// A bus of one process with no directory and no peers: a publish
+    /// reaches this process's own subscribers only. For a process that is
+    /// the only replica by construction, and for tests that run without a
+    /// database.
+    pub fn local() -> Bus {
+        Bus::with(
+            None,
+            Config::default(),
+            Uuid::new_v4(),
+            String::new(),
+            None,
+            None,
+        )
+    }
+
+    fn with(
+        pool: Option<PgPool>,
+        cfg: Config,
+        id: Uuid,
+        address: String,
+        listener: Option<TcpListener>,
+        identity: Option<peer::Identity>,
+    ) -> Bus {
         Bus {
-            pool,
-            instance_id: Uuid::new_v4().to_string(),
-            deliver_self: false,
-            handlers: Mutex::new(BTreeMap::new()),
-            on_reconnect: Mutex::new(Vec::new()),
-            started: AtomicBool::new(false),
-            listening: watch::Sender::new(false),
+            inner: Arc::new(Inner {
+                pool,
+                cfg,
+                id,
+                address,
+                listener: Mutex::new(listener),
+                identity,
+                dir: tokio::sync::Mutex::new(()),
+                subs: RwLock::new(BTreeMap::new()),
+                next_subscription: AtomicU64::new(1),
+                hooks: Mutex::new(Vec::new()),
+                peers: tokio::sync::Mutex::new(HashMap::new()),
+            }),
         }
     }
 
-    /// Whether the listen connection is up right now. False before
-    /// [`Bus::run`], during a reconnect, and after the run ends; a publish
-    /// made while false reaches the siblings that are listening but not
-    /// this bus.
-    pub fn is_listening(&self) -> bool {
-        *self.listening.borrow()
+    /// This replica's id: the origin of every message it publishes.
+    pub fn replica_id(&self) -> String {
+        self.inner.id.to_string()
     }
 
-    /// Resolves once the listen connection is up (or at once if it is).
-    pub async fn listening(&self) {
-        let mut rx = self.listening.subscribe();
-        let _ = rx.wait_for(|up| *up).await;
+    /// The address this replica's peers dial, as the directory lists it;
+    /// empty for a local bus.
+    pub fn address(&self) -> &str {
+        &self.inner.address
     }
 
-    /// Delivers a publisher's own messages back to its local handlers too.
-    /// Off by default: the publisher usually acted locally already and only
-    /// needs its siblings.
-    pub fn deliver_to_self(mut self) -> Bus {
-        self.deliver_self = true;
-        self
-    }
-
-    /// This bus's per-process identifier, stamped on every published
-    /// message.
-    pub fn instance_id(&self) -> &str {
-        &self.instance_id
-    }
-
-    /// Registers a handler for `channel`. Before [`Bus::run`] only.
-    pub fn subscribe(
-        &self,
-        channel: &str,
-        handler: impl Fn(Message) + Send + Sync + 'static,
-    ) -> Result<(), SubscribeError> {
-        if !valid_channel(channel) {
-            return Err(SubscribeError::InvalidChannel(channel.to_string()));
-        }
-        if self.started.load(Ordering::SeqCst) {
-            return Err(SubscribeError::AfterRun);
-        }
-        self.handlers
-            .lock()
-            .expect("handlers lock")
-            .entry(channel.to_string())
-            .or_default()
-            .push(Box::new(handler));
-        Ok(())
-    }
-
-    /// Registers a reconnect hook. Before [`Bus::run`] only.
-    pub fn on_reconnect(
-        &self,
-        hook: impl Fn() + Send + Sync + 'static,
-    ) -> Result<(), SubscribeError> {
-        if self.started.load(Ordering::SeqCst) {
-            return Err(SubscribeError::AfterRun);
-        }
-        self.on_reconnect
+    /// Registers a hook run after this replica registers again, having found
+    /// itself swept from the directory. Never run for the first registration.
+    pub fn on_reregister(&self, hook: impl Fn() + Send + Sync + 'static) {
+        self.inner
+            .hooks
             .lock()
             .expect("hooks lock")
-            .push(Box::new(hook));
-        Ok(())
+            .push(Arc::new(hook));
     }
 
-    /// Broadcasts `data` on `channel` to the handlers on every replica
-    /// (this one included only with [`Bus::deliver_to_self`]).
-    pub async fn publish(&self, channel: &str, data: &str) -> Result<(), PublishError> {
-        let wire = self.wire_payload(channel, data, false)?;
-        sqlx::query("SELECT pg_notify($1, $2)")
-            .bind(channel)
-            .bind(wire)
-            .execute(&self.pool)
-            .await
-            .map_err(PublishError::Database)?;
-        Ok(())
-    }
-
-    /// Queues the notification in the caller's transaction: Postgres
-    /// delivers it only if that transaction commits. `IncludeSelf` uses the
-    /// nil origin so the publishing bus receives it even with own-message
-    /// dedup on.
-    pub async fn publish_tx(
-        &self,
-        tx: &mut PgConnection,
-        channel: &str,
-        data: &str,
-        delivery: Delivery,
-    ) -> Result<(), PublishError> {
-        let wire = self.wire_payload(channel, data, delivery == Delivery::IncludeSelf)?;
-        sqlx::query("SELECT pg_notify($1, $2)")
-            .bind(channel)
-            .bind(wire)
-            .execute(tx)
-            .await
-            .map_err(PublishError::Database)?;
-        Ok(())
-    }
-
-    fn wire_payload(
+    /// Adds a handler to `channel`. The replica's row for the channel is
+    /// written with the first handler on it, so publishes from every replica
+    /// reach it from the moment this returns.
+    pub async fn subscribe(
         &self,
         channel: &str,
-        data: &str,
-        include_self: bool,
-    ) -> Result<String, PublishError> {
-        if !valid_channel(channel) {
-            return Err(PublishError::InvalidChannel(channel.to_string()));
-        }
-        if data.len() > MAX_DATA_BYTES {
-            return Err(PublishError::PayloadTooLarge { len: data.len() });
-        }
-        let origin = if include_self {
-            Uuid::nil().to_string()
+        handler: impl Fn(&Message) + Send + Sync + 'static,
+    ) -> Result<Subscription, Error> {
+        valid_channel(channel)?;
+        let dir = self.inner.dir.lock().await;
+        let first = self
+            .inner
+            .subs
+            .read()
+            .expect("subs lock")
+            .get(channel)
+            .is_none_or(Vec::is_empty);
+        let reregistered = if first && self.inner.pool.is_some() {
+            directory::insert_subscription(&self.inner, channel).await?
         } else {
-            self.instance_id.clone()
+            false
         };
-        let mut wire = String::with_capacity(ORIGIN_LEN + data.len());
-        wire.push_str(&origin);
-        wire.push_str(data);
-        Ok(wire)
+        let id = self.inner.next_subscription.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .subs
+            .write()
+            .expect("subs lock")
+            .entry(channel.to_string())
+            .or_default()
+            .push((id, Arc::new(handler)));
+        drop(dir);
+        if reregistered {
+            self.inner.run_reregister_hooks();
+        }
+        Ok(Subscription {
+            bus: self.clone(),
+            channel: channel.to_string(),
+            id,
+        })
     }
 
-    /// Listens on every subscribed channel and dispatches notifications
-    /// until `ctx` is cancelled, reconnecting after a fixed delay on a
-    /// connection error and firing the reconnect hooks after each
-    /// re-establishment. With no subscriptions it idles until cancelled.
+    /// Sends `data` to every subscriber of `channel` and returns how many
+    /// replicas took it, this one included when it subscribes. A replica
+    /// that cannot be reached, or no longer subscribes, is not counted and
+    /// is logged. This replica's own subscribers are served before the
+    /// directory is read, so they get the message even when this fails.
+    pub async fn publish(&self, channel: &str, data: &[u8]) -> Result<usize, Error> {
+        valid_channel(channel)?;
+        if data.len() > MAX_MESSAGE_BYTES {
+            return Err(Error::MessageTooLarge { len: data.len() });
+        }
+        let mut delivered = 0;
+        let local = Message {
+            channel: channel.to_string(),
+            origin: self.replica_id(),
+            data: data.to_vec(),
+        };
+        if self.inner.deliver_local(&local) {
+            delivered += 1;
+        }
+        if self.inner.pool.is_none() {
+            return Ok(delivered);
+        }
+
+        let targets = directory::subscribers(&self.inner, channel).await?;
+        let data: Arc<[u8]> = Arc::from(data);
+        let mut sends = JoinSet::new();
+        for target in targets {
+            let inner = self.inner.clone();
+            let channel = channel.to_string();
+            let data = data.clone();
+            sends.spawn(async move {
+                match peer::send(&inner, &target, &channel, &data).await {
+                    Ok(taken) => taken,
+                    Err(e) => {
+                        tracing::warn!(channel, replica = %target.id, error = %e, "pubsub: delivery failed");
+                        false
+                    }
+                }
+            });
+        }
+        while let Some(taken) = sends.join_next().await {
+            if taken.unwrap_or(false) {
+                delivered += 1;
+            }
+        }
+        Ok(delivered)
+    }
+
+    /// Serves this replica's peers and heartbeats it until `ctx` is
+    /// cancelled, then closes every connection and deregisters it. A local
+    /// bus only waits.
     pub async fn run(&self, ctx: Ctx) {
-        self.started.store(true, Ordering::SeqCst);
-        let channels: Vec<String> = self
-            .handlers
-            .lock()
-            .expect("handlers lock")
-            .keys()
-            .cloned()
-            .collect();
-        if channels.is_empty() {
+        let listener = self.inner.listener.lock().expect("listener lock").take();
+        let Some(listener) = listener.filter(|_| self.inner.pool.is_some()) else {
             ctx.cancelled().await;
             return;
-        }
-        let mut reconnect = false;
-        while !ctx.is_cancelled() {
-            let outcome = self.listen(&ctx, &channels, reconnect).await;
-            self.listening.send_replace(false);
-            match outcome {
-                Ok(()) => return,
-                Err(e) => {
-                    if ctx.is_cancelled() {
-                        return;
-                    }
-                    tracing::error!(error = %e, delay_ms = RECONNECT_DELAY.as_millis() as u64, "pubsub: listen loop error, reconnecting");
-                }
-            }
-            reconnect = true;
-            tokio::select! {
-                _ = ctx.cancelled() => return,
-                _ = tokio::time::sleep(RECONNECT_DELAY) => {}
-            }
-        }
-    }
+        };
 
-    /// One listen connection's life: `Ok(())` when the context ended,
-    /// `Err` when the connection failed and could not be re-established
-    /// by the listener itself.
-    async fn listen(
-        &self,
-        ctx: &Ctx,
-        channels: &[String],
-        reconnect: bool,
-    ) -> Result<(), sqlx::Error> {
-        // The listener returns its connection to the pool with `UNLISTEN *`
-        // on drop, so a reconnect leaves no subscribed connection behind
-        // (the port of Go's db.ReleaseListenConn, done by sqlx).
-        let mut listener = PgListener::connect_with(&self.pool).await?;
-        let names: Vec<&str> = channels.iter().map(String::as_str).collect();
-        listener.listen_all(names).await?;
-        self.listening.send_replace(true);
-        if reconnect {
-            self.fire_reconnect();
+        let mut tasks = JoinSet::new();
+        {
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            tasks.spawn(async move { peer::accept(inner, listener, ctx).await });
         }
-        tracing::info!(channels = ?channels, "pubsub: listening");
+
+        self.inner.tick().await;
+        let mut ticker = tokio::time::interval(self.inner.cfg.heartbeat_interval);
+        ticker.tick().await; // the first tick is immediate, and the tick above was it
         loop {
-            let notification = tokio::select! {
-                n = listener.try_recv() => n?,
-                _ = ctx.cancelled() => return Ok(()),
-            };
-            match notification {
-                Some(n) => self.dispatch(n.channel(), n.payload()),
-                // A lost-and-restored connection: the listener re-issued its
-                // LISTENs; the gap is the hooks' to recover.
-                None => {
-                    tracing::warn!("pubsub: listen connection was lost and re-established");
-                    self.fire_reconnect();
-                }
+            tokio::select! {
+                _ = ctx.cancelled() => break,
+                _ = ticker.tick() => self.inner.tick().await,
+            }
+        }
+
+        // Dropping this replica's connections closes them; the ones its
+        // peers opened end with ctx, inside the accept task.
+        self.inner.peers.lock().await.clear();
+        while tasks.join_next().await.is_some() {}
+        let send_timeout = self.inner.cfg.send_timeout;
+        match tokio::time::timeout(send_timeout, directory::deregister(&self.inner)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(replica = %self.inner.id, error = %e, "pubsub: deregister failed; the sweep removes the row")
+            }
+            Err(_) => {
+                tracing::warn!(replica = %self.inner.id, "pubsub: deregister timed out; the sweep removes the row")
             }
         }
     }
+}
 
-    fn dispatch(&self, channel: &str, wire: &str) {
-        if wire.len() < ORIGIN_LEN || !wire.is_char_boundary(ORIGIN_LEN) {
-            tracing::warn!(
-                channel,
-                "pubsub: malformed payload (shorter than the origin prefix)"
-            );
-            return;
+impl Inner {
+    /// Hands `m` to this replica's handlers on its channel and reports
+    /// whether there were any.
+    fn deliver_local(&self, m: &Message) -> bool {
+        let handlers: Vec<Handler> = self
+            .subs
+            .read()
+            .expect("subs lock")
+            .get(&m.channel)
+            .map(|hs| hs.iter().map(|(_, h)| h.clone()).collect())
+            .unwrap_or_default();
+        for h in &handlers {
+            h(m);
         }
-        let (origin, data) = wire.split_at(ORIGIN_LEN);
-        if origin == self.instance_id && !self.deliver_self {
-            return;
-        }
-        let handlers = self.handlers.lock().expect("handlers lock");
-        let Some(hs) = handlers.get(channel) else {
-            return;
-        };
-        let msg = Message {
-            channel: channel.to_string(),
-            origin: origin.to_string(),
-            data: data.to_string(),
-        };
-        for h in hs {
-            h(msg.clone());
-        }
+        !handlers.is_empty()
     }
 
-    fn fire_reconnect(&self) {
-        for hook in self.on_reconnect.lock().expect("hooks lock").iter() {
+    fn run_reregister_hooks(&self) {
+        let hooks: Vec<ReregisterHook> = self.hooks.lock().expect("hooks lock").clone();
+        for hook in hooks {
             hook();
         }
     }
+
+    /// Heartbeats this replica, registering it again when it was swept, and
+    /// sweeps the replicas that stopped heartbeating.
+    async fn tick(&self) {
+        match directory::heartbeat(self).await {
+            Ok(false) => {}
+            Ok(true) => {
+                tracing::warn!(replica = %self.id, "pubsub: this replica had been swept and registered again");
+                self.run_reregister_hooks();
+            }
+            Err(e) => {
+                tracing::error!(replica = %self.id, error = %e, "pubsub: heartbeat failed");
+                return;
+            }
+        }
+        match directory::sweep(self).await {
+            Ok(0) => {}
+            Ok(swept) => {
+                tracing::info!(
+                    count = swept,
+                    "pubsub: swept replicas that stopped heartbeating"
+                )
+            }
+            Err(e) => tracing::error!(error = %e, "pubsub: sweep failed"),
+        }
+    }
 }
 
-/// `LISTEN` cannot be parameterised; the listener quotes the channel as an
-/// identifier, so only an empty name or a NUL is refused here.
-fn valid_channel(channel: &str) -> bool {
-    !channel.is_empty() && !channel.contains('\0')
+/// One handler on one channel, ended by [`Subscription::unsubscribe`].
+/// Dropping it does not unsubscribe: that needs the directory.
+#[derive(Debug)]
+pub struct Subscription {
+    bus: Bus,
+    channel: String,
+    id: u64,
 }
 
-/// A shared bus: what the app hands to every component that publishes.
-pub type SharedBus = Arc<Bus>;
+impl Subscription {
+    /// The channel.
+    pub fn channel(&self) -> &str {
+        &self.channel
+    }
+
+    /// Removes the handler. The replica's row for the channel goes with its
+    /// last handler.
+    pub async fn unsubscribe(self) -> Result<(), Error> {
+        let inner = &self.bus.inner;
+        let _dir = inner.dir.lock().await;
+        let last = {
+            let mut subs = inner.subs.write().expect("subs lock");
+            let Some(handlers) = subs.get_mut(&self.channel) else {
+                return Ok(());
+            };
+            let before = handlers.len();
+            handlers.retain(|(id, _)| *id != self.id);
+            if handlers.len() == before {
+                return Ok(());
+            }
+            let empty = handlers.is_empty();
+            if empty {
+                subs.remove(&self.channel);
+            }
+            empty
+        };
+        if last && inner.pool.is_some() {
+            directory::delete_subscription(inner, &self.channel).await?;
+        }
+        Ok(())
+    }
+}
+
+fn valid_channel(channel: &str) -> Result<(), Error> {
+    if channel.is_empty() || channel.len() > MAX_CHANNEL_BYTES || channel.contains('\0') {
+        return Err(Error::InvalidChannel(channel.to_string()));
+    }
+    Ok(())
+}
+
+/// The `host:port` peers dial: the advertised host (or the listener's own)
+/// with the port the listener got.
+fn advertised_address(addr: SocketAddr, host: Option<&str>) -> String {
+    let host = match host {
+        Some(h) if !h.is_empty() => h.to_string(),
+        _ if addr.ip().is_unspecified() => "127.0.0.1".to_string(),
+        _ => addr.ip().to_string(),
+    };
+    if host.contains(':') {
+        format!("[{host}]:{}", addr.port())
+    } else {
+        format!("{host}:{}", addr.port())
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn bus() -> Bus {
-        Bus::new(PgPool::connect_lazy("postgres://x@localhost/x").expect("lazy pool"))
-    }
-
     #[tokio::test]
-    async fn the_wire_payload_carries_the_origin_and_bounds_the_data() {
-        let b = bus();
-        let wire = b.wire_payload("c", "hello", false).unwrap();
-        assert_eq!(&wire[..ORIGIN_LEN], b.instance_id());
-        assert_eq!(&wire[ORIGIN_LEN..], "hello");
-        let wire = b.wire_payload("c", "hello", true).unwrap();
-        assert_eq!(&wire[..ORIGIN_LEN], "00000000-0000-0000-0000-000000000000");
-        let big = "x".repeat(MAX_DATA_BYTES + 1);
-        assert!(matches!(
-            b.wire_payload("c", &big, false),
-            Err(PublishError::PayloadTooLarge { len }) if len == MAX_DATA_BYTES + 1
-        ));
-        assert!(
-            b.wire_payload("c", &"x".repeat(MAX_DATA_BYTES), false)
-                .is_ok()
-        );
-        assert!(matches!(
-            b.wire_payload("", "x", false),
-            Err(PublishError::InvalidChannel(_))
-        ));
-    }
-
-    #[tokio::test]
-    async fn dispatch_skips_own_messages_unless_asked_and_tolerates_junk() {
-        let b = bus();
+    async fn a_local_bus_delivers_to_every_handler_and_counts_the_replica_once() {
+        let bus = Bus::local();
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let s = seen.clone();
-        b.subscribe("c", move |m| s.lock().unwrap().push(m))
+        for tag in ["first", "second"] {
+            let seen = seen.clone();
+            bus.subscribe("orders", move |m| {
+                seen.lock()
+                    .unwrap()
+                    .push(format!("{tag}:{}", String::from_utf8_lossy(&m.data)))
+            })
+            .await
             .unwrap();
-        let own = b.wire_payload("c", "mine", false).unwrap();
-        b.dispatch("c", &own);
-        assert!(seen.lock().unwrap().is_empty());
-        let other = format!("{}{}", Uuid::new_v4(), "theirs");
-        b.dispatch("c", &other);
-        b.dispatch("c", "short");
-        b.dispatch("other", &other);
-        let got = seen.lock().unwrap().clone();
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].data, "theirs");
-        assert_eq!(got[0].channel, "c");
-
-        let b = bus().deliver_to_self();
-        let s = seen.clone();
-        b.subscribe("c", move |m| s.lock().unwrap().push(m))
-            .unwrap();
-        let own = b.wire_payload("c", "mine", false).unwrap();
-        b.dispatch("c", &own);
-        assert_eq!(seen.lock().unwrap().len(), 2);
+        }
+        assert_eq!(bus.publish("orders", b"one").await.unwrap(), 1);
+        assert_eq!(*seen.lock().unwrap(), ["first:one", "second:one"]);
+        assert_eq!(bus.publish("invoices", b"two").await.unwrap(), 0);
     }
 
     #[tokio::test]
-    async fn subscribing_after_run_or_on_a_bad_channel_is_refused() {
-        let b = bus();
+    async fn a_message_carries_the_replica_as_its_origin() {
+        let bus = Bus::local();
+        let got = Arc::new(Mutex::new(None));
+        let g = got.clone();
+        bus.subscribe("c", move |m| *g.lock().unwrap() = Some(m.clone()))
+            .await
+            .unwrap();
+        bus.publish("c", b"x").await.unwrap();
+        let m = got.lock().unwrap().clone().unwrap();
+        assert_eq!(m.origin, bus.replica_id());
+        assert_eq!(m.channel, "c");
+    }
+
+    #[tokio::test]
+    async fn unsubscribing_stops_only_that_handler() {
+        let bus = Bus::local();
+        let kept = Arc::new(AtomicU64::new(0));
+        let dropped = Arc::new(AtomicU64::new(0));
+        let k = kept.clone();
+        bus.subscribe("c", move |_| {
+            k.fetch_add(1, Ordering::Relaxed);
+        })
+        .await
+        .unwrap();
+        let d = dropped.clone();
+        let sub = bus
+            .subscribe("c", move |_| {
+                d.fetch_add(1, Ordering::Relaxed);
+            })
+            .await
+            .unwrap();
+        sub.unsubscribe().await.unwrap();
+        assert_eq!(bus.publish("c", b"").await.unwrap(), 1);
+        assert_eq!(kept.load(Ordering::Relaxed), 1);
+        assert_eq!(dropped.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn bad_channels_and_oversized_messages_are_refused() {
+        let bus = Bus::local();
+        let long = "x".repeat(MAX_CHANNEL_BYTES + 1);
+        for channel in ["", long.as_str(), "a\0b"] {
+            assert!(matches!(
+                bus.publish(channel, b"").await,
+                Err(Error::InvalidChannel(_))
+            ));
+            assert!(matches!(
+                bus.subscribe(channel, |_| {}).await,
+                Err(Error::InvalidChannel(_))
+            ));
+        }
         assert!(matches!(
-            b.subscribe("", |_| {}),
-            Err(SubscribeError::InvalidChannel(_))
+            bus.publish("c", &vec![0; MAX_MESSAGE_BYTES + 1]).await,
+            Err(Error::MessageTooLarge { len }) if len == MAX_MESSAGE_BYTES + 1
         ));
-        assert!(matches!(
-            b.subscribe("a\0b", |_| {}),
-            Err(SubscribeError::InvalidChannel(_))
-        ));
-        b.started.store(true, Ordering::SeqCst);
-        assert!(matches!(
-            b.subscribe("c", |_| {}),
-            Err(SubscribeError::AfterRun)
-        ));
-        assert!(matches!(
-            b.on_reconnect(|| {}),
-            Err(SubscribeError::AfterRun)
-        ));
+    }
+
+    #[test]
+    fn the_advertised_address_takes_the_advertised_host_and_the_listeners_port() {
+        let addr: SocketAddr = "0.0.0.0:4123".parse().unwrap();
+        assert_eq!(advertised_address(addr, Some("10.1.2.3")), "10.1.2.3:4123");
+        assert_eq!(advertised_address(addr, None), "127.0.0.1:4123");
+        let addr: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        assert_eq!(advertised_address(addr, Some("")), "127.0.0.1:9");
+        assert_eq!(advertised_address(addr, Some("fd00::1")), "[fd00::1]:9");
     }
 }

@@ -1,11 +1,12 @@
 //! The boot sequence: `App::new(config).connect().await` opens the
 //! framework's own pool with a bounded wait, verifies the migration ledger
-//! holds every version the binary embeds, and prepares the pubsub bus. The
+//! holds every version the binary embeds, and registers the pubsub bus's
+//! replica. The
 //! connected [`App`] then opens one [`NanoPool`] per stateful nanoservice
 //! under the connection budget, and [`App::serve`] moves on to wiring.
 
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use basable_db::migrate::{self, MigrateError};
@@ -17,9 +18,10 @@ use crate::config::Config;
 use crate::error::Error;
 use crate::serve::Serve;
 
-/// The framework's own pool: the ledger check, the pubsub listener and its
-/// publishes, the readiness probe. Processing-object wakes hold no
-/// connection: they are in process.
+/// The framework's own pool: the ledger check, the pubsub bus's directory
+/// (registration, heartbeat, the subscriber lookup of each publish), the
+/// readiness probe. Processing-object wakes hold no connection: they are in
+/// process.
 pub const APP_POOL_CONNECTIONS: u32 = 3;
 
 /// How often boot retries the database while waiting.
@@ -83,10 +85,21 @@ impl Unbooted {
             migrations = self.migrations.len(),
             "database ready"
         );
+        // The bus registers this replica with the pod IP and a port the
+        // kernel picks; the directory publishes both to the other replicas.
+        let bus = Bus::new(
+            pool.clone(),
+            basable_pubsub::Config {
+                advertise_host: self.cfg.pod_ip.map(|ip| ip.to_string()),
+                ..basable_pubsub::Config::default()
+            },
+        )
+        .await
+        .map_err(Error::Bus)?;
         Ok(App {
             cfg: self.cfg,
             options,
-            bus: Arc::new(Bus::new(pool.clone())),
+            bus,
             pool,
             budget: Mutex::new(APP_POOL_CONNECTIONS),
         })
@@ -135,7 +148,7 @@ pub struct App {
     cfg: Config,
     options: PgConnectOptions,
     pool: PgPool,
-    bus: Arc<Bus>,
+    bus: Bus,
     budget: Mutex<u32>,
 }
 
@@ -190,9 +203,9 @@ impl App {
         *self.budget.lock().expect("budget lock")
     }
 
-    /// The pubsub bus: subscribe before [`Serve::start`], publish any
-    /// time after.
-    pub fn bus(&self) -> &Arc<Bus> {
+    /// The pubsub bus, this process's replica. Subscribe and publish any
+    /// time; peers are served once [`Serve::start`] runs it.
+    pub fn bus(&self) -> &Bus {
         &self.bus
     }
 
@@ -207,7 +220,7 @@ impl App {
         Serve::new(self)
     }
 
-    pub(crate) fn into_parts(self) -> (Config, PgPool, Arc<Bus>) {
+    pub(crate) fn into_parts(self) -> (Config, PgPool, Bus) {
         (self.cfg, self.pool, self.bus)
     }
 }

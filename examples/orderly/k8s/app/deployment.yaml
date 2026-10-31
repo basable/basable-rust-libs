@@ -38,6 +38,13 @@ spec:
           env:
             - name: PORT
               value: "8080"
+            # Where the other replicas reach this one's pubsub bus
+            # (basable-pubsub): the bus publishes the pod IP, with a port
+            # the kernel picks, in its directory.
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

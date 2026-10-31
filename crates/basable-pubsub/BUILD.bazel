@@ -8,7 +8,6 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = [
         "//crates/basable-core:basable_core",
-        "//crates/basable-db:basable_db",
     ] + all_crate_deps(normal = True),
 )
 
@@ -18,8 +17,9 @@ rust_test(
     deps = all_crate_deps(normal_dev = True),
 )
 
-# The database-backed suite: two buses over one database (the port of
-# pubsub_test.go), against the Postgres TEST_DATABASE_URL names.
+# The database-backed suite: replicas over one database and localhost (the
+# port of golang/test/pubsub_integration_test.go), against the Postgres
+# TEST_DATABASE_URL names.
 rust_test(
     name = "pubsub_bus",
     srcs = ["tests/bus.rs"],
@@ -30,7 +30,6 @@ rust_test(
     deps = [
         ":basable_pubsub",
         "//crates/basable-core:basable_core",
-        "//crates/basable-db:basable_db",
         "//crates/basable-testkit:basable_testkit",
     ] + all_crate_deps(
         normal = True,

@@ -21,6 +21,10 @@ pub enum Error {
     /// The migration ledger lacks an expected version after the boot wait,
     /// or could not be read.
     Migrations(MigrateError),
+    /// The pubsub bus could not register this replica in its directory
+    /// (the framework migration `20260101000003_basable_pubsub_directory`
+    /// missing, say) or open its listener.
+    Bus(basable_pubsub::Error),
     /// A nanoservice pool could not be opened (a missing role, a login that
     /// is not a member of it).
     Pool {
@@ -72,6 +76,7 @@ impl fmt::Display for Error {
                 versions.join(", ")
             ),
             Error::Migrations(e) => write!(f, "the migration ledger could not be read: {e}"),
+            Error::Bus(e) => write!(f, "the pubsub bus could not start: {e}"),
             Error::Pool {
                 nanoservice,
                 source,
@@ -108,6 +113,7 @@ impl std::error::Error for Error {
             | Error::Connect { source: e, .. }
             | Error::Pool { source: e, .. } => Some(e),
             Error::Migrations(e) => Some(e),
+            Error::Bus(e) => Some(e),
             Error::Bind { source, .. } => Some(source),
             Error::Server(e) => Some(e),
             Error::ConnectionBudget { .. } | Error::DuplicateLoop(_) | Error::Stuck(_) => None,

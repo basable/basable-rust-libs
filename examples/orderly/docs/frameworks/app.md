@@ -22,10 +22,16 @@
   `/sessions/whoami` with the request's cookie; public-path allow-lists; a
   `SessionHook` after every validation; `ctx.user_id()` in handlers. A test
   bypass exists only through the testkit.
-- **`basable-pubsub`** — `Bus` over LISTEN/NOTIFY for cross-replica
-  broadcast (SSE fan-out, cancels): publish, subscribe-before-run,
-  own-message dedup, ~8 KB payload bound. Processing-object workers are
-  not woken through it: a worker's wake is in-process, from its own store.
+- **`basable-pubsub`** — `Bus` for publish/subscribe across replicas (SSE
+  fan-out, cancels), `App::bus()`: `subscribe(channel, handler)` (any
+  time; a `Subscription` to `unsubscribe`), `publish(channel, bytes)`
+  returning how many replicas took the message, this one's own subscribers
+  included, `on_reregister` for gap recovery. Its directory is the
+  framework migration `20260101000003_basable_pubsub_directory.sql`; each
+  message goes from the publisher straight to every subscribing replica
+  over mutual TLS (the Deployment's `POD_IP`), whole up to 16 MiB, at most
+  once, in order per publisher. Processing-object workers are not woken
+  through it: a worker's wake is in-process, from its own store.
 - **`basable-testkit`** — testcontainers Postgres (reused container, a
   database per test), `CommitFaultProxy` (drops one COMMIT ack),
   `test_service_pool::<Svc>()`; `basable-processingobject-testkit` adds the

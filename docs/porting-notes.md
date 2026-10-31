@@ -1231,3 +1231,43 @@ of it changed, in the crates and in the templates:
     scaffold ships. When one does, its server library starts the SDK from
     the same variable and leaves `service.name` to the SDK the same way.
     Released in 0.8.0.
+
+## After 0.8.0
+
+104. **pubsub is a directory in Postgres and connections between replicas
+    (2026-10-31).** Both buses were `LISTEN`/`NOTIFY` (note 63): every
+    message to every replica through the database, under its 8000-byte
+    payload limit, which cost the monorepo's event streamer a truncation
+    workaround end to end and could not address one replica (the platform's
+    cluster agent must reach the replica holding a cluster's stream). The
+    user's design replaces it in both languages, with the API kept
+    publish/subscribe:
+    - a replica registers in `basable.pubsub_replica` (a uuid made at
+      start, the address its peers dial: the pod IP from `POD_IP` and the
+      port its listener got, and its certificate's SHA-256); a subscription
+      is a row in `basable.pubsub_subscription` (channel, replica), written
+      with a channel's first handler and deleted with its last;
+    - a publish reads the channel's subscribers and sends to each over
+      mutual TLS 1.3, each side accepting only the certificate the
+      directory lists for the other (and checking the handshake signature
+      against it); it returns how many replicas took the message, the
+      publisher's own subscribers (served in process, first) included;
+    - replicas heartbeat each minute and sweep rows two minutes old (the
+      subscriptions cascade); a swept replica registers again and runs its
+      `on_reregister` hooks.
+
+    What went, with nothing kept for compatibility: `publish_tx` and
+    `Delivery` (no caller in either repository), `deliver_to_self` (a
+    publish now always reaches the publisher's own subscribers),
+    `on_reconnect` and `listening()` (no listen connection), the
+    "subscribe before run" rule, `MAX_DATA_BYTES` and `NOTIFY_MAX_BYTES`,
+    `SharedBus` (`Bus` is cheap to clone), and the `basable-db`
+    dependency. `Message::data` is bytes, a handler takes `&Message`, and
+    `Bus::local()` is a bus of one process for tests without a database.
+    The wire is the same frames as Go's (hello, publish, ack), though no
+    process ever has a peer of the other language. A project scaffolded
+    before this adds the framework migration
+    `20260101000003_basable_pubsub_directory.sql` unchanged and passes
+    `POD_IP` from the downward API in its Deployment; `basable-app`'s
+    `connect` fails with `Error::Bus` without the tables. The monorepo's
+    `docs/todo/pubsub-plan.md` records the decisions.
