@@ -1270,4 +1270,4 @@ of it changed, in the crates and in the templates:
     `20260101000003_basable_pubsub_directory.sql` unchanged and passes
     `POD_IP` from the downward API in its Deployment; `basable-app`'s
     `connect` fails with `Error::Bus` without the tables. The monorepo's
-    `docs/todo/pubsub-plan.md` records the decisions.
+    `docs/todo/pubsub-plan.md` records the decisions. Released in 0.9.0.
