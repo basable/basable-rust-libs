@@ -42,6 +42,23 @@ data:
             code:
               hooks:
                 - hook: session
+            # Registration by passkey is refused: a passkey proves no email,
+            # so an account made by one could hold someone else's address, and
+            # that person's code sign-in would land in it. The app's hook
+            # (api/src/kratos.rs) answers every call with a validation error;
+            # it runs before the identity is stored (response.parse), so
+            # nothing is created.
+            passkey:
+              hooks:
+                - hook: web_hook
+                  config:
+                    url: http://app/internal/kratos/refuse-passkey-registration
+                    method: POST
+                    # Kratos requires a body template; the hook reads none:
+                    # function(ctx) {}
+                    body: base64://ZnVuY3Rpb24oY3R4KSB7fQ==
+                    response:
+                      parse: true
             oidc:
               hooks:
                 - hook: session

@@ -16,6 +16,7 @@
 use basable_connect::ConnectRouter;
 use basable_core::AppError;
 
+pub mod kratos;
 pub mod services;
 pub mod webhooks;
 
@@ -46,12 +47,13 @@ impl Api {
         connect
     }
 
-    /// The raw (non-Connect) routes: inbound webhooks.
+    /// The raw (non-Connect) routes: inbound webhooks, and what
+    /// this app's Kratos calls.
     pub fn raw_routes<R>(&'static self, router: &'static R) -> axum::Router
     where
         R: interfaces::ApiRoutes + Send + Sync + 'static,
     {
-        webhooks::routes(self, router)
+        webhooks::routes(self, router).merge(kratos::routes())
     }
 }
 

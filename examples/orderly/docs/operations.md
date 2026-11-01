@@ -20,6 +20,12 @@
   in the editor's Secrets action (an `smtps://user:pass@host:465/` URI);
   until then the ConfigMap's localhost placeholder applies and sign-in codes
   appear in the Kratos pod's logs only.
+- **Email addresses are proven**: a person signs up with an email code. A
+  registration by passkey is refused (Kratos calls `api/src/kratos.rs` before
+  it stores the identity, and that route answers every call with a validation
+  error), and the `profile` settings method is off, because either would put
+  an address on an account with no proof, and that person's code sign-in would
+  land in the account.
 - **Sign in with Basable**: the platform writes the `basable-login` Secret
   (`BASABLE_LOGIN_ISSUER`, `BASABLE_LOGIN_CLIENT_ID`,
   `BASABLE_LOGIN_CLIENT_SECRET`) into every environment's cluster and keeps

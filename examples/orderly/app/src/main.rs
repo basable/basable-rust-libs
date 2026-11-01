@@ -99,7 +99,10 @@ async fn run() -> Result<(), BootError> {
     app.serve()
         .connect(api.connect_router(router))
         .raw(api.raw_routes(router))
-        .auth(Validator::kratos(&cfg.kratos_public_url).public_prefixes(["/api/webhooks/"]))
+        .auth(
+            Validator::kratos(&cfg.kratos_public_url)
+                .public_prefixes(["/api/webhooks/", api::kratos::PUBLIC_PREFIX]),
+        )
         .components(router)
         .run()
         .await
