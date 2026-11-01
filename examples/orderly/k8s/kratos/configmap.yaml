@@ -59,6 +59,11 @@ data:
         recovery:
           enabled: false
       methods:
+        # No self-service change of the email: the settings form sets it with
+        # no proof, so an account could take on someone else's address, and
+        # that person's code sign-in would land in the account.
+        profile:
+          enabled: false
         password:
           enabled: false
         code:
