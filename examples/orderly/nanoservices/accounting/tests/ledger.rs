@@ -18,12 +18,36 @@ async fn ledger_tables_exist() {
     .await
     .unwrap();
     assert!(exists, "the ledger's journal must exist in nano_accounting after the migrations");
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_tables \
+         WHERE schemaname = 'nano_accounting' AND tablename = 'receivable_batch')",
+    )
+    .fetch_one(db.migrator())
+    .await
+    .unwrap();
+    assert!(exists, "the batch table receivable_batch must exist in nano_accounting after the migrations");
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_tables \
+         WHERE schemaname = 'nano_accounting' AND tablename = 'cash_batch')",
+    )
+    .fetch_one(db.migrator())
+    .await
+    .unwrap();
+    assert!(exists, "the batch table cash_batch must exist in nano_accounting after the migrations");
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_tables \
+         WHERE schemaname = 'nano_accounting' AND tablename = 'revenue_batch')",
+    )
+    .fetch_one(db.migrator())
+    .await
+    .unwrap();
+    assert!(exists, "the batch table revenue_batch must exist in nano_accounting after the migrations");
 }
 
 #[tokio::test]
 #[ignore = "implement first"]
 async fn order_books_through_every_state() {
-    // Build `basable_ledger::Ledger::builder(basable_ledger::InMemoryStore::new())
+    // Build `basable_ledger::Ledger::builder(basable_ledger::InMemoryStore::<accounting::ledger::batches::Batch>::new())
     //     .register::<messages::OrderSnapshot, accounting::ledger::order::OrderAccounting>().build()`,
     // book a sample snapshot through each allowed change with a rising
     // version, assert every outcome is `Outcome::Booked`, and assert the
@@ -36,7 +60,7 @@ async fn order_books_through_every_state() {
 #[tokio::test]
 #[ignore = "implement first"]
 async fn payment_books_through_every_state() {
-    // Build `basable_ledger::Ledger::builder(basable_ledger::InMemoryStore::new())
+    // Build `basable_ledger::Ledger::builder(basable_ledger::InMemoryStore::<accounting::ledger::batches::Batch>::new())
     //     .register::<messages::PaymentSnapshot, accounting::ledger::payment::PaymentAccounting>().build()`,
     // book a sample snapshot through each allowed change with a rising
     // version, assert every outcome is `Outcome::Booked`, and assert the

@@ -2,7 +2,7 @@
   "binary_crates": [
     "connectrpc-codegen 0.9.0"
   ],
-  "checksum": "2183374a415f4e69d774b1cd0b9306934223a1690e278d1e00b9eadedc874b39",
+  "checksum": "c301ac1a8fe97259a957637aefb90fdad12c520edbc2e6e05e8ff5b0bfe325e8",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"

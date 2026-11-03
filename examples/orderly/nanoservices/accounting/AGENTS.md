@@ -23,7 +23,7 @@ The project's ledger (`journal` and `process_ledger_object_version` in `nano_acc
 | `src/lib.rs` | The `Accounting` struct, its constructor (pools, providers, calls), the schema marker, and its `basable_app::Component` impl: `loops()` lists every worker and ticker it runs (none for a plain executor). |
 | `src/handlers.rs` | `impl AccountingHandler<R>`: one `handle_<snake_message>` per handled message. Intent only — `create` / `update_spec` / `mark_deleted` / `nudge`; never a status write. |
 | `src/ledger/mod.rs` | The ledger over this nanoservice's pool with every object type registered; `build` restates at boot. Generated-final: a new object type is added by `scaffold_nanoservice`. |
-| `src/ledger/accounts.rs` | The `Account` enum: what names a batch (key, ledger, type). Yours. |
+| `src/ledger/batches.rs` | The `Batch` enum, one variant per kind of batch in the manifest, and how each reaches its table (`find`, `ensure`). One value is one batch. A new kind is a manifest entry, a migration and an arm in each `match`. |
 | `src/ledger/<type>.rs` | The `Accounting` of one object type: allowed changes (from the manifest), `desired_state` per state, `validate_balances`. Yours. |
 | `../../crates/messages/src/ledger.rs` | The snapshot structs and state enums every producer builds and this ledger books; `Book`, `Booked`. The fields are yours. |
 | `tests/ledger.rs` | The tables exist; one property test per object type on the in-memory store. |

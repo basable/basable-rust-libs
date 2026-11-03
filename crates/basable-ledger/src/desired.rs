@@ -2,14 +2,14 @@
 //! state, each a batch, a unit and a signed amount in the column of the
 //! batch's type.
 
-use crate::accounting::{BatchAccount, Unit};
-use crate::types::{Batch, UnitKey};
+use crate::accounting::Unit;
+use crate::types::UnitKey;
 
 /// One desired position.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Position {
-    /// The batch: the account's key, ledger and type.
-    pub batch: Batch,
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Position<B> {
+    /// The batch, by value.
+    pub batch: B,
     /// The unit.
     pub unit: UnitKey,
     /// Signed: positive grows the batch's balance in its own column, negative
@@ -19,37 +19,45 @@ pub struct Position {
 
 /// The positions an object holds in a state. Duplicates of one (batch,
 /// unit) are summed when the engine compares them with what is booked.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
-pub struct Desired {
-    positions: Vec<Position>,
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Desired<B> {
+    positions: Vec<Position<B>>,
 }
 
-impl Desired {
+impl<B> Default for Desired<B> {
+    fn default() -> Self {
+        Desired {
+            positions: Vec::new(),
+        }
+    }
+}
+
+impl<B> Desired<B> {
     /// No positions: the state holds nothing (a draft, a closed object).
     pub fn empty() -> Self {
         Self::default()
     }
 
     /// From a list of positions; the `desired!` macro builds one.
-    pub fn new(positions: Vec<Position>) -> Self {
+    pub fn new(positions: Vec<Position<B>>) -> Self {
         Desired { positions }
     }
 
     /// Adds a position.
-    pub fn push(&mut self, position: Position) {
+    pub fn push(&mut self, position: Position<B>) {
         self.positions.push(position);
     }
 
     /// The positions as written.
-    pub fn positions(&self) -> &[Position] {
+    pub fn positions(&self) -> &[Position<B>] {
         &self.positions
     }
 }
 
-/// A desired balance on a batch: `balance(account, unit, amount)`.
-pub fn balance(account: impl BatchAccount, unit: impl Unit, amount: i128) -> Position {
+/// A desired balance on a batch: `balance(batch, unit, amount)`.
+pub fn balance<B>(batch: B, unit: impl Unit, amount: i128) -> Position<B> {
     Position {
-        batch: Batch::of(&account),
+        batch,
         unit: unit.unit_key(),
         amount,
     }

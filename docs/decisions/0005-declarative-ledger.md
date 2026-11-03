@@ -17,19 +17,35 @@ first.
   of positions that must exist while it is in that state: each a batch, a
   unit and a signed amount. The user writes it as code, a pure function of
   (state, object), under a hardcoded rules **version**.
-- A **batch** is the user's: it has a **key** (a bigint the user allocates
-  in a batch table of their own or encodes or hashes from what names the
-  batch), one **ledger** and one **type** (debit, credit or memo), all
-  three returned by the `BatchAccount` that names it. That is everything
-  the framework knows about a batch, and it keeps no batch table: a stored
-  line carries the key alone, and the ledger and type are read from the
-  user's batches by it, a table with at least `batch_key`, `ledger` and
-  `batch_type` (since 2026-10-20; until then every line carried the
-  three). A key means one ledger and one type for good, which that table's
-  primary key guarantees; within one call a key named under two is
-  rejected. Entities, subledger types, account classes, GL codes and
-  periods are the user's vocabulary for what a batch means, outside the
-  framework.
+- A **batch** is the user's: one value of the user's `Batch` enum, whose
+  variant is the kind of batch and whose fields say which one
+  (`Batch::Payout(merchant, week)`). The value returns a **primary key**
+  (what identifies the batch), one **ledger** and one **type** (debit, credit
+  or memo). A batch also has a **key**, the bigint a stored line carries
+  alone (since 2026-10-20; until then every line carried the key, ledger and
+  type).
+- Each kind of batch has a **table of the user's**, one row per batch: the
+  primary key's columns, a unique `batch_key`, `ledger`, `batch_type` and
+  whatever else the user keeps. Entities, subledger types, account classes,
+  GL codes and periods are the user's vocabulary for what a batch means,
+  outside the framework. The framework keeps no batch table and knows no
+  column of these: it reaches them only through `find` and `ensure`, methods
+  on the value, which the scaffold renders from the kinds of batch the
+  manifest lists.
+- **One sequence** allocates `batch_key` over every batch table, as the
+  default of each, because a line carries the key alone and the same number
+  in two tables would be one batch. It hands out identity, not order, so its
+  gaps and commit order do not matter.
+- **A row is for good.** Its primary key, `batch_key`, `ledger` and
+  `batch_type` never change and it is never deleted: the next evaluation
+  would allocate a new key and book the money across to it. So a key means
+  one ledger and one type for good. A table holding a batch in two ledgers
+  has the ledger in its primary key, so the same thing in both books is two
+  batches with two keys.
+- A new row holds what the value carries, and `ensure` never updates an
+  existing one, so two values with one primary key and different other
+  columns are one batch. A column the value does not carry is nullable or
+  defaulted, and the owner fills it later.
 - A batch is **closed** when a booking brings its balance to zero: a claim
   (a VAT return filed for what the month's batch held, a payout for a
   clearing batch) is an object of the user's whose desired state holds
@@ -74,10 +90,33 @@ first.
   a submission's own delta, computed after that, is the object's own
   change. A changed amount in an unchanged state is allowed only when that
   state lists itself as its own next state.
-- The desired state names batches through `BatchAccount` values that carry
-  their own key, so it stays pure and the engine resolves nothing: the
-  commit is one insert. A key the process has booked under another ledger
-  or type, or named under two accounts in one call, rejects.
+- The desired state names batches by value and stays pure: it reads and
+  writes nothing, and the same object under the same rules always names the
+  same batches. The engine resolves them in two steps, both inside the
+  retry above.
+- **Before the plan**, one `find` per distinct primary key reads the rows
+  that exist. The plan compares by key. A primary key with no row takes a
+  placeholder, which is sound because it has nothing booked: a row and the
+  first journal naming it commit together. So a booking makes one more read
+  than the journals: one lookup per distinct batch, which small processes
+  keep small.
+- **The commit** is one transaction, read committed: for each batch with no
+  row, in primary key order so two first uses cannot deadlock, `ensure` runs
+  `INSERT ... ON CONFLICT DO NOTHING` and reads the key; the real keys
+  replace the placeholders; then the journal and the version index go in. A
+  lost sequence race rolls the rows back with the journal. A concurrent
+  first use of one batch waits for the other's commit and takes its key, and
+  once the row exists nothing waits. A booking that names no new batch is
+  the one statement it always was. `ON CONFLICT DO UPDATE` is ruled out: it
+  would lock the row until commit, and bookings on a hot batch would queue.
+- A rejected booking, a lost race and `preview_restatement` leave no row. A
+  preview only reads, and reports a batch with no row as new.
+- `restate_behind` commits the same way, so a rule change may name a new
+  batch for objects booked long ago.
+- `find` and `ensure` return the row's ledger and type with its key, and a
+  value whose row says otherwise rejects, across calls as well as within
+  one. One key named under two ledgers or types was only caught within a
+  call between 2026-10-20 and this change.
 - A rules version bump restates. A process converges to the running rules
   whenever it is touched, so what a bump needs is the processes nobody
   touches: `Ledger::restate_behind` runs once when the new deployment
@@ -97,10 +136,9 @@ first.
 
 ## Not in the write path, by design
 
-- **No batch table, no batch status.** The key, the ledger and the type
-  are the user's answers, the key carried on every line and the other two
-  read from the user's batches by it; a batch opens with its
-  first line and is closed when a booking brings it to zero. The 2026-10-17
+- **No batch table in the framework, no batch status.** The rows are the
+  user's and hold identity, never state: a batch opens with its first line
+  and is closed when a booking brings it to zero. The 2026-10-17
   build's `batch` and `batch_claim` tables, string ids with epochs, the
   `Batches` recorder, the open-closed-claimed-consumed lifecycle and the
   `FOR SHARE` lock in the commit were removed on 2026-10-18: a closed
@@ -116,11 +154,44 @@ first.
   row: the trigger deletes what it brought to zero, a `SummingMergeTree`
   drops it on merge. A time-window projector was built in
   `basable-ledger-postgres` and removed the same day: it is not the
-  framework's concern.
+  framework's concern. TigerBeetle was weighed as a store on 2026-11-03: its
+  fixed 128-byte records hold no snapshot diffs or version index, so it could
+  only be such a projection, applied after the Postgres commit, and a
+  production cluster is six dedicated machines. Not until a measurement asks.
 - **No feed column.** A sequence value is handed out inside the
   transaction, so an auto-increment is neither gapless nor commit-ordered.
 - **No account-level limit.** The ledger records reality; a synchronous
   limit is a guarded tier beside it, not the ledger's model.
+
+## What else was weighed for a batch's key (2026-11-03)
+
+- **A hash of the batch's name** (the template and the test fixtures until
+  now; it began as the fixture's stand-in for the user's table). It needs no
+  table, but two names can land on one number and silently merge into one
+  batch, and FNV-1a collisions can be crafted where a name holds text a
+  customer chose. Removed: every kind of batch has a table.
+- **An allocated key as a field of the object**, filled by the producer or
+  the owner's `Book` handler. The startup restatement runs on stored
+  snapshots with no handler, so a rule change naming a new batch for old
+  objects would first need those snapshots migrated.
+- **Creating the row inside `desired_state`.** It runs for every object of
+  the process on every booking, again after a lost race, on bookings that end
+  up rejected and in a preview that promises to book nothing, and positions
+  would depend on a table instead of on the object alone.
+- **`desired_state` returning a closure that upserts.** A closure has no key
+  until it has run, so the plan could not compare or sort without one write
+  per position per booking, and it needs a Postgres transaction where the
+  core crate has no `sqlx` and the property tests have no database. A value
+  with a method allows the same SQL on any table and stays comparable.
+- **Recording the primary key in the journal** the first time a process uses a
+  batch, so a repeat booking finds its keys in the fold and makes no lookup. It
+  saves a few primary-key reads outside any transaction, for a second record
+  of the mapping, a bigger row and a backfill. Declined until a measurement asks;
+  it could then be a cache in front of `find`.
+- **One mapping table in the framework** (primary key, `batch_key`, ledger,
+  type). One counter would hold by construction and no SQL would be
+  generated. Declined to keep typed key columns per kind and the 2026-10-18
+  decision that the framework keeps no batch table.
 
 ## Deviations the Rust shape made
 
@@ -133,6 +204,24 @@ first.
 - Type names in snapshot diffs are the `LedgerObject::TYPE` strings, not
   registry integers; a registry is an optimisation the first store does not
   need.
+- The user's enum is `Batch` (`Account` until 2026-11-03, in `batches.rs`,
+  `accounts.rs` until then) and implements `LedgerBatch` (`BatchAccount`
+  until then), beside `LedgerObject`: `primary_key()`, `ledger()` and
+  `batch_type()`. The crate's old `Batch` struct becomes internal. `Accounting`
+  keeps its name, since it holds the rules. `PrimaryKey` is an associated type
+  that is `Ord` and holds the key columns alone, and the engine and
+  `InMemoryStore` sort, dedupe and allocate by it, so tests and Postgres agree
+  on what one batch is.
+- `find(&self, conn)` and `ensure(&self, tx)` are `PgBatch`, in
+  `basable-ledger-postgres`, so the core crate stays free of `sqlx`. Each
+  variant knows its own table and key values, so neither takes a parameter.
+  One owner has one `Batch` enum, which `Accounting`, `Desired` and `Ledger`
+  carry as a type (`Accounting::Batch`, `Store::Batch`). The Postgres suites
+  moved inside that crate, since only it may implement `PgBatch` for the
+  testkit's fixture.
+- In the manifest a kind of batch has one ledger, so a second book is a second
+  kind. Having the ledger in a table's primary key stays open to a hand-written
+  `PgBatch`.
 
 ## Phases
 
@@ -151,3 +240,10 @@ first.
    booking re-evaluates its whole process, the index is written by the
    commit's statement, and an older replica's booking converges at the next
    run instead of being refused.
+5. Batches resolved in the commit (done 2026-11-04, released in 0.10.0): the
+   three crates, the conformance suite, the Go port in the monorepo's
+   `lib/ledger`, and the scaffold (the manifest's kinds of batch, the tables,
+   the one sequence, `find` and `ensure`, the Directive's §11). A
+   project with journals under hashed keys seeds one row per batch, with that
+   key, before it upgrades; otherwise the first evaluation allocates a new key
+   and books the money across to it.

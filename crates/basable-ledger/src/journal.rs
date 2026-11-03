@@ -10,11 +10,11 @@ use crate::types::{BatchKey, ObjectId, ProcessId, Timestamp, UnitKey, amount_str
 
 /// One line: the batch, by key, the object, the unit, the amount. A line
 /// carries the batch's key and nothing else about the batch: its ledger
-/// and its type are the user's, in their batches table (at least
-/// `batch_key`, `ledger` and `batch_type`), found by the key, and the
-/// engine takes them from the [`BatchAccount`](crate::BatchAccount) the
-/// desired state names at booking time. On the wire a journal's lines are
-/// grouped by object, see [`lines_to_json`].
+/// and its type are in the batch's row in the user's table, found by the
+/// key, and the engine checks them against the
+/// [`LedgerBatch`](crate::LedgerBatch) value the desired state names at
+/// booking time. On the wire a journal's lines are grouped by object, see
+/// [`lines_to_json`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Line {
     /// The batch, by key.

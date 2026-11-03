@@ -9,15 +9,16 @@ Postgres in its own crate.
 
 | Item | What it is |
 |---|---|
-| `fixture::Account` | The fixture's `BatchAccount`: one variant per kind with what identifies the batch, an invoice (`Receivable`, `CashClearing`) or a period (`Revenue`, `Vat`, `TaxOffice`, `BadDebt`, `Points`, a memo account). `name()` is `<kind>/<invoice or period>` and the key is an FNV-1a hash of it: the fixture's stand-in for the batch table a user keeps, or the encoding they choose |
+| `fixture::Batch` | The fixture's `LedgerBatch`: one value is one batch, the variant its kind, with what identifies it: an invoice (`Receivable`, `CashClearing`), a period (`Revenue`, `Vat`, `TaxOffice`, `BadDebt`, `Points`, a memo batch), `Settlement` (with another column that is not identity), `Named` (the test chooses the ledger and type, identified by name alone) and `InBook` (the ledger in the primary key). The primary key is `name()`, `<kind>/<what identifies it>` |
 | `fixture::{Invoice, InvoiceState, InvoiceLedger, InvoiceLedgerV2}` | The plan's worked example: an invoice with net, VAT and paid amounts, a `Draft → Issued → PartiallyPaid → Paid / Credited / WrittenOff` lifecycle, batches per invoice (`receivable_batch`, `cash_batch`) and per month (`revenue_batch`, `vat_batch`, `bad_debt_batch`, `points_batch`). Version 2 of the rules groups VAT per quarter, which is how the suites exercise a rules bump |
 | `fixture::{Payment, PaymentState, PaymentLedger}` | A child object in the invoice's process: settled money sits in the invoice's cash batch and clears its receivable batch, so the payment holds a negative position on a debit batch and `validate_balances` checks the process-wide receivable |
 | `fixture::{VatReturn, VatReturnState, VatReturnLedger}` | A root object of its own: filed, it holds minus the claimed amount on the period's VAT batch and the same amount on the tax office's. How a batch closes: a booking to zero, not a status |
+| `fixture::{Transfer, TransferState, TransferLedger, new_transfer}` | A root object naming whichever two batches a test gives it: how the suites exercise a batch's row |
 | `fixture::{Currency, PLATFORM_LEDGER}` | The fixture's `Unit` and its one ledger |
 | `fixture::{new_invoice, new_payment, new_vat_return}`, `Invoice::next`, `Payment::next` | Snapshot builders: the next version with a state and amounts |
-| `Scenario` | A ledger over a fresh in-memory store with the fixture registered: `book`, `booked`, `book_all`, `journals`, `balances`, `positions` (per batch key and unit), `batch_sum(&account)`; `upgraded()` is the same store under version 2 of the invoice rules |
+| `Scenario` | A ledger over a fresh in-memory store with the fixture registered: `book`, `booked`, `book_all`, `journals`, `balances`, `positions` (per batch key and unit), `key(&batch)`, `batch_sum(&batch)`; `upgraded()` is the same store under version 2 of the invoice rules |
 | `walk::{Rng, random_history, desired_positions, check_history}` | The generator-driven properties: a deterministic xorshift, a random legal history of one invoice, and the check that books it and asserts path independence, balanced journals and an idempotent replay |
-| `conformance::{run_all, ...}` | The store suite: reads an unknown process as empty; commits and reads back lines by batch key and diffs; the sequence is the compare-and-set; concurrent commits land once; a batch sums across processes and units, and an unwritten one to nothing; the commit indexes the version each type was evaluated under, latest wins, and `record_versions` moves the index without a journal; `processes_behind` lists the startup restatement's worklist within the limit |
+| `conformance::{run_all, ...}` | The store suite: reads an unknown process as empty; commits and reads back lines by batch key and diffs; the sequence is the compare-and-set; concurrent commits land once; a batch sums across processes and units, and an unwritten one to nothing; the commit indexes the version each type was evaluated under, latest wins, and `record_versions` moves the index without a journal; `processes_behind` lists the startup restatement's worklist within the limit; a batch never booked has no row; a new batch's row lands with the journal and keeps its key in other processes; one counter allocates over every table; a lost race leaves no row; concurrent first uses share one key; a value disagreeing with its row refuses the commit. Generic over a store of `fixture::Batch` |
 | `projection::{expected_balances, check_agrees}` | The check any balance projection must pass: per (batch key, unit) it equals the journals' lines summed, over the processes given, zeros dropped. The framework ships no balance table; this is the testkit's projection, and a user's trigger or ClickHouse table answers to it. A zero balance is a closed batch and should have no row (the trigger deletes it, a `SummingMergeTree` drops it on merge); the check asks only for the nonzero ones |
 
 ## Rules
@@ -33,5 +34,5 @@ Postgres in its own crate.
 
 ## What the tests pin
 
-See `crates/basable-ledger/AGENTS.md`: `tests/scenario.rs`,
+See `crates/basable-ledger/AGENTS.md`: `tests/scenario.rs`, `tests/batches.rs`,
 `tests/walk.rs`, `tests/restatement.rs`, `tests/conformance_memory.rs`.

@@ -1,9 +1,9 @@
 //! The ledger this nanoservice owns (the Directive §11): the engine over its
-//! own schema with every object type registered. `accounts.rs` names the
-//! batches; one module per object type holds its accounting. The snapshot
+//! own schema with every object type registered. `batches.rs` names the
+//! batches and reaches their tables; one module per object type holds its accounting. The snapshot
 //! types are `messages::<Type>Snapshot`, shared with the producers.
 
-pub mod accounts;
+pub mod batches;
 pub mod order;
 pub mod payment;
 
@@ -11,7 +11,7 @@ use basable_ledger::Ledger;
 use basable_ledger_postgres::PgStore;
 
 /// The ledger over this nanoservice's pool.
-pub type AppLedger = Ledger<PgStore>;
+pub type AppLedger = Ledger<PgStore<batches::Batch>>;
 
 /// Builds the ledger and restates every process the version index lists
 /// behind the running rules. A rules version changes only with a

@@ -1271,3 +1271,29 @@ of it changed, in the crates and in the templates:
     `POD_IP` from the downward API in its Deployment; `basable-app`'s
     `connect` fails with `Error::Bus` without the tables. The monorepo's
     `docs/todo/pubsub-plan.md` records the decisions. Released in 0.9.0.
+
+105. **A batch is a value, a row and a key (2026-11-04, decision 0005 phase 5).**
+    Both sides changed in the same piece of work, and the behaviour is the same.
+    A desired state names a batch by value and reads nothing: `LedgerBatch`
+    (`primary_key`, `ledger`, `batch_type`) replaces `BatchAccount` and its
+    `batch_key`, the user's enum is `Batch` (was `Account`, in `batches.rs`), and
+    the old `Batch` struct became `StoredBatch`, a row as a store returns it. Each
+    kind of batch is a table of the user's, one sequence over all of them. Before
+    the plan `Store::find` reads the row of every batch the plan may name; a batch
+    with no row has nothing booked, so it takes a placeholder, and the commit
+    creates the rows its lines land in, in primary key order, in one transaction
+    with the journal (`Commit::new_batches`, `resolved_lines`). A commit with no
+    new batch stays one statement. A value disagreeing with its row rejects, across
+    calls again (`CommitOutcome::Rejected` for a concurrent first use).
+    `preview_restatement` only reads and lists new batches by value. The FNV hash
+    is gone from the fixtures and the template. What differs on purpose: in Rust
+    the table access is `PgBatch`, methods on the value, and `PrimaryKey` an `Ord`
+    associated type, so `Ledger`, `Accounting` and `Desired` carry the batch type;
+    Go has no way to add methods to another package's type, so `ledgerpg.New`
+    takes a `Batches` adapter, and `PrimaryKey()` is a string. In Rust the
+    database suites moved inside `basable-ledger-postgres` (`src/db_tests/`), since
+    only that crate may implement `PgBatch` for the testkit's fixture. A project
+    with journals under hashed keys seeds one row per batch, with that key, before
+    it upgrades, or the first evaluation allocates a new key and books the money
+    across. The scaffold renders the tables, the sequence and `batches.rs` from
+    `owns.ledger.batches` in the manifest. Released in 0.10.0.

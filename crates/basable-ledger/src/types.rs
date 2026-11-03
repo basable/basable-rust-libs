@@ -1,12 +1,13 @@
 //! The small value types the ledger speaks: identities, keys, the batch
-//! type, a batch as a line names it, and the amount's wire form.
+//! type, a batch's row as a store returns it, and the amount's wire form.
 
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
 
-use crate::accounting::BatchAccount;
+use crate::accounting::LedgerBatch;
+use crate::error::Rejection;
 
 /// A UTC instant to the microsecond, as Postgres stores it.
 pub type Timestamp = chrono::DateTime<chrono::Utc>;
@@ -35,18 +36,58 @@ pub struct LedgerKey(pub u32);
 #[serde(transparent)]
 pub struct UnitKey(pub u32);
 
-/// The user's key of a batch: the one integer a line carries to name the
-/// batch it belongs to. The framework keeps no batch table. The key is what
-/// [`BatchAccount::batch_key`] returns: allocated in a batch table of the
-/// user's own, or encoded or hashed from whatever names the batch. One key
+/// The key of a batch: the one integer a line carries to name the batch it
+/// belongs to. One sequence allocates it over every batch table of the user's
+/// when a batch's row is created, in the commit that first books it. One key
 /// is one batch, in one ledger, of one type, for good.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct BatchKey(pub i64);
 
-impl<A: BatchAccount + ?Sized> From<&A> for BatchKey {
-    fn from(account: &A) -> Self {
-        account.batch_key()
+/// Keys below this stand in for a batch with no row while a call is planned.
+/// A sequence never reaches them; the engine refuses a row that holds one.
+const PLACEHOLDER_END: i64 = i64::MIN + (1 << 32);
+
+impl BatchKey {
+    /// The placeholder of the `index`th batch of a call that has no row.
+    pub(crate) fn placeholder(index: usize) -> Self {
+        BatchKey(i64::MIN + index as i64)
+    }
+
+    /// Whether this key is a placeholder, not a row's.
+    pub(crate) fn is_placeholder(self) -> bool {
+        self.0 < PLACEHOLDER_END
+    }
+}
+
+/// A batch's row as a store returns it: its key, and the ledger and type the
+/// row holds. The other columns of the row are the user's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct StoredBatch {
+    /// The key lines carry.
+    pub key: BatchKey,
+    /// The ledger the row says it balances in.
+    pub ledger: LedgerKey,
+    /// The column the row says it falls in.
+    pub batch_type: BatchType,
+}
+
+impl StoredBatch {
+    /// Whether the value names this row under the ledger and type the row
+    /// holds. A row is for good, so a value that disagrees rejects.
+    pub fn check<B: LedgerBatch>(&self, batch: &B) -> Result<(), Rejection> {
+        if self.ledger == batch.ledger() && self.batch_type == batch.batch_type() {
+            return Ok(());
+        }
+        Err(Rejection::new(format!(
+            "batch {:?} (key {}) is in ledger {} as {} but the value names it in ledger {} as {}",
+            batch.primary_key(),
+            self.key.0,
+            self.ledger.0,
+            self.batch_type,
+            batch.ledger().0,
+            batch.batch_type()
+        )))
     }
 }
 
@@ -96,45 +137,6 @@ impl fmt::Display for BatchType {
     }
 }
 
-/// A batch as a line names it: the user's key and the two things the
-/// framework knows about the batch, the ledger it balances in and its
-/// column. A desired state names all three; a stored line carries the key
-/// alone, and the user's batches table has the other two by it.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct Batch {
-    /// The user's key.
-    pub key: BatchKey,
-    /// The ledger it balances in.
-    pub ledger: LedgerKey,
-    /// Its column.
-    pub batch_type: BatchType,
-}
-
-impl Batch {
-    /// From whatever names the batch.
-    pub fn of(account: &(impl BatchAccount + ?Sized)) -> Self {
-        Batch {
-            key: account.batch_key(),
-            ledger: account.ledger(),
-            batch_type: account.batch_type(),
-        }
-    }
-}
-
-impl BatchAccount for Batch {
-    fn batch_key(&self) -> BatchKey {
-        self.key
-    }
-
-    fn ledger(&self) -> LedgerKey {
-        self.ledger
-    }
-
-    fn batch_type(&self) -> BatchType {
-        self.batch_type
-    }
-}
-
 /// Amounts on the wire are decimal strings: protobuf has no 128-bit
 /// integer, JSON numbers above 2^53 lose precision in JavaScript, and
 /// Postgres keeps them exact as `NUMERIC(39,0)` through text.
@@ -165,16 +167,49 @@ mod tests {
         assert_eq!(BatchType::from_i16(0), None);
     }
 
+    #[derive(Clone, Debug)]
+    struct Named(LedgerKey, BatchType);
+
+    impl LedgerBatch for Named {
+        type PrimaryKey = u8;
+
+        fn primary_key(&self) -> u8 {
+            1
+        }
+
+        fn ledger(&self) -> LedgerKey {
+            self.0
+        }
+
+        fn batch_type(&self) -> BatchType {
+            self.1
+        }
+    }
+
     #[test]
-    fn a_batch_key_comes_from_whatever_names_the_batch() {
-        let b = Batch {
+    fn a_value_that_disagrees_with_its_row_rejects() {
+        let row = StoredBatch {
             key: BatchKey(7),
             ledger: LedgerKey(1),
             batch_type: BatchType::Credit,
         };
-        let key: BatchKey = (&b).into();
-        assert_eq!(key, BatchKey(7));
-        assert_eq!(Batch::of(&b), b);
+        assert!(row.check(&Named(LedgerKey(1), BatchType::Credit)).is_ok());
+        for other in [
+            Named(LedgerKey(2), BatchType::Credit),
+            Named(LedgerKey(1), BatchType::Debit),
+        ] {
+            let reason = row.check(&other).expect_err("disagrees");
+            assert!(reason.message().contains("key 7"), "{reason}");
+        }
+    }
+
+    #[test]
+    fn a_placeholder_is_never_a_sequence_value() {
+        assert!(BatchKey::placeholder(0).is_placeholder());
+        assert!(BatchKey::placeholder(1_000_000).is_placeholder());
+        assert!(!BatchKey(1).is_placeholder());
+        assert!(!BatchKey(i64::MAX).is_placeholder());
+        assert!(!BatchKey(-1).is_placeholder());
     }
 
     #[test]

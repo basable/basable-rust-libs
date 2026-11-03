@@ -15,36 +15,19 @@ rust_library(
 )
 
 # The crate's own #[cfg(test)] modules: the embedded migration parses, the
-# row codecs. Everything against a database is under tests/.
+# row codecs, and the suites against the Postgres TEST_DATABASE_URL names
+# (skipped, loudly, without it), over the tenant fixture migrations with the
+# ledger's tables in the orders schema. They live inside the crate because
+# only this crate may implement its PgBatch for the testkit's fixture Batch.
 rust_test(
     name = "basable_ledger_postgres_test",
     crate = ":basable_ledger_postgres",
     compile_data = glob(["migrations/*.sql"]),
-    deps = all_crate_deps(normal_dev = True),
+    data = ["//crates/basable-testkit:fixture_migrations"],
+    env_inherit = ["TEST_DATABASE_URL"],
+    tags = ["requires-network"],
+    deps = [
+        "//crates/basable-ledger-testkit:basable_ledger_testkit",
+        "//crates/basable-testkit:basable_testkit",
+    ] + all_crate_deps(normal_dev = True),
 )
-
-# The database-backed suites: one target per file under tests/, against the
-# Postgres TEST_DATABASE_URL names (skipped, loudly, without it), over the
-# tenant fixture migrations with the ledger's tables in the orders schema.
-[
-    rust_test(
-        name = "ledger_postgres_" + src[len("tests/"):-len(".rs")],
-        srcs = [src],
-        crate_root = src,
-        data = ["//crates/basable-testkit:fixture_migrations"],
-        env_inherit = ["TEST_DATABASE_URL"],
-        tags = ["requires-network"],
-        deps = [
-            ":basable_ledger_postgres",
-            "//crates/basable-core:basable_core",
-            "//crates/basable-db:basable_db",
-            "//crates/basable-ledger:basable_ledger",
-            "//crates/basable-ledger-testkit:basable_ledger_testkit",
-            "//crates/basable-testkit:basable_testkit",
-        ] + all_crate_deps(
-            normal = True,
-            normal_dev = True,
-        ),
-    )
-    for src in glob(["tests/*.rs"])
-]

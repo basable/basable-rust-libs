@@ -16,14 +16,14 @@ SET LOCAL search_path = nano_ledger;
 -- with amounts as decimal strings; snapshot diffs are
 -- {object_id, type, full | patch} per object booked. A line carries its
 -- batch's key and nothing else about the batch: the ledger it balances in
--- and its type (debit, credit or memo) are the user's, in their batches
--- table (at least batch_key, ledger and batch_type, and whatever else they
--- keep), found by the key, and a key means one ledger and one type for
--- good. There is no batch table in the framework. A batch's balance is the
+-- and its type (debit, credit or memo) are in the batch's row in the user's
+-- table for its kind (its key columns, batch_key from one sequence over all
+-- those tables, ledger, batch_type, and whatever else they keep), and a key
+-- means one ledger and one type for good. There is no batch table in the
+-- framework. A batch's balance is the
 -- sum of its lines; zero is a closed batch. booked_at is the journal's one
 -- time: when something happened in the world is a field of the object, in
--- its diff, read through the user's reader. This table is all a booking
--- reads.
+-- its diff, read through the user's reader.
 CREATE TABLE journal (
     process_id     UUID NOT NULL,
     sequence       BIGINT NOT NULL CHECK (sequence >= 1),

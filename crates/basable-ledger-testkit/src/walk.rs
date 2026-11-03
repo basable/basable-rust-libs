@@ -7,9 +7,11 @@
 
 use std::collections::BTreeMap;
 
-use basable_ledger::{Accounting, BatchKey, BatchType, LedgerKey, Outcome, UnitKey};
+use basable_ledger::{
+    Accounting, BatchKey, BatchType, LedgerBatch, LedgerKey, Outcome, Store, UnitKey,
+};
 
-use crate::fixture::{Currency, Invoice, InvoiceLedger, InvoiceState, new_invoice};
+use crate::fixture::{Batch, Currency, Invoice, InvoiceLedger, InvoiceState, new_invoice};
 use crate::scenario::Scenario;
 
 /// A deterministic pseudo-random source.
@@ -83,16 +85,26 @@ pub fn random_history(rng: &mut Rng, steps: usize) -> Vec<Invoice> {
 }
 
 /// The desired state of a snapshot as positions per (batch key, unit), the
-/// way the engine compares it.
-pub fn desired_positions<A: Accounting<Invoice>>(
+/// way the engine compares it. Every batch with a nonzero position must have
+/// a row by now.
+pub async fn desired_positions<A: Accounting<Invoice, Batch = Batch>>(
+    scenario: &Scenario,
     invoice: &Invoice,
 ) -> BTreeMap<(BatchKey, UnitKey), i128> {
     let desired = A::desired_state(invoice.state, invoice);
-    let mut map = BTreeMap::new();
+    let mut by_value: BTreeMap<(String, UnitKey), (Batch, i128)> = BTreeMap::new();
     for p in desired.positions() {
-        *map.entry((p.batch.key, p.unit)).or_insert(0) += p.amount;
+        by_value
+            .entry((p.batch.primary_key(), p.unit))
+            .or_insert_with(|| (p.batch.clone(), 0))
+            .1 += p.amount;
     }
-    map.retain(|_, a| *a != 0);
+    let mut map = BTreeMap::new();
+    for ((_, unit), (batch, amount)) in by_value {
+        if amount != 0 {
+            map.insert((scenario.key(&batch).await, unit), amount);
+        }
+    }
     map
 }
 
@@ -122,26 +134,27 @@ pub async fn check_history(seed: u64, steps: usize) -> usize {
         .collect();
     assert_eq!(
         positions,
-        desired_positions::<InvoiceLedger>(last),
+        desired_positions::<InvoiceLedger>(&scenario, last).await,
         "seed {seed}: path independence after {} snapshots",
         history.len()
     );
 
     // Every journal balances per ledger and unit. A line carries its
-    // batch's key alone, so the check resolves the ledger and type the way
-    // a user's audit does, through their batches: here, the accounts every
-    // desired state of the history named.
-    let mut accounts: BTreeMap<BatchKey, (LedgerKey, BatchType)> = BTreeMap::new();
+    // batch's key alone, so the check resolves the ledger and type the way a
+    // user's audit does, through the batches' rows.
+    let mut batches: BTreeMap<BatchKey, (LedgerKey, BatchType)> = BTreeMap::new();
     for snapshot in &history {
         for p in InvoiceLedger::desired_state(snapshot.state, snapshot).positions() {
-            accounts.insert(p.batch.key, (p.batch.ledger, p.batch.batch_type));
+            if let Some(row) = scenario.store().find(&p.batch).await.expect("find") {
+                batches.insert(row.key, (row.ledger, row.batch_type));
+            }
         }
     }
     let journals = scenario.journals(process);
     for journal in &journals {
         let mut sums: BTreeMap<(LedgerKey, UnitKey), i128> = BTreeMap::new();
         for line in &journal.lines {
-            let Some((ledger, batch_type)) = accounts.get(&line.batch) else {
+            let Some((ledger, batch_type)) = batches.get(&line.batch) else {
                 panic!(
                     "seed {seed}: journal {} has a line in batch {}, which no desired state of the history named",
                     journal.sequence, line.batch.0

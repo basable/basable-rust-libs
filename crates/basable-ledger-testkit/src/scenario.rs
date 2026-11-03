@@ -2,19 +2,20 @@
 //! registered, and the readers a test asserts with.
 
 use basable_ledger::{
-    Balances, BatchAccount, BatchKey, InMemoryStore, Journal, Ledger, LedgerError, LedgerObject,
-    ObjectId, Outcome, ProcessId, Request, Store, UnitKey,
+    Balances, BatchKey, InMemoryStore, Journal, Ledger, LedgerError, LedgerObject, ObjectId,
+    Outcome, ProcessId, Request, UnitKey,
 };
 
 use crate::fixture::{
-    Invoice, InvoiceLedger, InvoiceLedgerV2, Payment, PaymentLedger, VatReturn, VatReturnLedger,
+    Batch, Invoice, InvoiceLedger, InvoiceLedgerV2, Payment, PaymentLedger, Transfer,
+    TransferLedger, VatReturn, VatReturnLedger,
 };
 
-/// A ledger over a fresh in-memory store, the invoice (version 1), payment
-/// and VAT return types registered.
+/// A ledger over a fresh in-memory store, the invoice (version 1), payment,
+/// VAT return and transfer types registered.
 pub struct Scenario {
-    ledger: Ledger<InMemoryStore>,
-    store: InMemoryStore,
+    ledger: Ledger<InMemoryStore<Batch>>,
+    store: InMemoryStore<Batch>,
 }
 
 impl Default for Scenario {
@@ -31,6 +32,7 @@ impl Scenario {
             .register::<Invoice, InvoiceLedger>()
             .register::<Payment, PaymentLedger>()
             .register::<VatReturn, VatReturnLedger>()
+            .register::<Transfer, TransferLedger>()
             .build();
         Scenario { ledger, store }
     }
@@ -43,17 +45,18 @@ impl Scenario {
             .register::<Invoice, InvoiceLedgerV2>()
             .register::<Payment, PaymentLedger>()
             .register::<VatReturn, VatReturnLedger>()
+            .register::<Transfer, TransferLedger>()
             .build();
         Scenario { ledger, store }
     }
 
     /// The ledger.
-    pub fn ledger(&self) -> &Ledger<InMemoryStore> {
+    pub fn ledger(&self) -> &Ledger<InMemoryStore<Batch>> {
         &self.ledger
     }
 
     /// The store.
-    pub fn store(&self) -> &InMemoryStore {
+    pub fn store(&self) -> &InMemoryStore<Batch> {
         &self.store
     }
 
@@ -84,7 +87,7 @@ impl Scenario {
     }
 
     /// The balances of a process.
-    pub async fn balances(&self, process: ProcessId) -> Balances {
+    pub async fn balances(&self, process: ProcessId) -> Balances<Batch> {
         self.ledger.balances(process).await.expect("balances")
     }
 
@@ -98,11 +101,17 @@ impl Scenario {
         balances.of(object).positions().collect()
     }
 
-    /// A batch's sum per unit over every process: what a claim reads.
-    pub async fn batch_sum(&self, account: &impl BatchAccount) -> Vec<(UnitKey, i128)> {
-        self.store
-            .batch_sum(account.batch_key())
+    /// The key of a batch that has a row; panics when it has none.
+    pub async fn key(&self, batch: &Batch) -> BatchKey {
+        self.ledger
+            .batch_key(batch)
             .await
-            .expect("batch sum")
+            .expect("find")
+            .unwrap_or_else(|| panic!("batch {} has no row", batch.name()))
+    }
+
+    /// A batch's sum per unit over every process: what a claim reads.
+    pub async fn batch_sum(&self, batch: &Batch) -> Vec<(UnitKey, i128)> {
+        self.ledger.batch_sum(batch).await.expect("batch sum")
     }
 }

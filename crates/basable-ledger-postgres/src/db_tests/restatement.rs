@@ -3,32 +3,14 @@
 //! every process behind, the next run finds nothing, and a booking by a
 //! replica on the older rules is taken again by the next run.
 
-use basable_db::{Nanoservice, Stateful};
-use basable_ledger::{BatchAccount, Ledger, Outcome, Request, RestatementReport, Store, UnitKey};
-use basable_ledger_postgres::{PgStore, SCHEMA_PLACEHOLDER};
+use basable_ledger::{Ledger, Outcome, Request, RestatementReport, Store, UnitKey};
 use basable_ledger_testkit::fixture::{
     Currency, Invoice, InvoiceLedger, InvoiceLedgerV2, InvoiceState, Payment, PaymentLedger,
     new_invoice,
 };
-use basable_testkit::{TestDb, runfile};
 
-struct Orders;
-impl Nanoservice for Orders {
-    const NAME: &'static str = "orders";
-}
-impl Stateful for Orders {}
-
-async fn db() -> Option<TestDb> {
-    let db = TestDb::from_env_with_migrations(&runfile(
-        "crates/basable-testkit/tests/fixtures/migrations",
-    ))
-    .await?;
-    let ms = basable_ledger_postgres::migrations().expect("parses");
-    basable_db::migrate::apply(db.migrator(), &ms, &[(SCHEMA_PLACEHOLDER, "nano_orders")])
-        .await
-        .expect("ledger tables");
-    Some(db)
-}
+use super::{Orders, db};
+use crate::PgStore;
 
 #[tokio::test]
 async fn the_startup_restatement_restates_on_postgres() {
@@ -60,16 +42,22 @@ async fn the_startup_restatement_restates_on_postgres() {
         .preview_restatement(invoices[0].process_id)
         .await
         .expect("preview");
-    let mut expected = vec![
-        (invoices[0].vat_batch().batch_key(), UnitKey(978), -210),
-        (
-            InvoiceLedgerV2::vat_batch(&invoices[0]).batch_key(),
-            UnitKey(978),
-            210,
-        ),
-    ];
-    expected.sort();
-    assert_eq!(preview.deltas, expected);
+    let month = v1
+        .batch_key(&invoices[0].vat_batch())
+        .await
+        .expect("find")
+        .expect("a row");
+    let quarter = InvoiceLedgerV2::vat_batch(&invoices[0]);
+    assert_eq!(preview.deltas, vec![(month, UnitKey(978), -210)]);
+    assert_eq!(
+        preview.new_batches,
+        vec![(quarter.clone(), UnitKey(978), 210)]
+    );
+    assert_eq!(
+        v2.batch_key(&quarter).await.expect("find"),
+        None,
+        "the dry run created no row"
+    );
     assert_eq!(
         store
             .read(invoices[0].process_id)
@@ -145,7 +133,7 @@ async fn the_startup_restatement_restates_on_postgres() {
     let report = v2.restate_behind().await.expect("restate");
     assert_eq!(report.processes, 1);
     let b = v2.balances(paid.process_id).await.expect("balances");
-    assert_eq!(b.of(paid.id).amount(&paid.vat_batch(), Currency::Eur), 0);
+    assert_eq!(b.of(paid.id).amount_by_key(month, Currency::Eur), 0);
     assert_eq!(
         b.of(paid.id)
             .amount(&InvoiceLedgerV2::vat_batch(&paid), Currency::Eur),

@@ -8,40 +8,48 @@
 //! next touch. The version each type was evaluated under goes to the store
 //! with the commit, for the startup restatement's worklist, and is never
 //! read back by a booking.
+//!
+//! A desired state names batches by value and a line carries a key, so the
+//! runtime resolves the values first: the row of each batch that has one
+//! ([`named_batches`], [`Resolved`]), and a placeholder for each that has
+//! none. A placeholder is sound because such a batch has nothing booked: a
+//! row and the first journal naming it commit together. The store swaps the
+//! real keys in when it creates the rows.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
+use crate::accounting::LedgerBatch;
 use crate::balances::Balances;
 use crate::desired::Desired;
 use crate::erased::{ErasedObject, Registry};
 use crate::error::{LedgerError, Rejection, StoreError};
 use crate::journal::{Journal, Line, SnapshotDiff};
 use crate::jsonpatch;
-use crate::store::Commit;
-use crate::types::{BatchKey, BatchType, LedgerKey, ObjectId, ProcessId, UnitKey};
+use crate::store::{Commit, NewBatch};
+use crate::types::{BatchKey, BatchType, LedgerKey, ObjectId, ProcessId, StoredBatch, UnitKey};
 
 /// One object as the process currently books it: its folded snapshot and
 /// the decoded object.
-pub(crate) struct CurrentObject {
+pub(crate) struct CurrentObject<B: LedgerBatch> {
     pub json: Value,
-    pub object: Box<dyn ErasedObject>,
+    pub object: Box<dyn ErasedObject<B>>,
 }
 
 /// The process as read and folded.
-pub(crate) struct Current {
+pub(crate) struct Current<B: LedgerBatch> {
     pub sequence: i64,
-    pub objects: BTreeMap<ObjectId, CurrentObject>,
-    pub balances: Balances,
+    pub objects: BTreeMap<ObjectId, CurrentObject<B>>,
+    pub balances: Balances<B>,
 }
 
 /// Folds a process's journals into its current objects and positions.
-pub(crate) fn fold(
+pub(crate) fn fold<B: LedgerBatch>(
     process: ProcessId,
     journals: &[Journal],
-    registry: &Registry,
-) -> Result<Current, LedgerError> {
+    registry: &Registry<B>,
+) -> Result<Current<B>, LedgerError> {
     let mut snapshots: BTreeMap<ObjectId, (String, Value)> = BTreeMap::new();
     let mut balances = Balances::new();
     for journal in journals {
@@ -95,9 +103,94 @@ pub(crate) fn fold(
 }
 
 /// A submitted object, with its position in the call.
-pub(crate) struct Submission {
+pub(crate) struct Submission<B: LedgerBatch> {
     pub index: usize,
-    pub object: Box<dyn ErasedObject>,
+    pub object: Box<dyn ErasedObject<B>>,
+}
+
+/// The batches a plan of this call may name, by primary key: those of every
+/// current object and of every submission that will be evaluated, the first
+/// value naming a primary key standing for it. A stale or duplicate
+/// submission is never evaluated, so it names nothing.
+pub(crate) fn named_batches<B: LedgerBatch>(
+    current: &Current<B>,
+    submissions: &[Submission<B>],
+) -> BTreeMap<B::PrimaryKey, B> {
+    let mut named = BTreeMap::new();
+    let mut note = |desired: Desired<B>| {
+        for p in desired.positions() {
+            named
+                .entry(p.batch.primary_key())
+                .or_insert_with(|| p.batch.clone());
+        }
+    };
+    for cur in current.objects.values() {
+        note(cur.object.desired());
+    }
+    for s in submissions {
+        let settled = current
+            .objects
+            .get(&s.object.object_id())
+            .is_some_and(|cur| s.object.version() <= cur.object.version());
+        if !settled {
+            note(s.object.desired());
+        }
+    }
+    named
+}
+
+/// What a call's batches resolved to: every row found, and a placeholder row
+/// for each batch that has none.
+pub(crate) struct Resolved<B: LedgerBatch> {
+    rows: BTreeMap<B::PrimaryKey, StoredBatch>,
+    new: BTreeMap<B::PrimaryKey, B>,
+}
+
+impl<B: LedgerBatch> Resolved<B> {
+    pub(crate) fn new() -> Self {
+        Resolved {
+            rows: BTreeMap::new(),
+            new: BTreeMap::new(),
+        }
+    }
+
+    /// Adds what the store found for a batch.
+    pub(crate) fn add(&mut self, batch: B, row: Option<StoredBatch>) -> Result<(), StoreError> {
+        let primary_key = batch.primary_key();
+        let row = match row {
+            Some(row) if row.key.is_placeholder() => {
+                return Err(StoreError::Corrupt(format!(
+                    "batch {primary_key:?} has key {}, which no sequence hands out",
+                    row.key.0
+                )));
+            }
+            Some(row) => row,
+            None => {
+                let row = StoredBatch {
+                    key: BatchKey::placeholder(self.new.len()),
+                    ledger: batch.ledger(),
+                    batch_type: batch.batch_type(),
+                };
+                self.new.insert(primary_key.clone(), batch);
+                row
+            }
+        };
+        self.rows.insert(primary_key, row);
+        Ok(())
+    }
+
+    /// The value of a batch with no row, by its placeholder.
+    pub(crate) fn new_batch(&self, placeholder: BatchKey) -> Option<&B> {
+        self.new
+            .iter()
+            .find(|(pk, _)| self.rows.get(pk).is_some_and(|r| r.key == placeholder))
+            .map(|(_, batch)| batch)
+    }
+
+    /// Every row, the placeholders' included.
+    pub(crate) fn into_rows(self) -> BTreeMap<B::PrimaryKey, StoredBatch> {
+        self.rows
+    }
 }
 
 /// What the engine decided for one submission before the commit.
@@ -128,21 +221,45 @@ impl Plan {
         self.lines.is_empty() && self.diffs.is_empty()
     }
 
-    /// The commit: one journal at the process's next sequence.
-    pub(crate) fn into_commit(self, process: ProcessId, current: &Current) -> Commit {
+    /// The commit: one journal at the process's next sequence, with a row to
+    /// create for each new batch a line actually lands in, in primary key
+    /// order. A batch named with nothing to book gets no row.
+    pub(crate) fn into_commit<B: LedgerBatch>(
+        self,
+        process: ProcessId,
+        current: &Current<B>,
+        resolved: &Resolved<B>,
+    ) -> Commit<B> {
+        let used: BTreeSet<BatchKey> = self.lines.iter().map(|l| l.batch).collect();
+        let new_batches = resolved
+            .new
+            .iter()
+            .filter_map(|(primary_key, batch)| {
+                let placeholder = resolved.rows.get(primary_key)?.key;
+                used.contains(&placeholder).then(|| NewBatch {
+                    placeholder,
+                    batch: batch.clone(),
+                })
+            })
+            .collect();
         Commit {
             process_id: process,
             after_sequence: current.sequence,
             lines: self.lines,
             snapshot_diffs: self.diffs,
             versions: self.versions,
+            new_batches,
         }
     }
 }
 
 /// Plans one process's part of a call: the restatement of every current
 /// object first, then the submissions in order.
-pub(crate) fn plan(current: &Current, submissions: &[Submission]) -> Result<Plan, Rejection> {
+pub(crate) fn plan<B: LedgerBatch>(
+    current: &Current<B>,
+    submissions: &[Submission<B>],
+    resolved: &Resolved<B>,
+) -> Result<Plan, Rejection> {
     let mut plan = Plan {
         outcomes: Vec::with_capacity(submissions.len()),
         lines: Vec::new(),
@@ -151,8 +268,9 @@ pub(crate) fn plan(current: &Current, submissions: &[Submission]) -> Result<Plan
         restated_objects: 0,
     };
     let mut working = current.balances.clone();
+    working.set_rows(resolved.rows.clone());
     // The objects as the call leaves them, for later objects of the same call.
-    let mut live: BTreeMap<ObjectId, &dyn ErasedObject> = current
+    let mut live: BTreeMap<ObjectId, &dyn ErasedObject<B>> = current
         .objects
         .iter()
         .map(|(id, o)| (*id, o.object.as_ref()))
@@ -164,7 +282,7 @@ pub(crate) fn plan(current: &Current, submissions: &[Submission]) -> Result<Plan
     // booked here, ahead of the submissions, so that a submission's own
     // delta below is the object's own change and nothing else.
     for (id, cur) in &current.objects {
-        let desired = evaluate(cur.object.as_ref(), &mut working)?;
+        let desired = evaluate(cur.object.as_ref(), &working)?;
         let delta = delta_for(*id, &desired, &working);
         if !delta.is_empty() {
             apply_delta(&mut working, &delta);
@@ -199,7 +317,7 @@ pub(crate) fn plan(current: &Current, submissions: &[Submission]) -> Result<Plan
                 continue;
             }
         }
-        let desired = evaluate(s.object.as_ref(), &mut working)?;
+        let desired = evaluate(s.object.as_ref(), &working)?;
         match cur {
             Some(cur) if s.object.state_eq(cur) => {
                 let delta = delta_for(id, &desired, &working);
@@ -256,40 +374,50 @@ pub(crate) fn plan(current: &Current, submissions: &[Submission]) -> Result<Plan
     // are the sum of desired states that each balanced per ledger and unit,
     // the desired states above balance, so their difference does too, as
     // long as one key means one ledger and one type for good. A line stores
-    // the key alone; that constancy is the user's batches table's, not a
-    // check the engine can make.
+    // the key alone; that constancy is the row's, which a value that
+    // disagrees with it cannot get past (`evaluate`).
     plan.lines = net(&plan.lines);
     Ok(plan)
 }
 
-/// Evaluates an object's desired state, notes every batch it names against
-/// the ones the call has named so far (one key is one ledger and one type)
-/// and checks it balances per ledger and unit.
-fn evaluate(object: &dyn ErasedObject, working: &mut Balances) -> Result<Desired, Rejection> {
+/// Evaluates an object's desired state, checks every batch it names against
+/// its row (one key is one ledger and one type) and checks it balances per
+/// ledger and unit.
+fn evaluate<B: LedgerBatch>(
+    object: &dyn ErasedObject<B>,
+    working: &Balances<B>,
+) -> Result<Desired<B>, Rejection> {
     let desired = object.desired();
     for p in desired.positions() {
-        working.note(p.batch).map_err(|(ledger, batch_type)| {
-            Rejection::new(format!(
-                "object {} in state {}: batch {} is booked in ledger {} as {} but the desired state names it in ledger {} as {}",
+        let prefix = || {
+            format!(
+                "object {} in state {}",
                 object.object_id().0,
-                object.describe_state(),
-                p.batch.key.0,
-                ledger.0,
-                batch_type,
-                p.batch.ledger.0,
-                p.batch.batch_type
+                object.describe_state()
+            )
+        };
+        let row = working.row_of(&p.batch).ok_or_else(|| {
+            Rejection::new(format!(
+                "{}: batch {:?} appeared on a second evaluation, so the desired state is not pure",
+                prefix(),
+                p.batch.primary_key()
             ))
         })?;
+        row.check(&p.batch)
+            .map_err(|r| Rejection::new(format!("{}: {r}", prefix())))?;
     }
     check_desired_balances(object, &desired)?;
     Ok(desired)
 }
 
 /// Left equals right per (ledger, unit) in one desired state; memo outside.
-fn check_desired_balances(object: &dyn ErasedObject, desired: &Desired) -> Result<(), Rejection> {
+fn check_desired_balances<B: LedgerBatch>(
+    object: &dyn ErasedObject<B>,
+    desired: &Desired<B>,
+) -> Result<(), Rejection> {
     let mut sums: BTreeMap<(LedgerKey, UnitKey), i128> = BTreeMap::new();
     for p in desired.positions() {
-        let signed = match p.batch.batch_type {
+        let signed = match p.batch.batch_type() {
             BatchType::Debit => p.amount,
             BatchType::Credit => p
                 .amount
@@ -297,7 +425,7 @@ fn check_desired_balances(object: &dyn ErasedObject, desired: &Desired) -> Resul
                 .ok_or_else(|| Rejection::new("amount overflow"))?,
             BatchType::Memo => continue,
         };
-        let slot = sums.entry((p.batch.ledger, p.unit)).or_insert(0);
+        let slot = sums.entry((p.batch.ledger(), p.unit)).or_insert(0);
         *slot = slot
             .checked_add(signed)
             .ok_or_else(|| Rejection::new("amount overflow"))?;
@@ -316,11 +444,16 @@ fn check_desired_balances(object: &dyn ErasedObject, desired: &Desired) -> Resul
 
 /// The delta that brings an object's booked positions to a desired state,
 /// per batch and unit. A booked position the desired state no longer names
-/// closes through the same batch key.
-fn delta_for(object: ObjectId, desired: &Desired, working: &Balances) -> Vec<Line> {
+/// closes through the same batch key. Every batch was resolved by `evaluate`.
+fn delta_for<B: LedgerBatch>(
+    object: ObjectId,
+    desired: &Desired<B>,
+    working: &Balances<B>,
+) -> Vec<Line> {
     let mut wanted: BTreeMap<(BatchKey, UnitKey), i128> = BTreeMap::new();
     for p in desired.positions() {
-        let slot = wanted.entry((p.batch.key, p.unit)).or_insert(0);
+        let key = working.row_of(&p.batch).expect("evaluated").key;
+        let slot = wanted.entry((key, p.unit)).or_insert(0);
         *slot = slot.checked_add(p.amount).expect("amount overflow");
     }
     let booked = working.positions_of(object);
@@ -343,7 +476,7 @@ fn delta_for(object: ObjectId, desired: &Desired, working: &Balances) -> Vec<Lin
     delta
 }
 
-fn apply_delta(working: &mut Balances, delta: &[Line]) {
+fn apply_delta<B: LedgerBatch>(working: &mut Balances<B>, delta: &[Line]) {
     for l in delta {
         working.add(l.object_id, l.batch, l.unit, l.amount);
     }
@@ -351,7 +484,7 @@ fn apply_delta(working: &mut Balances, delta: &[Line]) {
 
 /// Sums the lines per (object, batch, unit), drops the zeros and orders
 /// them by that key.
-fn net(lines: &[Line]) -> Vec<Line> {
+pub(crate) fn net(lines: &[Line]) -> Vec<Line> {
     let mut sums: BTreeMap<(ObjectId, BatchKey, UnitKey), i128> = BTreeMap::new();
     for l in lines {
         *sums.entry((l.object_id, l.batch, l.unit)).or_insert(0) += l.amount;

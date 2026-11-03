@@ -10,7 +10,9 @@ is `docs/decisions/0005-declarative-ledger.md`.
 | Item | What it is |
 |---|---|
 | `MIGRATION`, `MIGRATION_FILE`, `SCHEMA_PLACEHOLDER`, `migrations()` | The dbmate migration that creates `journal` and `process_ledger_object_version`, with `nano_ledger` as the schema and role placeholder. Apply it through `basable_db::migrate::apply` with the replacement `("nano_ledger", "nano_<name>")` |
-| `PgStore::new(pool)` | The store: `read` (every journal of a process, the one read a booking makes), `commit` (one statement: a CTE inserts the journal at the next sequence and upserts the version index row of every type in the process, latest wins; a unique violation on the primary key fails the statement as a whole, `SequenceTaken`), `record_versions` (the index alone), `batch_sum` (over the expression index on the lines' batch keys), `processes_behind` (the startup restatement's worklist, from the version index) |
+| `PgBatch` | A batch's way to its row in the user's table: `find(&self, conn)` and `ensure(&self, tx)`. Each variant knows its table and key values, so neither takes more than a connection. The scaffold renders the impl from the manifest's kinds of batch. Here rather than in `basable-ledger` so the core stays free of `sqlx` |
+| `stored_batch(&row)` | A batch's `StoredBatch` from its `batch_key`, `ledger` and `batch_type` columns, for a `PgBatch` impl |
+| `PgStore::<B>::new(pool)` | The store: `read` (every journal of a process), `find` (`PgBatch::find` on a pooled connection), `commit` (see the rules), `record_versions` (the index alone), `batch_sum` (over the expression index on the lines' batch keys), `processes_behind` (the startup restatement's worklist, from the version index) |
 
 ## The tables
 
@@ -30,20 +32,29 @@ is `docs/decisions/0005-declarative-ledger.md`.
   booking; indexed on `(type_name, version)` as the startup restatement's
   worklist.
 
-No batch table in the framework: a batch key is the user's, a line carries
-it alone, and the batch's ledger and type are in the user's batches table
-(at least `batch_key`, `ledger` and `batch_type`), found by the key. No
-balance table: a position is a sum of lines, and so is a claim. A batch at
+No batch table in the framework: each kind of batch has a table of the user's
+(at least its key columns, a unique `batch_key` defaulting to the one sequence
+over all of them, `ledger` and `batch_type`), reached only through `PgBatch`,
+and a line carries the key alone. No balance table: a position is a sum of lines, and so is a claim. A batch at
 zero is a closed batch.
 
 ## Rules
 
-- **The primary key is the compare-and-set.** The commit is one
-  autocommitted statement, a CTE that inserts the journal and upserts the
+- **The primary key is the compare-and-set.** A commit with no new batch is
+  one autocommitted statement, a CTE that inserts the journal and upserts the
   version index rows: two tables written, no transaction to open, no second
   round trip, no lock of any kind. A loser's statement fails as a whole and
-  the engine reads again. A booking reads the journal table and nothing
-  else.
+  the engine reads again.
+- **A first use is a transaction.** With new batches the commit opens one, read
+  committed: `ensure` for each, in primary key order so two first uses cannot
+  deadlock, then that same statement carrying the real keys. A lost race, a
+  value disagreeing with a row or a failure rolls the rows back with the
+  journal. `ensure` is `INSERT ... ON CONFLICT (<primary key>) DO NOTHING` then
+  a read, never `DO UPDATE`, which would lock the row until commit and queue
+  every booking on a hot batch. A concurrent first use waits for the other's
+  commit and reads its row; once the row exists nothing waits.
+- **A booking reads the journal table and one row per distinct batch** its
+  process names, outside any transaction.
 - **Amounts travel as strings** inside the jsonb and are summed as
   `numeric` in SQL, so an `i128` never meets a `bigint`.
 - **The batch sum names the index's expression.** The `WHERE` of
@@ -84,9 +95,12 @@ key, unit) drops a row whose summed columns are all zero when it merges.**
 ## What the tests pin
 
 `src/lib.rs`: the migration parses and creates no batch table. Against
-`TEST_DATABASE_URL`, skipped without it:
+`TEST_DATABASE_URL`, skipped without it, inside the crate (`src/db_tests/`)
+because only this crate may implement its `PgBatch` for the testkit's fixture
+`Batch`; `db_tests/mod.rs` keeps several batch tables and one sequence, as a
+scaffolded project does:
 
-- `tests/postgres.rs`: the conformance suite of `basable-ledger-testkit`;
+- `db_tests/postgres.rs`: the conformance suite of `basable-ledger-testkit`;
   the invoice and payment fixture on real rows (both types indexed at the
   version they were evaluated under), replays recognised (which
   is what repairs a commit whose acknowledgement was lost: the retry reads
@@ -94,9 +108,11 @@ key, unit) drops a row whose summed columns are all zero when it merges.**
   process; a month's VAT batch closed by a VAT return booking it to zero
   and a late correction leaving the remainder; a rules bump restating with
   one appended journal; Postgres and the in-memory store agreeing on a
-  history.
-- `tests/restatement.rs`: after a rules bump, `preview_restatement` of one
-  process books nothing, `restate_behind` restates every process behind
+  history; batches on real tables (one key over tables and processes, the first
+  value's other columns, two books, a refused booking leaving no row); first
+  uses naming two new batches in opposite orders not deadlocking.
+- `db_tests/restatement.rs`: after a rules bump, `preview_restatement` of one
+  process books nothing and creates no row, `restate_behind` restates every process behind
   from the version index and the run after it finds nothing, a version row
   exists only for a type the process booked, and a booking by a replica on
   the older rules is accepted, indexed at its version and taken again by

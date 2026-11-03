@@ -15,14 +15,13 @@ SET LOCAL search_path = nano_accounting;
 --   {"<object_id>": [[batch_key, unit_key, amount], ...], ...}
 -- amounts as decimal strings; snapshot diffs are {object_id, type, full |
 -- patch} per object booked. A line carries the batch's key only. The
--- batch's ledger and type are yours, in a batches table of your own
--- (batch_key, ledger, batch_type and whatever else you keep about a
--- batch), found by the key, or encoded in the key; the engine has them at
--- booking time from the desired state and the framework keeps no batch
--- table. A batch's balance is the sum of its lines; zero is a closed
+-- batch's ledger and type are in its row in the table for its kind, rendered
+-- beside this one (its key columns, batch_key from one sequence over all
+-- those tables, ledger, batch_type and whatever else you keep about a
+-- batch). A batch's balance is the sum of its lines; zero is a closed
 -- batch. booked_at is the journal's one time: when something happened in
 -- the world is a field of the object, in its diff, read through the user's
--- reader. This table is all a booking reads.
+-- reader.
 CREATE TABLE journal (
     process_id     UUID NOT NULL,
     sequence       BIGINT NOT NULL CHECK (sequence >= 1),

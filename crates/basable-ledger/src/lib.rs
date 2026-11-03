@@ -6,25 +6,26 @@
 //! state). The **accounting** of that type, [`Accounting`]: which state
 //! changes are allowed, the [`Desired`] positions that exist while an object
 //! is in each state, and the balance checks a booking must pass. And the
-//! **batches**, [`BatchAccount`]: the only three things the framework knows
-//! about a batch are its key, its ledger and its type, debit, credit or
-//! memo. There is no batch table in the framework: the key is the user's,
-//! from a batches table of their own (at least the key, the ledger and the
-//! type, found by the key) or encoded from what names the batch; a stored
-//! line carries the key alone, and a batch is closed when a booking of the
-//! user's (a return filed, a payout made) brings its balance to zero.
+//! **batches**, [`LedgerBatch`]: one value of the user's `Batch` enum is one
+//! batch, and the framework knows of it only its primary key, its ledger and
+//! its type, debit, credit or memo. There is no batch table in the framework:
+//! each kind of batch has a table of the user's, one row per batch, and one
+//! sequence allocates the key a stored line carries over all of them. A batch
+//! is closed when a booking of the user's (a return filed, a payout made)
+//! brings its balance to zero.
 //!
 //! The engine owns the rest. A call ([`Request`]) carries any mix of
 //! registered types across processes. Per process it reads every journal,
 //! folds the snapshot diffs into the current objects and sums the lines into
-//! positions, checks each submitted object's version and state change,
-//! evaluates its desired state, diffs it against the object's booked
-//! positions, checks that left equals right per ledger and unit, and appends
-//! one journal at the process's next sequence. The primary key on (process,
-//! sequence) is the compare-and-set; a lost race is retried inside
-//! [`Ledger::book`]. Every booking re-evaluates every object of its process
-//! under the running rules, so a rules change is booked at the process's
-//! next touch like any other difference; a bump of an
+//! positions, finds the row of every batch the objects name, checks each
+//! submitted object's version and state change, evaluates its desired state,
+//! diffs it against the object's booked positions, checks that left equals
+//! right per ledger and unit, and appends one journal at the process's next
+//! sequence, together with the rows of the batches it uses first. The primary
+//! key on (process, sequence) is the compare-and-set; a lost race is retried
+//! inside [`Ledger::book`]. Every booking re-evaluates every object of its
+//! process under the running rules, so a rules change is booked at the
+//! process's next touch like any other difference; a bump of an
 //! [`Accounting::VERSION`] also restates, once at the start of the
 //! deployment that carries it ([`Ledger::restate_behind`]), every process
 //! the store's version index still lists under the older number.
@@ -50,7 +51,7 @@ mod object;
 mod store;
 mod types;
 
-pub use accounting::{Accounting, BatchAccount, Unit};
+pub use accounting::{Accounting, LedgerBatch, Unit};
 pub use balances::{Balances, ObjectBalances};
 pub use desired::{Desired, Position, balance};
 pub use error::{LedgerError, Rejection, StoreError};
@@ -61,7 +62,8 @@ pub use ledger::{
 };
 pub use memory::InMemoryStore;
 pub use object::LedgerObject;
-pub use store::{Commit, CommitOutcome, Store};
+pub use store::{Commit, CommitOutcome, NewBatch, Store};
 pub use types::{
-    Batch, BatchKey, BatchType, LedgerKey, ObjectId, ProcessId, Timestamp, UnitKey, amount_string,
+    BatchKey, BatchType, LedgerKey, ObjectId, ProcessId, StoredBatch, Timestamp, UnitKey,
+    amount_string,
 };

@@ -4,23 +4,28 @@
 
 use std::collections::BTreeMap;
 
-use crate::accounting::Unit;
-use crate::types::{Batch, BatchKey, BatchType, LedgerKey, ObjectId, UnitKey};
+use crate::accounting::{LedgerBatch, Unit};
+use crate::types::{BatchKey, ObjectId, StoredBatch, UnitKey};
 
-/// The positions of every object of a process, and the ledger and type of
-/// every batch the call in hand has named so far.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Balances {
+/// The positions of every object of a process, and the batches the call in
+/// hand has resolved, so that a balance can be asked for by the batch's
+/// value. A stored line carries the key alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Balances<B: LedgerBatch> {
     by_object: BTreeMap<ObjectId, BTreeMap<(BatchKey, UnitKey), i128>>,
-    /// The ledger and type of each batch a desired state of the current
-    /// call has named. A stored line carries the key alone, so the fold
-    /// seeds this empty and the call fills it: one key named under two
-    /// ledgers or types within one call is a rejection. Across calls that
-    /// is the user's batches table's job.
-    batches: BTreeMap<BatchKey, (LedgerKey, BatchType)>,
+    rows: BTreeMap<B::PrimaryKey, StoredBatch>,
 }
 
-impl Balances {
+impl<B: LedgerBatch> Default for Balances<B> {
+    fn default() -> Self {
+        Balances {
+            by_object: BTreeMap::new(),
+            rows: BTreeMap::new(),
+        }
+    }
+}
+
+impl<B: LedgerBatch> Balances<B> {
     /// No positions at all.
     pub fn new() -> Self {
         Self::default()
@@ -28,16 +33,28 @@ impl Balances {
 
     /// One object's positions. An object the process has never booked has
     /// none.
-    pub fn of(&self, object: ObjectId) -> ObjectBalances<'_> {
+    pub fn of(&self, object: ObjectId) -> ObjectBalances<'_, B> {
         ObjectBalances {
             positions: self.by_object.get(&object),
+            rows: &self.rows,
         }
     }
 
     /// The balance of one batch in one unit over every object of the
-    /// process. Takes a key or whatever names the batch.
-    pub fn batch(&self, batch: impl Into<BatchKey>, unit: impl Unit) -> i128 {
-        let key = batch.into();
+    /// process. A batch no object of the process names under the running
+    /// rules holds nothing here, since every booking first brings the
+    /// process to those rules; [`batch_by_key`](Self::batch_by_key) reads
+    /// any key the journals hold.
+    pub fn batch(&self, batch: &B, unit: impl Unit) -> i128 {
+        match self.rows.get(&batch.primary_key()) {
+            Some(row) => self.batch_by_key(row.key, unit),
+            None => 0,
+        }
+    }
+
+    /// The balance of one batch key in one unit over every object of the
+    /// process.
+    pub fn batch_by_key(&self, key: BatchKey, unit: impl Unit) -> i128 {
         let unit = unit.unit_key();
         self.by_object
             .values()
@@ -50,12 +67,14 @@ impl Balances {
         self.by_object.keys().copied()
     }
 
-    /// Notes a batch's ledger and type for the call; a key already noted
-    /// under another ledger or type fails with what it was noted as.
-    pub(crate) fn note(&mut self, batch: Batch) -> Result<(), (LedgerKey, BatchType)> {
-        let account = (batch.ledger, batch.batch_type);
-        let noted = *self.batches.entry(batch.key).or_insert(account);
-        if noted == account { Ok(()) } else { Err(noted) }
+    /// The row the call resolved a batch to, placeholder included.
+    pub(crate) fn row_of(&self, batch: &B) -> Option<StoredBatch> {
+        self.rows.get(&batch.primary_key()).copied()
+    }
+
+    /// What the call resolved its batches to.
+    pub(crate) fn set_rows(&mut self, rows: BTreeMap<B::PrimaryKey, StoredBatch>) {
+        self.rows = rows;
     }
 
     /// Adds a line's amount to its object's position.
@@ -84,16 +103,23 @@ impl Balances {
 }
 
 /// One object's positions.
-#[derive(Clone, Copy, Debug)]
-pub struct ObjectBalances<'a> {
+#[derive(Debug)]
+pub struct ObjectBalances<'a, B: LedgerBatch> {
     positions: Option<&'a BTreeMap<(BatchKey, UnitKey), i128>>,
+    rows: &'a BTreeMap<B::PrimaryKey, StoredBatch>,
 }
 
-impl ObjectBalances<'_> {
-    /// The object's balance on one batch in one unit; 0 when none. Takes a
-    /// key or whatever names the batch.
-    pub fn amount(&self, batch: impl Into<BatchKey>, unit: impl Unit) -> i128 {
-        let key = batch.into();
+impl<B: LedgerBatch> ObjectBalances<'_, B> {
+    /// The object's balance on one batch in one unit; 0 when none.
+    pub fn amount(&self, batch: &B, unit: impl Unit) -> i128 {
+        match self.rows.get(&batch.primary_key()) {
+            Some(row) => self.amount_by_key(row.key, unit),
+            None => 0,
+        }
+    }
+
+    /// The object's balance on one batch key in one unit; 0 when none.
+    pub fn amount_by_key(&self, key: BatchKey, unit: impl Unit) -> i128 {
         let unit = unit.unit_key();
         self.positions
             .and_then(|p| p.get(&(key, unit)))

@@ -19,19 +19,23 @@ pub trait LedgerObject: Serialize + DeserializeOwned + Send + Sync + 'static {
     fn state(&self) -> Self::State;
 }
 pub trait Accounting<O: LedgerObject>: Send + Sync + 'static {
+    type Batch: LedgerBatch;                        // the one Batch enum in src/ledger/batches.rs
     const VERSION: u32;                             // bump to restate every process booked under an older number
     fn validate_state_change(current: Option<O::State>) -> &'static [O::State];
-    fn desired_state(state: O::State, object: &O) -> Desired;     // pure: reads the object, names batches
-    fn validate_balances(state: O::State, object: &O, current: &Balances, desired: &Desired) -> Result<(), Rejection> { Ok(()) }
+    fn desired_state(state: O::State, object: &O) -> Desired<Self::Batch>;     // pure: reads the object, names batches by value
+    fn validate_balances(state: O::State, object: &O, current: &Balances<Self::Batch>, desired: &Desired<Self::Batch>) -> Result<(), Rejection> { Ok(()) }
 }
-pub trait BatchAccount { fn batch_key(&self) -> BatchKey; fn ledger(&self) -> LedgerKey; fn batch_type(&self) -> BatchType; } // Debit | Credit | Memo
+pub trait LedgerBatch { type PrimaryKey: Ord; fn primary_key(&self) -> Self::PrimaryKey; fn ledger(&self) -> LedgerKey; fn batch_type(&self) -> BatchType; } // Debit | Credit | Memo
+pub trait PgBatch: LedgerBatch { async fn find(&self, conn: &mut PgConnection) -> ..; async fn ensure(&self, tx: &mut PgConnection) -> ..; } // rendered
 pub trait Unit { fn unit_key(&self) -> UnitKey; }  // implemented for u32 and UnitKey
-pub fn balance(account: impl BatchAccount, unit: impl Unit, amount: i128) -> Position;  // desired![balance(..), ..]
+pub fn balance<B>(batch: B, unit: impl Unit, amount: i128) -> Position<B>;  // desired![balance(..), ..]
 impl<S: Store> Ledger<S> {
     pub async fn book(&self, request: Request) -> Result<Vec<Outcome>, LedgerError>;   // Booked | AlreadyBooked | Stale | Rejected(reason)
-    pub async fn balances(&self, process: ProcessId) -> Result<Balances, LedgerError>;
+    pub async fn balances(&self, process: ProcessId) -> Result<Balances<S::Batch>, LedgerError>;
+    pub async fn batch_key(&self, batch: &S::Batch) -> Result<Option<BatchKey>, LedgerError>;   // None: no row, nothing booked on it
+    pub async fn batch_sum(&self, batch: &S::Batch) -> Result<Vec<(UnitKey, i128)>, LedgerError>;  // over every process
     pub async fn restate(&self, process: ProcessId) -> Result<Restated, LedgerError>;
-    pub async fn preview_restatement(&self, process: ProcessId) -> Result<RestatementPreview, LedgerError>;
+    pub async fn preview_restatement(&self, process: ProcessId) -> Result<RestatementPreview<S::Batch>, LedgerError>;
     pub async fn restate_behind(&self) -> Result<RestatementReport, LedgerError>;     // once, at boot
 }
 ```
@@ -62,16 +66,28 @@ correction is a new object (a credit note). `validate_balances` sees the
 whole process's positions before anything books (a payment may not exceed
 the open receivable).
 
-**Batches** are the user's (`src/ledger/accounts.rs`). The framework knows
-of a batch only its key, its ledger and its type; a receivable per order, a
-revenue batch per month, a payout batch per merchant and week are all
-`Account` variants, and everything else about them (a GL code, a settle
-time) is a table of the owner's keyed by the batch key. A batch's balance
-is the sum of its lines over every process (`Store::batch_sum`), and a batch
-is closed when a booking brings it to zero: a VAT return is an object whose
-desired state holds minus the month's VAT batch and plus what the tax
-office is owed, a payout likewise. Nothing marks a batch; a line landing
-afterwards is the next claim's remainder.
+**Batches** are declared in the manifest (`owns.ledger.batches`) and rendered
+into `src/ledger/batches.rs`. One value of its `Batch` enum is one batch: a
+receivable per order, a revenue batch per month, a payout batch per merchant
+and week are all variants, and a desired state names them by value. Each kind
+is a table `<name>_batch` with its key columns, whatever else you keep about
+a batch (a GL code, a settle time), and a `batch_key` from the one sequence
+over all those tables, because a stored line carries that key alone. A booking
+makes one lookup per distinct batch its process names. A batch with no row has
+nothing booked anywhere, and the commit that first books on it creates the
+row in one transaction with the journal, so a rejected booking or a lost race
+leaves none. A required column is a field of the variant; a nullable one you
+fill later. A row is for good (the Directive §11), and a second book is a
+second kind in another ledger, with keys of its own. A new kind later is a
+manifest entry, a new migration creating its table with `batch_key BIGINT NOT
+NULL UNIQUE DEFAULT nextval('batch_key_seq')`, and an arm in each `match` of
+`batches.rs`.
+
+A batch's balance is the sum of its lines over every process
+(`Ledger::batch_sum`), and a batch is closed when a booking brings it to zero:
+a VAT return is an object whose desired state holds minus the month's VAT
+batch and plus what the tax office is owed, a payout likewise. Nothing marks
+a batch; a line landing afterwards is the next claim's remainder.
 
 **Rules change by version.** Bump `Accounting::VERSION` when a desired state
 or a state's classification changes. Every booking re-evaluates its whole
@@ -87,8 +103,9 @@ with `booked_at`, `lines` (one array per line: batch key, ledger, batch
 type, object id, unit key, amount) and `snapshot_diffs`, indexed on the lines' batch
 keys for `batch_sum`; and `process_ledger_object_version`, the version each
 object type of a process was last evaluated under, written by the commit's
-own statement and read only by the restatement at boot. No batch table and
-no balance table: a position is a sum of lines. A queryable `batch_balance`
+own statement and read only by the restatement at boot. The batch tables are
+yours, rendered beside them (`db/app/migrations/*_accounting_batches.sql`).
+No balance table: a position is a sum of lines. A queryable `batch_balance`
 is a projection of yours off `journal` (a statement-level trigger, with the
 warning that it serializes bookings on hot batches, or ClickHouse through
 change data capture), and `basable_ledger_testkit::projection::check_agrees`
@@ -98,4 +115,5 @@ is the check it must pass.
 object type to un-ignore: on `basable_ledger::InMemoryStore`, book a sample
 through every allowed change and assert the final positions equal the last
 state's desired state. A desired state that does not balance is a
-`Rejected` outcome there before it is one in production.
+`Rejected` outcome there before it is one in production. Keys are each store's
+own, so assert on values (`balances.of(id).amount(&batch, unit)`).

@@ -21,7 +21,7 @@ Design: `docs/01-shop/02-accounting.md`. Code:
 ## TODO, in order
 
 - [ ] `handle_book` in `src/handlers.rs`.
-- [ ] The snapshot fields in `crates/messages/src/ledger.rs`; the accounts in `src/ledger/accounts.rs`.
+- [ ] The snapshot fields in `crates/messages/src/ledger.rs`; the batches the desired states name are `src/ledger/batches.rs`.
 - [ ] `order`: `desired_state` per state in `src/ledger/order.rs`; its test in `tests/ledger.rs`.
 - [ ] `payment`: `desired_state` per state in `src/ledger/payment.rs`; its test in `tests/ledger.rs`.
 - [ ] The message structs in `crates/messages/src/lib.rs`.

@@ -4,54 +4,19 @@
 //! batch closed by a booking, a rules bump restating, and the in-memory
 //! store agreeing with Postgres on a history.
 
-use basable_db::{Nanoservice, Stateful};
 use std::collections::BTreeMap;
 
 use basable_ledger::{
-    BatchAccount, BatchKey, Commit, CommitOutcome, InMemoryStore, Ledger, Line, Outcome, Request,
+    BatchKey, BatchType, Commit, CommitOutcome, InMemoryStore, LedgerKey, Line, Outcome, Request,
     Store, UnitKey,
 };
-use basable_ledger_postgres::{PgStore, SCHEMA_PLACEHOLDER, migrations};
 use basable_ledger_testkit::conformance;
 use basable_ledger_testkit::fixture::{
-    Account, Currency, Invoice, InvoiceLedger, InvoiceLedgerV2, InvoiceState, Payment,
-    PaymentLedger, PaymentState, VatReturn, VatReturnLedger, new_invoice, new_payment,
-    new_vat_return,
+    Batch, Currency, Invoice, InvoiceLedger, InvoiceLedgerV2, InvoiceState, Payment, PaymentLedger,
+    PaymentState, new_invoice, new_payment, new_transfer, new_vat_return,
 };
-use basable_testkit::{TestDb, runfile};
 
-struct Orders;
-impl Nanoservice for Orders {
-    const NAME: &'static str = "orders";
-}
-impl Stateful for Orders {}
-
-/// The fixture database with the ledger's tables in the orders schema, or
-/// `None` without `TEST_DATABASE_URL`.
-async fn db() -> Option<TestDb> {
-    let db = TestDb::from_env_with_migrations(&runfile(
-        "crates/basable-testkit/tests/fixtures/migrations",
-    ))
-    .await?;
-    let ms = migrations().expect("migration parses");
-    basable_db::migrate::apply(db.migrator(), &ms, &[(SCHEMA_PLACEHOLDER, "nano_orders")])
-        .await
-        .expect("ledger tables applied");
-    Some(db)
-}
-
-async fn store(db: &TestDb) -> PgStore {
-    let pool = db.nano_pool::<Orders>().await;
-    PgStore::new(pool.pool().clone())
-}
-
-fn ledger(store: PgStore) -> Ledger<PgStore> {
-    Ledger::builder(store)
-        .register::<Invoice, InvoiceLedger>()
-        .register::<Payment, PaymentLedger>()
-        .register::<VatReturn, VatReturnLedger>()
-        .build()
-}
+use super::{db, ledger, store};
 
 #[tokio::test]
 async fn the_postgres_store_conforms() {
@@ -144,10 +109,7 @@ async fn the_invoice_lifecycle_books_on_postgres() {
     }
     // The batch sum spans the whole process.
     assert_eq!(
-        store
-            .batch_sum(paid.cash_batch().batch_key())
-            .await
-            .expect("sum"),
+        ledger.batch_sum(&paid.cash_batch()).await.expect("sum"),
         vec![(UnitKey(978), 24_200)]
     );
     db.finish().await;
@@ -176,17 +138,20 @@ async fn a_batch_is_closed_by_booking_its_balance_to_zero_on_postgres() {
         );
         issued.push(i);
     }
-    let vat = Account::Vat("2026-10".into()).batch_key();
-    let tax_office = Account::TaxOffice("2026-10".into()).batch_key();
+    let vat = Batch::Vat("2026-10".into());
+    let tax_office = Batch::TaxOffice("2026-10".into());
     let eur = UnitKey(978);
-    assert_eq!(store.batch_sum(vat).await.expect("sum"), vec![(eur, 3_360)]);
+    assert_eq!(
+        ledger.batch_sum(&vat).await.expect("sum"),
+        vec![(eur, 3_360)]
+    );
     ledger
         .book(Request::new().with(new_vat_return("2026-10", 3_360, Currency::Eur)))
         .await
         .expect("file");
-    assert_eq!(store.batch_sum(vat).await.expect("sum"), vec![(eur, 0)]);
+    assert_eq!(ledger.batch_sum(&vat).await.expect("sum"), vec![(eur, 0)]);
     assert_eq!(
-        store.batch_sum(tax_office).await.expect("sum"),
+        ledger.batch_sum(&tax_office).await.expect("sum"),
         vec![(eur, 3_360)]
     );
     let mut corrected = issued[2].next(InvoiceState::Issued, 0);
@@ -196,7 +161,10 @@ async fn a_batch_is_closed_by_booking_its_balance_to_zero_on_postgres() {
         .book(Request::new().with(corrected))
         .await
         .expect("correct");
-    assert_eq!(store.batch_sum(vat).await.expect("sum"), vec![(eur, -105)]);
+    assert_eq!(
+        ledger.batch_sum(&vat).await.expect("sum"),
+        vec![(eur, -105)]
+    );
     db.finish().await;
 }
 
@@ -217,18 +185,20 @@ async fn a_rules_bump_restates_on_postgres() {
             .expect("book"),
         vec![Outcome::Booked]
     );
-    let v2 = Ledger::builder(store.clone())
+    let v2 = basable_ledger::Ledger::builder(store.clone())
         .register::<Invoice, InvoiceLedgerV2>()
         .register::<Payment, PaymentLedger>()
         .build();
     let restated = v2.restate(p).await.expect("restate");
     assert_eq!(restated.objects, 1);
     assert_eq!(restated.lines, 2);
+    let month = v1
+        .batch_key(&issued.vat_batch())
+        .await
+        .expect("find")
+        .expect("a row");
     let b = v2.balances(p).await.expect("balances");
-    assert_eq!(
-        b.of(issued.id).amount(&issued.vat_batch(), Currency::Eur),
-        0
-    );
+    assert_eq!(b.of(issued.id).amount_by_key(month, Currency::Eur), 0);
     assert_eq!(
         b.of(issued.id)
             .amount(&InvoiceLedgerV2::vat_batch(&issued), Currency::Eur),
@@ -255,7 +225,7 @@ async fn postgres_agrees_with_the_in_memory_store() {
         return;
     };
     let pg = ledger(store(&db).await);
-    let mem = Ledger::builder(InMemoryStore::new())
+    let mem = basable_ledger::Ledger::builder(InMemoryStore::<Batch>::new())
         .register::<Invoice, InvoiceLedger>()
         .register::<Payment, PaymentLedger>()
         .build();
@@ -283,9 +253,23 @@ async fn postgres_agrees_with_the_in_memory_store() {
             .expect("mem");
         assert_eq!(a, b);
     }
+    // Keys are each store's own, so the two agree by value.
     let a = pg.balances(p).await.expect("pg");
     let b = mem.balances(p).await.expect("mem");
-    assert_eq!(a, b);
+    let last = history.last().expect("one");
+    for (batch, unit) in [
+        (last.receivable_batch(), UnitKey(978)),
+        (last.cash_batch(), UnitKey(978)),
+        (last.revenue_batch(), UnitKey(978)),
+        (last.vat_batch(), UnitKey(978)),
+        (last.points_batch(), UnitKey(1)),
+    ] {
+        assert_eq!(
+            a.of(last.id).amount(&batch, unit),
+            b.of(last.id).amount(&batch, unit),
+            "{batch:?}"
+        );
+    }
     db.finish().await;
 }
 
@@ -322,6 +306,7 @@ async fn the_batch_sum_matches_keys_only() {
             ],
             snapshot_diffs: Vec::new(),
             versions: BTreeMap::new(),
+            new_batches: Vec::new(),
         })
         .await
         .expect("commit");
@@ -334,5 +319,164 @@ async fn the_batch_sum_matches_keys_only() {
         store.batch_sum(BatchKey(5)).await.expect("sum"),
         vec![(UnitKey(978), 978)]
     );
+    db.finish().await;
+}
+
+/// A batch's row through the engine on real tables: one key over several
+/// tables and processes, the first value's other columns, a value that
+/// disagrees with its row refused, nothing left by a refused booking.
+#[tokio::test]
+async fn batches_get_their_rows_on_postgres() {
+    let Some(db) = db().await else {
+        eprintln!("TEST_DATABASE_URL unset: skipping");
+        return;
+    };
+    let store = store(&db).await;
+    let ledger = ledger(store.clone());
+    let monday = Batch::Settlement {
+        merchant: "acme".into(),
+        settle_day: "monday".into(),
+    };
+    let friday = Batch::Settlement {
+        merchant: "acme".into(),
+        settle_day: "friday".into(),
+    };
+    let revenue = Batch::Revenue("2026-11".into());
+    for (settlement, amount) in [(monday.clone(), 5), (friday.clone(), 7)] {
+        assert_eq!(
+            ledger
+                .book(Request::new().with(new_transfer(settlement, revenue.clone(), amount)))
+                .await
+                .expect("book"),
+            vec![Outcome::Booked]
+        );
+    }
+    let key = ledger
+        .batch_key(&monday)
+        .await
+        .expect("find")
+        .expect("a row");
+    assert_eq!(ledger.batch_key(&friday).await.expect("find"), Some(key));
+    assert_ne!(ledger.batch_key(&revenue).await.expect("find"), Some(key));
+    assert_eq!(
+        ledger.batch_sum(&friday).await.expect("sum"),
+        vec![(UnitKey(978), 12)]
+    );
+    let day: String = sqlx::query_scalar("SELECT settle_day FROM settlement_batch")
+        .fetch_one(store.pool())
+        .await
+        .expect("row");
+    assert_eq!(day, "monday", "the first value's column is the row's");
+
+    // The same name in two books is two batches.
+    let in_book = |ledger: u32, name: &str, batch_type: BatchType| Batch::InBook {
+        name: name.into(),
+        ledger: LedgerKey(ledger),
+        batch_type,
+    };
+    for book in [1, 2] {
+        let t = new_transfer(
+            in_book(book, "receivable", BatchType::Debit),
+            in_book(book, "revenue", BatchType::Credit),
+            5,
+        );
+        assert_eq!(
+            ledger.book(Request::new().with(t)).await.expect("book"),
+            vec![Outcome::Booked]
+        );
+    }
+    assert_ne!(
+        ledger
+            .batch_key(&in_book(1, "revenue", BatchType::Credit))
+            .await
+            .expect("find"),
+        ledger
+            .batch_key(&in_book(2, "revenue", BatchType::Credit))
+            .await
+            .expect("find"),
+    );
+
+    // A batch is a debit for good: a later call naming it a credit is refused,
+    // and the new batch beside it gets no row.
+    let named = |name: &str, batch_type: BatchType| Batch::Named {
+        name: name.into(),
+        ledger: LedgerKey(1),
+        batch_type,
+    };
+    let booked = new_transfer(
+        named("for good", BatchType::Debit),
+        named("beside it", BatchType::Credit),
+        1,
+    );
+    assert_eq!(
+        ledger
+            .book(Request::new().with(booked))
+            .await
+            .expect("book"),
+        vec![Outcome::Booked]
+    );
+    let wrong = named("fresh", BatchType::Debit);
+    let refused = new_transfer(wrong.clone(), named("for good", BatchType::Credit), 1);
+    let outcomes = ledger
+        .book(Request::new().with(refused.clone()))
+        .await
+        .expect("book");
+    assert!(matches!(outcomes[0], Outcome::Rejected(_)), "{outcomes:?}");
+    assert_eq!(ledger.batch_key(&wrong).await.expect("find"), None);
+    assert!(
+        store
+            .read(refused.process_id)
+            .await
+            .expect("read")
+            .is_empty()
+    );
+    db.finish().await;
+}
+
+/// Two processes using the same new batches for the first time, naming them
+/// in opposite orders, cannot deadlock: the commit creates rows in primary key
+/// order. Postgres would abort one with 40P01, which this would surface.
+#[tokio::test]
+async fn first_uses_in_opposite_orders_do_not_deadlock() {
+    let Some(db) = db().await else {
+        eprintln!("TEST_DATABASE_URL unset: skipping");
+        return;
+    };
+    let store = store(&db).await;
+    let ledger = std::sync::Arc::new(ledger(store.clone()));
+    for round in 0..8 {
+        let debit = Batch::Named {
+            name: format!("debit-{round}"),
+            ledger: LedgerKey(1),
+            batch_type: BatchType::Debit,
+        };
+        let credit = Batch::Named {
+            name: format!("credit-{round}"),
+            ledger: LedgerKey(1),
+            batch_type: BatchType::Credit,
+        };
+        let mut tasks = Vec::new();
+        for i in 0..8 {
+            let ledger = ledger.clone();
+            let (left, right) = if i % 2 == 0 {
+                (debit.clone(), credit.clone())
+            } else {
+                (credit.clone(), debit.clone())
+            };
+            tasks.push(tokio::spawn(async move {
+                ledger
+                    .book(Request::new().with(new_transfer(left, right, 1)))
+                    .await
+                    .expect("no deadlock")
+            }));
+        }
+        for t in tasks {
+            assert_eq!(t.await.expect("task"), vec![Outcome::Booked]);
+        }
+        assert_eq!(
+            ledger.batch_sum(&debit).await.expect("sum"),
+            vec![(UnitKey(978), 8)]
+        );
+    }
     db.finish().await;
 }

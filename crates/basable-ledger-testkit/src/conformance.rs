@@ -7,10 +7,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use basable_ledger::{
-    Batch, BatchKey, BatchType, Commit, CommitOutcome, Journal, LedgerKey, Line, ObjectId,
-    ProcessId, SnapshotDiff, Store, UnitKey,
+    BatchKey, BatchType, Commit, CommitOutcome, Journal, LedgerBatch, LedgerKey, Line, NewBatch,
+    ObjectId, ProcessId, SnapshotDiff, Store, UnitKey,
 };
 use uuid::Uuid;
+
+use crate::fixture::Batch;
 
 fn process() -> ProcessId {
     ProcessId(Uuid::now_v7())
@@ -25,24 +27,16 @@ fn unique_key() -> BatchKey {
     BatchKey(Uuid::new_v4().as_u64_pair().1 as i64)
 }
 
-fn debit(key: BatchKey) -> Batch {
-    Batch {
-        key,
-        ledger: LedgerKey(1),
-        batch_type: BatchType::Debit,
-    }
-}
-
-fn line(batch: Batch, object: ObjectId, unit: u32, amount: i128) -> Line {
+fn line(batch: BatchKey, object: ObjectId, unit: u32, amount: i128) -> Line {
     Line {
-        batch: batch.key,
+        batch,
         object_id: object,
         unit: UnitKey(unit),
         amount,
     }
 }
 
-fn commit(process: ProcessId, after: i64, batch: Batch, object: ObjectId) -> Commit {
+fn commit(process: ProcessId, after: i64, batch: BatchKey, object: ObjectId) -> Commit<Batch> {
     Commit {
         process_id: process,
         after_sequence: after,
@@ -57,6 +51,34 @@ fn commit(process: ProcessId, after: i64, batch: Batch, object: ObjectId) -> Com
             patch: None,
         }],
         versions: BTreeMap::new(),
+        new_batches: Vec::new(),
+    }
+}
+
+/// What a line of a batch with no row carries while a commit is planned.
+const PLACEHOLDER: BatchKey = BatchKey(i64::MIN);
+
+/// A commit whose one line lands in a batch that may have no row yet.
+fn first_use(process: ProcessId, after: i64, batch: Batch, object: ObjectId) -> Commit<Batch> {
+    Commit {
+        process_id: process,
+        after_sequence: after,
+        lines: vec![line(PLACEHOLDER, object, 978, 100)],
+        snapshot_diffs: Vec::new(),
+        versions: BTreeMap::new(),
+        new_batches: vec![NewBatch {
+            placeholder: PLACEHOLDER,
+            batch,
+        }],
+    }
+}
+
+/// A batch of one kind no other run of the suite has named.
+fn named(batch_type: BatchType) -> Batch {
+    Batch::Named {
+        name: Uuid::now_v7().to_string(),
+        ledger: LedgerKey(1),
+        batch_type,
     }
 }
 
@@ -65,13 +87,14 @@ fn versions(pairs: &[(&str, u32)]) -> BTreeMap<String, u32> {
 }
 
 /// A commit with no lines or diffs that carries the versions of some types.
-fn versions_commit(process: ProcessId, after: i64, pairs: &[(&str, u32)]) -> Commit {
+fn versions_commit(process: ProcessId, after: i64, pairs: &[(&str, u32)]) -> Commit<Batch> {
     Commit {
         process_id: process,
         after_sequence: after,
         lines: Vec::new(),
         snapshot_diffs: Vec::new(),
         versions: versions(pairs),
+        new_batches: Vec::new(),
     }
 }
 
@@ -80,7 +103,7 @@ fn sequence(journals: &[Journal]) -> i64 {
 }
 
 /// A process never booked reads as empty.
-pub async fn reads_empty_process<S: Store>(store: &S) {
+pub async fn reads_empty_process<S: Store<Batch = Batch>>(store: &S) {
     let journals = store.read(process()).await.expect("read");
     assert!(journals.is_empty());
     assert_eq!(sequence(&journals), 0);
@@ -88,10 +111,10 @@ pub async fn reads_empty_process<S: Store>(store: &S) {
 
 /// The first commit goes at sequence 1; the read returns the journal, its
 /// lines with their batches and its diffs.
-pub async fn commits_and_reads_back<S: Store>(store: &S) {
+pub async fn commits_and_reads_back<S: Store<Batch = Batch>>(store: &S) {
     let p = process();
     let o = object();
-    let batch = debit(unique_key());
+    let batch = unique_key();
     assert_eq!(
         store.commit(commit(p, 0, batch, o)).await.expect("commit"),
         CommitOutcome::Committed
@@ -112,10 +135,10 @@ pub async fn commits_and_reads_back<S: Store>(store: &S) {
 
 /// The primary key on (process, sequence) is the compare-and-set: a second
 /// commit at the same sequence is `SequenceTaken`, and the next one goes in.
-pub async fn sequence_is_the_compare_and_set<S: Store>(store: &S) {
+pub async fn sequence_is_the_compare_and_set<S: Store<Batch = Batch>>(store: &S) {
     let p = process();
     let o = object();
-    let batch = debit(unique_key());
+    let batch = unique_key();
     let c = commit(p, 0, batch, o);
     assert_eq!(
         store.commit(c.clone()).await.expect("commit"),
@@ -138,9 +161,9 @@ pub async fn sequence_is_the_compare_and_set<S: Store>(store: &S) {
 }
 
 /// Under concurrency exactly one of the racing commits at one sequence lands.
-pub async fn concurrent_commits_land_once<S: Store + Clone + 'static>(store: &S) {
+pub async fn concurrent_commits_land_once<S: Store<Batch = Batch> + Clone + 'static>(store: &S) {
     let p = process();
-    let batch = debit(unique_key());
+    let batch = unique_key();
     assert_eq!(
         store
             .commit(commit(p, 0, batch, object()))
@@ -171,10 +194,10 @@ pub async fn concurrent_commits_land_once<S: Store + Clone + 'static>(store: &S)
 
 /// The sum of one batch's lines spans every process and every unit; a batch
 /// nobody wrote into sums to nothing.
-pub async fn sums_a_batch_across_processes<S: Store>(store: &S) {
-    let batch = debit(unique_key());
-    let other = debit(unique_key());
-    assert!(store.batch_sum(batch.key).await.expect("sum").is_empty());
+pub async fn sums_a_batch_across_processes<S: Store<Batch = Batch>>(store: &S) {
+    let batch = unique_key();
+    let other = unique_key();
+    assert!(store.batch_sum(batch).await.expect("sum").is_empty());
     let p1 = process();
     let p2 = process();
     let mut c1 = commit(p1, 0, batch, object());
@@ -196,18 +219,18 @@ pub async fn sums_a_batch_across_processes<S: Store>(store: &S) {
         CommitOutcome::Committed
     );
     assert_eq!(
-        store.batch_sum(batch.key).await.expect("sum"),
+        store.batch_sum(batch).await.expect("sum"),
         vec![(UnitKey(840), 5), (UnitKey(978), 50)]
     );
     assert_eq!(
-        store.batch_sum(other.key).await.expect("sum"),
+        store.batch_sum(other).await.expect("sum"),
         vec![(UnitKey(978), 7)]
     );
 }
 
 /// The commit indexes the version each type was evaluated under, latest
 /// wins, and `record_versions` moves the index without a journal.
-pub async fn records_versions<S: Store>(store: &S) {
+pub async fn records_versions<S: Store<Batch = Batch>>(store: &S) {
     let p = process();
     let invoice = format!("invoice-{}", Uuid::now_v7());
     let payment = format!("payment-{}", Uuid::now_v7());
@@ -286,7 +309,7 @@ pub async fn records_versions<S: Store>(store: &S) {
 
 /// `processes_behind` lists the processes whose recorded version of a type
 /// is below the running one, bounded by the limit.
-pub async fn lists_processes_behind<S: Store>(store: &S) {
+pub async fn lists_processes_behind<S: Store<Batch = Batch>>(store: &S) {
     let type_name = format!("conf-{}", Uuid::now_v7());
     let p1 = process();
     let p2 = process();
@@ -325,8 +348,165 @@ pub async fn lists_processes_behind<S: Store>(store: &S) {
     );
 }
 
+/// A batch no booking has used has no row.
+pub async fn finds_no_row_for_a_batch_never_booked<S: Store<Batch = Batch>>(store: &S) {
+    assert_eq!(
+        store.find(&named(BatchType::Debit)).await.expect("find"),
+        None
+    );
+}
+
+/// A new batch's row lands with the journal: the row holds the value's ledger
+/// and type, the stored lines carry its key and no placeholder, and the same
+/// batch in another process finds that row and keeps that key.
+pub async fn a_new_batch_gets_its_row_with_the_journal<S: Store<Batch = Batch>>(store: &S) {
+    let batch = named(BatchType::Credit);
+    let p = process();
+    let o = object();
+    assert_eq!(
+        store
+            .commit(first_use(p, 0, batch.clone(), o))
+            .await
+            .expect("commit"),
+        CommitOutcome::Committed
+    );
+    let row = store.find(&batch).await.expect("find").expect("a row");
+    assert_eq!(row.ledger, batch.ledger());
+    assert_eq!(row.batch_type, BatchType::Credit);
+    assert!(row.key.0 > 0, "from a sequence, not {}", row.key.0);
+    assert_eq!(
+        store.read(p).await.expect("read")[0].lines,
+        vec![line(row.key, o, 978, 100)]
+    );
+    let other = process();
+    let again = first_use(other, 0, batch.clone(), object());
+    assert_eq!(
+        store.commit(again).await.expect("commit"),
+        CommitOutcome::Committed
+    );
+    assert_eq!(store.find(&batch).await.expect("find"), Some(row));
+    assert_eq!(
+        store.read(other).await.expect("read")[0].lines[0].batch,
+        row.key
+    );
+}
+
+/// One counter allocates over every table: batches of different kinds never
+/// share a key.
+pub async fn one_counter_allocates_over_every_table<S: Store<Batch = Batch>>(store: &S) {
+    let batches = [
+        Batch::Receivable(object()),
+        Batch::CashClearing(object()),
+        Batch::Revenue(Uuid::now_v7().to_string()),
+        Batch::Vat(Uuid::now_v7().to_string()),
+        named(BatchType::Debit),
+    ];
+    let mut keys = Vec::new();
+    for batch in batches {
+        let commit = first_use(process(), 0, batch.clone(), object());
+        assert_eq!(
+            store.commit(commit).await.expect("commit"),
+            CommitOutcome::Committed
+        );
+        keys.push(store.find(&batch).await.expect("find").expect("a row").key);
+    }
+    let distinct: std::collections::BTreeSet<BatchKey> = keys.iter().copied().collect();
+    assert_eq!(distinct.len(), keys.len(), "{keys:?}");
+}
+
+/// A commit that loses the sequence leaves no row behind.
+pub async fn a_lost_race_leaves_no_row<S: Store<Batch = Batch>>(store: &S) {
+    let p = process();
+    assert_eq!(
+        store
+            .commit(commit(p, 0, unique_key(), object()))
+            .await
+            .expect("commit"),
+        CommitOutcome::Committed
+    );
+    let batch = named(BatchType::Debit);
+    assert_eq!(
+        store
+            .commit(first_use(p, 0, batch.clone(), object()))
+            .await
+            .expect("commit"),
+        CommitOutcome::SequenceTaken
+    );
+    assert_eq!(store.find(&batch).await.expect("find"), None);
+    assert_eq!(store.read(p).await.expect("read").len(), 1);
+}
+
+/// Concurrent first uses of one batch in different processes all land, under
+/// one key.
+pub async fn concurrent_first_uses_share_one_key<S: Store<Batch = Batch> + Clone + 'static>(
+    store: &S,
+) {
+    let batch = named(BatchType::Debit);
+    let store = Arc::new(store.clone());
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let store = store.clone();
+        let batch = batch.clone();
+        tasks.push(tokio::spawn(async move {
+            let p = process();
+            let outcome = store
+                .commit(first_use(p, 0, batch, object()))
+                .await
+                .expect("commit");
+            (p, outcome)
+        }));
+    }
+    let mut landed = Vec::new();
+    for t in tasks {
+        let (p, outcome) = t.await.expect("task");
+        assert_eq!(outcome, CommitOutcome::Committed);
+        landed.push(p);
+    }
+    let row = store.find(&batch).await.expect("find").expect("a row");
+    for p in landed {
+        assert_eq!(
+            store.read(p).await.expect("read")[0].lines[0].batch,
+            row.key
+        );
+    }
+}
+
+/// A commit whose value disagrees with the row a concurrent first use created
+/// is refused whole: no journal, and the row stays as it was.
+pub async fn a_value_disagreeing_with_its_row_refuses_the_commit<S: Store<Batch = Batch>>(
+    store: &S,
+) {
+    let name = Uuid::now_v7().to_string();
+    let debit = Batch::Named {
+        name: name.clone(),
+        ledger: LedgerKey(1),
+        batch_type: BatchType::Debit,
+    };
+    let credit = Batch::Named {
+        name,
+        ledger: LedgerKey(1),
+        batch_type: BatchType::Credit,
+    };
+    assert_eq!(
+        store
+            .commit(first_use(process(), 0, debit.clone(), object()))
+            .await
+            .expect("commit"),
+        CommitOutcome::Committed
+    );
+    let row = store.find(&debit).await.expect("find").expect("a row");
+    let p = process();
+    let outcome = store
+        .commit(first_use(p, 0, credit, object()))
+        .await
+        .expect("commit");
+    assert!(matches!(outcome, CommitOutcome::Rejected(_)), "{outcome:?}");
+    assert!(store.read(p).await.expect("read").is_empty());
+    assert_eq!(store.find(&debit).await.expect("find"), Some(row));
+}
+
 /// Every check, in order.
-pub async fn run_all<S: Store + Clone + 'static>(store: &S) {
+pub async fn run_all<S: Store<Batch = Batch> + Clone + 'static>(store: &S) {
     reads_empty_process(store).await;
     commits_and_reads_back(store).await;
     sequence_is_the_compare_and_set(store).await;
@@ -334,4 +514,10 @@ pub async fn run_all<S: Store + Clone + 'static>(store: &S) {
     sums_a_batch_across_processes(store).await;
     records_versions(store).await;
     lists_processes_behind(store).await;
+    finds_no_row_for_a_batch_never_booked(store).await;
+    a_new_batch_gets_its_row_with_the_journal(store).await;
+    one_counter_allocates_over_every_table(store).await;
+    a_lost_race_leaves_no_row(store).await;
+    concurrent_first_uses_share_one_key(store).await;
+    a_value_disagreeing_with_its_row_refuses_the_commit(store).await;
 }

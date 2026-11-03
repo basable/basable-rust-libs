@@ -1,19 +1,20 @@
-//! The fixture: an invoice, a payment and a VAT return, the object types
-//! every suite books. The invoice is the plan's worked example; the payment
-//! is a child object in the same process that clears the invoice's
-//! receivable batch, which is how a negative position on one object's side
-//! of a batch arises and why the balance check sees the whole process; the
-//! VAT return is a root object of its own that books a period's VAT batch
-//! to zero, which is how a batch closes.
+//! The fixture: an invoice, a payment, a VAT return and a transfer, the
+//! object types every suite books. The invoice is the plan's worked example;
+//! the payment is a child object in the same process that clears the
+//! invoice's receivable batch, which is how a negative position on one
+//! object's side of a batch arises and why the balance check sees the whole
+//! process; the VAT return is a root object of its own that books a period's
+//! VAT batch to zero, which is how a batch closes; the transfer names
+//! whichever two batches a test gives it.
 
 use basable_ledger::{
-    Accounting, Balances, BatchAccount, BatchKey, BatchType, Desired, LedgerKey, LedgerObject,
-    ObjectId, ProcessId, Rejection, Unit, UnitKey, amount_string, balance, desired,
+    Accounting, Balances, BatchType, Desired, LedgerBatch, LedgerKey, LedgerObject, ObjectId,
+    ProcessId, Rejection, Unit, UnitKey, amount_string, balance, desired,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// The one ledger of the fixture.
+/// The one ledger of the fixture, apart from [`Batch::InBook`].
 pub const PLATFORM_LEDGER: LedgerKey = LedgerKey(1);
 
 /// A currency, the fixture's unit type.
@@ -34,13 +35,12 @@ impl Unit for Currency {
     }
 }
 
-/// The fixture's accounts: one variant per kind, with what identifies the
-/// batch, an invoice or a period. The framework sees only the key, the
-/// ledger and the type. The fixture keeps no batch table: a batch's key is a
-/// hash of its name, standing in for the key a user allocates in a table of
-/// their own or encodes from what names the batch.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub enum Account {
+/// The fixture's batches: one value is one batch, its variant the kind and
+/// its fields which one. The framework sees only the primary key, the ledger
+/// and the type. A test's store keeps the rows: the in-memory store by the
+/// primary key, Postgres in its own test tables.
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub enum Batch {
     /// What a customer owes on one invoice.
     Receivable(ObjectId),
     /// Cash received against one invoice, until the payout clears it.
@@ -56,49 +56,78 @@ pub enum Account {
     BadDebt(String),
     /// A month's loyalty points: not money.
     Points(String),
+    /// What a merchant is owed. The settle day is another column of the row,
+    /// not part of what identifies the batch: two values that differ only in
+    /// it are one batch, and the first one's day is the row's.
+    Settlement {
+        /// What identifies the batch.
+        merchant: String,
+        /// The other column.
+        settle_day: String,
+    },
+    /// A batch whose ledger and type the test chooses, identified by its name
+    /// alone: naming it under another ledger or type disagrees with its row.
+    Named {
+        /// What identifies the batch.
+        name: String,
+        /// The ledger this value says.
+        ledger: LedgerKey,
+        /// The type this value says.
+        batch_type: BatchType,
+    },
+    /// A batch with the ledger in its primary key: the same name in two books
+    /// is two batches with two keys.
+    InBook {
+        /// Part of what identifies the batch.
+        name: String,
+        /// Part of what identifies the batch.
+        ledger: LedgerKey,
+        /// The type.
+        batch_type: BatchType,
+    },
 }
 
-impl Account {
-    /// The batch's name, `<kind>/<invoice or period>`.
+impl Batch {
+    /// The batch's name, `<kind>/<what identifies it>`: its primary key.
     pub fn name(&self) -> String {
         match self {
-            Account::Receivable(id) => format!("receivable/{}", id.0),
-            Account::CashClearing(id) => format!("cash/{}", id.0),
-            Account::Revenue(p) => format!("revenue/{p}"),
-            Account::Vat(p) => format!("vat/{p}"),
-            Account::TaxOffice(p) => format!("tax_office/{p}"),
-            Account::BadDebt(p) => format!("bad_debt/{p}"),
-            Account::Points(p) => format!("points/{p}"),
+            Batch::Receivable(id) => format!("receivable/{}", id.0),
+            Batch::CashClearing(id) => format!("cash/{}", id.0),
+            Batch::Revenue(p) => format!("revenue/{p}"),
+            Batch::Vat(p) => format!("vat/{p}"),
+            Batch::TaxOffice(p) => format!("tax_office/{p}"),
+            Batch::BadDebt(p) => format!("bad_debt/{p}"),
+            Batch::Points(p) => format!("points/{p}"),
+            Batch::Settlement { merchant, .. } => format!("settlement/{merchant}"),
+            Batch::Named { name, .. } => format!("named/{name}"),
+            Batch::InBook { name, ledger, .. } => format!("in_book/{}/{name}", ledger.0),
         }
     }
 }
 
-/// FNV-1a over the name: the fixture's stand-in for a batch table.
-fn hash_key(name: &str) -> BatchKey {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in name.as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    BatchKey(h as i64)
-}
+impl LedgerBatch for Batch {
+    type PrimaryKey = String;
 
-impl BatchAccount for Account {
-    fn batch_key(&self) -> BatchKey {
-        hash_key(&self.name())
+    fn primary_key(&self) -> String {
+        self.name()
     }
 
     fn ledger(&self) -> LedgerKey {
-        PLATFORM_LEDGER
+        match self {
+            Batch::Named { ledger, .. } | Batch::InBook { ledger, .. } => *ledger,
+            _ => PLATFORM_LEDGER,
+        }
     }
 
     fn batch_type(&self) -> BatchType {
         match self {
-            Account::Receivable(_) | Account::CashClearing(_) | Account::BadDebt(_) => {
-                BatchType::Debit
-            }
-            Account::Revenue(_) | Account::Vat(_) | Account::TaxOffice(_) => BatchType::Credit,
-            Account::Points(_) => BatchType::Memo,
+            Batch::Receivable(_)
+            | Batch::CashClearing(_)
+            | Batch::BadDebt(_)
+            | Batch::Settlement { .. } => BatchType::Debit,
+            Batch::Revenue(_) | Batch::Vat(_) | Batch::TaxOffice(_) => BatchType::Credit,
+            Batch::Points(_) => BatchType::Memo,
+            Batch::Named { batch_type, .. } | Batch::InBook { batch_type, .. } => *batch_type,
         }
     }
 }
@@ -175,33 +204,33 @@ impl LedgerObject for Invoice {
 /// month for the shared ones.
 impl Invoice {
     /// The receivable batch of this invoice.
-    pub fn receivable_batch(&self) -> Account {
-        Account::Receivable(self.id)
+    pub fn receivable_batch(&self) -> Batch {
+        Batch::Receivable(self.id)
     }
 
     /// The cash-clearing batch of this invoice.
-    pub fn cash_batch(&self) -> Account {
-        Account::CashClearing(self.id)
+    pub fn cash_batch(&self) -> Batch {
+        Batch::CashClearing(self.id)
     }
 
     /// The month's revenue batch.
-    pub fn revenue_batch(&self) -> Account {
-        Account::Revenue(self.issued_month.clone())
+    pub fn revenue_batch(&self) -> Batch {
+        Batch::Revenue(self.issued_month.clone())
     }
 
     /// The month's VAT batch (version 1 of the rules).
-    pub fn vat_batch(&self) -> Account {
-        Account::Vat(self.issued_month.clone())
+    pub fn vat_batch(&self) -> Batch {
+        Batch::Vat(self.issued_month.clone())
     }
 
     /// The month's bad-debt batch.
-    pub fn bad_debt_batch(&self) -> Account {
-        Account::BadDebt(self.issued_month.clone())
+    pub fn bad_debt_batch(&self) -> Batch {
+        Batch::BadDebt(self.issued_month.clone())
     }
 
     /// The month's loyalty points batch.
-    pub fn points_batch(&self) -> Account {
-        Account::Points(self.issued_month.clone())
+    pub fn points_batch(&self) -> Batch {
+        Batch::Points(self.issued_month.clone())
     }
 }
 
@@ -223,7 +252,7 @@ impl InvoiceLedger {
 
     /// The positions of an invoice in a state, with the VAT batch chosen by
     /// the caller: version 1 groups VAT per month, version 2 per quarter.
-    pub fn positions(state: InvoiceState, o: &Invoice, vat: Account) -> Desired {
+    pub fn positions(state: InvoiceState, o: &Invoice, vat: Batch) -> Desired<Batch> {
         use InvoiceState::*;
         let cur = o.currency;
         match state {
@@ -251,21 +280,22 @@ impl InvoiceLedger {
 }
 
 impl Accounting<Invoice> for InvoiceLedger {
+    type Batch = Batch;
     const VERSION: u32 = 1;
 
     fn validate_state_change(current: Option<InvoiceState>) -> &'static [InvoiceState] {
         Self::changes(current)
     }
 
-    fn desired_state(state: InvoiceState, o: &Invoice) -> Desired {
+    fn desired_state(state: InvoiceState, o: &Invoice) -> Desired<Batch> {
         Self::positions(state, o, o.vat_batch())
     }
 
     fn validate_balances(
         state: InvoiceState,
         o: &Invoice,
-        _current: &Balances,
-        _desired: &Desired,
+        _current: &Balances<Batch>,
+        _desired: &Desired<Batch>,
     ) -> Result<(), Rejection> {
         match state {
             InvoiceState::Paid if o.paid != o.net + o.vat => {
@@ -286,21 +316,22 @@ pub struct InvoiceLedgerV2;
 
 impl InvoiceLedgerV2 {
     /// The quarter's VAT batch, `vat/YYYY-Qn`.
-    pub fn vat_batch(o: &Invoice) -> Account {
+    pub fn vat_batch(o: &Invoice) -> Batch {
         let month: u32 = o.issued_month[5..7].parse().unwrap_or(1);
         let year = &o.issued_month[..4];
-        Account::Vat(format!("{year}-Q{}", month.div_ceil(3)))
+        Batch::Vat(format!("{year}-Q{}", month.div_ceil(3)))
     }
 }
 
 impl Accounting<Invoice> for InvoiceLedgerV2 {
+    type Batch = Batch;
     const VERSION: u32 = 2;
 
     fn validate_state_change(current: Option<InvoiceState>) -> &'static [InvoiceState] {
         InvoiceLedger::changes(current)
     }
 
-    fn desired_state(state: InvoiceState, o: &Invoice) -> Desired {
+    fn desired_state(state: InvoiceState, o: &Invoice) -> Desired<Batch> {
         InvoiceLedger::positions(state, o, Self::vat_batch(o))
     }
 }
@@ -368,6 +399,7 @@ impl LedgerObject for Payment {
 pub struct PaymentLedger;
 
 impl Accounting<Payment> for PaymentLedger {
+    type Batch = Batch;
     const VERSION: u32 = 1;
 
     fn validate_state_change(current: Option<PaymentState>) -> &'static [PaymentState] {
@@ -380,12 +412,12 @@ impl Accounting<Payment> for PaymentLedger {
         }
     }
 
-    fn desired_state(state: PaymentState, p: &Payment) -> Desired {
+    fn desired_state(state: PaymentState, p: &Payment) -> Desired<Batch> {
         match state {
             PaymentState::Pending | PaymentState::Reversed => Desired::empty(),
             PaymentState::Settled => desired![
-                balance(Account::CashClearing(p.invoice), p.currency, p.amount),
-                balance(Account::Receivable(p.invoice), p.currency, -p.amount),
+                balance(Batch::CashClearing(p.invoice), p.currency, p.amount),
+                balance(Batch::Receivable(p.invoice), p.currency, -p.amount),
             ],
         }
     }
@@ -393,13 +425,13 @@ impl Accounting<Payment> for PaymentLedger {
     fn validate_balances(
         state: PaymentState,
         p: &Payment,
-        current: &Balances,
-        _desired: &Desired,
+        current: &Balances<Batch>,
+        _desired: &Desired<Batch>,
     ) -> Result<(), Rejection> {
         if state != PaymentState::Settled {
             return Ok(());
         }
-        let open = current.batch(&Account::Receivable(p.invoice), p.currency);
+        let open = current.batch(&Batch::Receivable(p.invoice), p.currency);
         if p.amount > open {
             return Err(Rejection::new(format!(
                 "payment of {} exceeds the open receivable of {open}",
@@ -470,6 +502,7 @@ impl LedgerObject for VatReturn {
 pub struct VatReturnLedger;
 
 impl Accounting<VatReturn> for VatReturnLedger {
+    type Batch = Batch;
     const VERSION: u32 = 1;
 
     fn validate_state_change(current: Option<VatReturnState>) -> &'static [VatReturnState] {
@@ -481,12 +514,12 @@ impl Accounting<VatReturn> for VatReturnLedger {
         }
     }
 
-    fn desired_state(state: VatReturnState, r: &VatReturn) -> Desired {
+    fn desired_state(state: VatReturnState, r: &VatReturn) -> Desired<Batch> {
         match state {
             VatReturnState::Draft => Desired::empty(),
             VatReturnState::Filed => desired![
-                balance(Account::Vat(r.period.clone()), r.currency, -r.amount),
-                balance(Account::TaxOffice(r.period.clone()), r.currency, r.amount),
+                balance(Batch::Vat(r.period.clone()), r.currency, -r.amount),
+                balance(Batch::TaxOffice(r.period.clone()), r.currency, r.amount),
             ],
         }
     }
@@ -561,24 +594,93 @@ pub fn new_vat_return(period: &str, amount: i128, currency: Currency) -> VatRetu
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// A transfer's lifecycle.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub enum TransferState {
+    /// Not posted: nothing is booked.
+    Draft,
+    /// Posted: the amount is on both batches.
+    Posted,
+}
 
-    #[test]
-    fn a_batch_key_is_stable_and_names_one_batch() {
-        let id = ObjectId(Uuid::nil());
-        assert_eq!(
-            Account::Receivable(id).batch_key(),
-            Account::Receivable(id).batch_key()
-        );
-        assert_ne!(
-            Account::Receivable(id).batch_key(),
-            Account::CashClearing(id).batch_key()
-        );
-        assert_ne!(
-            Account::Vat("2026-10".into()).batch_key(),
-            Account::Vat("2026-Q4".into()).batch_key()
-        );
+/// A transfer: a root object naming whichever two batches a test gives it,
+/// which is how the suites exercise a batch's row.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct Transfer {
+    /// The process: its own id.
+    pub process_id: ProcessId,
+    /// The transfer's id.
+    pub id: ObjectId,
+    /// The producer's version.
+    pub version: u64,
+    /// Its state.
+    pub state: TransferState,
+    /// The first batch.
+    pub left: Batch,
+    /// The second batch.
+    pub right: Batch,
+    /// The amount, on both.
+    #[serde(with = "amount_string")]
+    pub amount: i128,
+}
+
+impl LedgerObject for Transfer {
+    const TYPE: &'static str = "transfer";
+    type State = TransferState;
+
+    fn process_id(&self) -> ProcessId {
+        self.process_id
+    }
+
+    fn object_id(&self) -> ObjectId {
+        self.id
+    }
+
+    fn version(&self) -> u64 {
+        self.version
+    }
+
+    fn state(&self) -> TransferState {
+        self.state
+    }
+}
+
+/// The transfer's accounting: posted, it holds the amount on both batches.
+pub struct TransferLedger;
+
+impl Accounting<Transfer> for TransferLedger {
+    type Batch = Batch;
+    const VERSION: u32 = 1;
+
+    fn validate_state_change(current: Option<TransferState>) -> &'static [TransferState] {
+        use TransferState::*;
+        match current {
+            None | Some(Draft) => &[Draft, Posted],
+            Some(Posted) => &[],
+        }
+    }
+
+    fn desired_state(state: TransferState, t: &Transfer) -> Desired<Batch> {
+        match state {
+            TransferState::Draft => Desired::empty(),
+            TransferState::Posted => desired![
+                balance(t.left.clone(), Currency::Eur, t.amount),
+                balance(t.right.clone(), Currency::Eur, t.amount),
+            ],
+        }
+    }
+}
+
+/// A posted transfer of `amount` between two batches, in a new process.
+pub fn new_transfer(left: Batch, right: Batch, amount: i128) -> Transfer {
+    let id = Uuid::now_v7();
+    Transfer {
+        process_id: ProcessId(id),
+        id: ObjectId(id),
+        version: 1,
+        state: TransferState::Posted,
+        left,
+        right,
+        amount,
     }
 }

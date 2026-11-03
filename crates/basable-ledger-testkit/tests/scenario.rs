@@ -1,10 +1,10 @@
 //! The invoice lifecycle through the engine: what books, what is refused,
 //! what a journal holds, how a batch closes, and what a rules bump restates.
 
-use basable_ledger::{BatchAccount, BatchType, Outcome, Request, UnitKey};
+use basable_ledger::{BatchType, LedgerBatch, Outcome, Request, UnitKey};
 use basable_ledger_testkit::Scenario;
 use basable_ledger_testkit::fixture::{
-    Account, Currency, InvoiceLedgerV2, InvoiceState, PLATFORM_LEDGER, PaymentState, new_invoice,
+    Batch, Currency, InvoiceLedgerV2, InvoiceState, PLATFORM_LEDGER, PaymentState, new_invoice,
     new_payment, new_vat_return,
 };
 
@@ -26,10 +26,10 @@ async fn an_issued_invoice_holds_receivable_revenue_and_vat() {
     let positions = s.positions(p, issued.id).await;
     let eur = UnitKey(978);
     let mut expected = vec![
-        (issued.points_batch().batch_key(), UnitKey(1), 100),
-        (issued.receivable_batch().batch_key(), eur, 12_100),
-        (issued.revenue_batch().batch_key(), eur, 10_000),
-        (issued.vat_batch().batch_key(), eur, 2_100),
+        (s.key(&issued.points_batch()).await, UnitKey(1), 100),
+        (s.key(&issued.receivable_batch()).await, eur, 12_100),
+        (s.key(&issued.revenue_batch()).await, eur, 10_000),
+        (s.key(&issued.vat_batch()).await, eur, 2_100),
     ];
     expected.sort();
     assert_eq!(positions, expected);
@@ -39,20 +39,17 @@ async fn an_issued_invoice_holds_receivable_revenue_and_vat() {
     assert_eq!(second.sequence, 2);
     assert_eq!(second.lines.len(), 4);
     assert!(second.snapshot_diffs[0].patch.is_some());
-    // A line carries its batch's key; the ledger and type are the account's,
+    // A line carries its batch's key; the ledger and type are the batch's,
     // where a reader resolves them by that key. The receivable line is a
     // debit in ledger 1, the VAT line a credit.
     let receivable = issued.receivable_batch();
-    assert!(
-        second
-            .lines
-            .iter()
-            .any(|l| l.batch == receivable.batch_key())
-    );
+    let receivable_key = s.key(&receivable).await;
+    assert!(second.lines.iter().any(|l| l.batch == receivable_key));
     assert_eq!(receivable.ledger(), PLATFORM_LEDGER);
     assert_eq!(receivable.batch_type(), BatchType::Debit);
     let vat = issued.vat_batch();
-    assert!(second.lines.iter().any(|l| l.batch == vat.batch_key()));
+    let vat_key = s.key(&vat).await;
+    assert!(second.lines.iter().any(|l| l.batch == vat_key));
     assert_eq!(vat.batch_type(), BatchType::Credit);
 }
 
@@ -222,13 +219,19 @@ async fn a_rules_bump_restates_the_process_by_appending_a_journal() {
     let preview = v2.ledger().preview_restatement(p).await.expect("preview");
     assert_eq!(preview.objects, 1);
     let quarter = InvoiceLedgerV2::vat_batch(&issued);
-    // Deltas come in batch key order.
-    let mut expected = vec![
-        (issued.vat_batch().batch_key(), UnitKey(978), -2_100),
-        (quarter.batch_key(), UnitKey(978), 2_100),
-    ];
-    expected.sort();
-    assert_eq!(preview.deltas, expected);
+    let month_key = v1.key(&issued.vat_batch()).await;
+    // The month's batch has a row, so a key; the quarter's has none yet, and
+    // the preview, which only reads, leaves it without one.
+    assert_eq!(preview.deltas, vec![(month_key, UnitKey(978), -2_100)]);
+    assert_eq!(
+        preview.new_batches,
+        vec![(quarter.clone(), UnitKey(978), 2_100)]
+    );
+    assert_eq!(
+        v2.ledger().batch_key(&quarter).await.expect("find"),
+        None,
+        "the preview created no row"
+    );
     let restated = v2.ledger().restate(p).await.expect("restate");
     assert_eq!(restated.objects, 1);
     assert_eq!(restated.lines, 2);
@@ -240,10 +243,7 @@ async fn a_rules_bump_restates_the_process_by_appending_a_journal() {
         "a restatement has lines and no diffs"
     );
     let b = v2.balances(p).await;
-    assert_eq!(
-        b.of(issued.id).amount(&issued.vat_batch(), Currency::Eur),
-        0
-    );
+    assert_eq!(b.of(issued.id).amount_by_key(month_key, Currency::Eur), 0);
     assert_eq!(b.of(issued.id).amount(&quarter, Currency::Eur), 2_100);
     // Restating again does nothing.
     let again = v2.ledger().restate(p).await.expect("restate");
@@ -278,8 +278,8 @@ async fn a_batch_is_closed_by_booking_its_balance_to_zero() {
         s.booked(i.clone()).await;
         issued.push(i);
     }
-    let vat = Account::Vat("2026-10".into());
-    let tax_office = Account::TaxOffice("2026-10".into());
+    let vat = Batch::Vat("2026-10".into());
+    let tax_office = Batch::TaxOffice("2026-10".into());
     let eur = UnitKey(978);
     // The producer reads the batch and files the return for what it holds.
     assert_eq!(s.batch_sum(&vat).await, vec![(eur, 3_360)]);
@@ -313,11 +313,12 @@ async fn memo_batches_stay_outside_the_check() {
     assert_eq!(points.batch_type(), BatchType::Memo);
     let b = s.balances(issued.process_id).await;
     assert_eq!(b.of(issued.id).amount(&points, UnitKey(1)), 100);
+    let points_key = s.key(&points).await;
     let journal = &s.journals(issued.process_id)[0];
     assert!(
         journal
             .lines
             .iter()
-            .any(|l| l.batch == points.batch_key() && l.amount == 100)
+            .any(|l| l.batch == points_key && l.amount == 100)
     );
 }

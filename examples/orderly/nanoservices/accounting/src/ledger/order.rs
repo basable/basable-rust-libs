@@ -6,12 +6,13 @@
 //! the producer's as much as this nanoservice's.
 //!
 //! A desired state is a pure function of the snapshot: it names batches
-//! through `super::accounts::Account` and reads nothing else. In every
+//! through `super::batches::Batch` and reads nothing else. In every
 //! state the amounts in debit batches equal the amounts in credit batches
 //! per ledger and unit (memo batches stand outside), which the engine
 //! checks on every booking and `tests/ledger.rs` checks over a history.
 
 use basable_ledger::{Accounting, Balances, Desired, Rejection};
+use super::batches::Batch;
 use messages::{OrderState as State, OrderSnapshot as Snapshot};
 
 /// The rules, version 1. Bump `VERSION` when a desired state or the
@@ -22,6 +23,7 @@ use messages::{OrderState as State, OrderSnapshot as Snapshot};
 pub struct OrderAccounting;
 
 impl Accounting<Snapshot> for OrderAccounting {
+    type Batch = Batch;
     const VERSION: u32 = 1;
 
     /// From the booked state, the states the object may move to; `None` is
@@ -40,8 +42,8 @@ impl Accounting<Snapshot> for OrderAccounting {
     /// The positions that must exist while the object is in `state`, each a
     /// batch, a unit and a signed amount in the column of the batch's type.
     /// `basable_ledger::{balance, desired}` build them:
-    /// `desired![balance(Account::Receivable(o.id), o.currency, o.net + o.vat), ...]`.
-    fn desired_state(state: State, o: &Snapshot) -> Desired {
+    /// `desired![balance(Batch::Receivable { order_id: o.id }, o.currency, o.net + o.vat), ...]`.
+    fn desired_state(state: State, o: &Snapshot) -> Desired<Batch> {
         let _ = o;
         match state {
             State::Placed => {
@@ -66,8 +68,8 @@ impl Accounting<Snapshot> for OrderAccounting {
     fn validate_balances(
         _state: State,
         _o: &Snapshot,
-        _current: &Balances,
-        _desired: &Desired,
+        _current: &Balances<Batch>,
+        _desired: &Desired<Batch>,
     ) -> Result<(), Rejection> {
         Ok(())
     }

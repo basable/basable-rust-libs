@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::accounting::Accounting;
 use crate::balances::Balances;
-use crate::engine::{self, PreOutcome, Submission};
+use crate::engine::{self, PreOutcome, Resolved, Submission};
 use crate::erased::Registry;
 use crate::error::{LedgerError, Rejection};
 use crate::object::LedgerObject;
@@ -81,12 +81,15 @@ pub struct Restated {
 }
 
 /// A restatement's effect before it books: the net change per batch and unit.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
-pub struct RestatementPreview {
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RestatementPreview<B> {
     /// Objects that would be re-evaluated.
     pub objects: usize,
-    /// Net lines, per (batch key, unit).
+    /// Net lines on batches that have a row, per (batch key, unit).
     pub deltas: Vec<(BatchKey, UnitKey, i128)>,
+    /// Net lines on batches that have no row yet, by value: a preview only
+    /// reads, so these have no key.
+    pub new_batches: Vec<(B, UnitKey, i128)>,
 }
 
 /// What [`Ledger::restate_behind`] did at startup, over every process that
@@ -105,16 +108,16 @@ pub struct RestatementReport {
 const RESTATE_PAGE: u32 = 256;
 
 /// Builds a [`Ledger`]: the store and every object type it books.
-pub struct Builder<S> {
+pub struct Builder<S: Store> {
     store: S,
-    registry: Registry,
+    registry: Registry<S::Batch>,
     max_attempts: u32,
 }
 
 impl<S: Store> Builder<S> {
     /// Registers an object type with its accounting. Registering one type
     /// name twice is a programming error and panics here, at startup.
-    pub fn register<O: LedgerObject, A: Accounting<O>>(mut self) -> Self {
+    pub fn register<O: LedgerObject, A: Accounting<O, Batch = S::Batch>>(mut self) -> Self {
         if let Err(e) = self.registry.register::<O, A>() {
             panic!("{e}");
         }
@@ -138,9 +141,9 @@ impl<S: Store> Builder<S> {
 }
 
 /// The ledger over one store.
-pub struct Ledger<S> {
+pub struct Ledger<S: Store> {
     store: S,
-    registry: Arc<Registry>,
+    registry: Arc<Registry<S::Batch>>,
     max_attempts: u32,
 }
 
@@ -148,6 +151,9 @@ enum Committed {
     Journal(usize),
     /// The sequence was taken under the commit: read again, recompute.
     Retry,
+    /// A concurrent first use created a row this commit's value disagrees
+    /// with.
+    Rejected(Rejection),
 }
 
 impl<S: Store> Ledger<S> {
@@ -170,7 +176,7 @@ impl<S: Store> Ledger<S> {
     /// process the objects book atomically or not at all.
     pub async fn book(&self, request: Request) -> Result<Vec<Outcome>, LedgerError> {
         let mut outcomes: Vec<Option<Outcome>> = vec![None; request.items.len()];
-        let mut by_process: BTreeMap<ProcessId, Vec<Submission>> = BTreeMap::new();
+        let mut by_process: BTreeMap<ProcessId, Vec<Submission<S::Batch>>> = BTreeMap::new();
         let mut order: Vec<ProcessId> = Vec::new();
         for (index, (type_name, any)) in request.items.into_iter().enumerate() {
             let handler = self
@@ -207,11 +213,37 @@ impl<S: Store> Ledger<S> {
     }
 
     /// The booked positions of every object of a process, as the engine
-    /// reads them: the sum of each object's lines per batch id and unit.
-    pub async fn balances(&self, process: ProcessId) -> Result<Balances, LedgerError> {
+    /// reads them: the sum of each object's lines per batch key and unit. A
+    /// balance can be asked for by value for every batch the process's
+    /// objects name under the running rules, and by key for any batch.
+    pub async fn balances(&self, process: ProcessId) -> Result<Balances<S::Batch>, LedgerError> {
         let journals = self.store.read(process).await?;
         let current = engine::fold(process, &journals, &self.registry)?;
-        Ok(current.balances)
+        let resolved = self.resolve(&current, &[]).await?;
+        let mut balances = current.balances;
+        balances.set_rows(
+            resolved
+                .into_rows()
+                .into_iter()
+                .filter(|(_, row)| !row.key.is_placeholder())
+                .collect(),
+        );
+        Ok(balances)
+    }
+
+    /// The key of a batch, or `None` when no booking has created its row, in
+    /// which case nothing is booked on it anywhere.
+    pub async fn batch_key(&self, batch: &S::Batch) -> Result<Option<BatchKey>, LedgerError> {
+        Ok(self.store.find(batch).await?.map(|row| row.key))
+    }
+
+    /// A batch's sum per unit over every process: what a return, a payout or
+    /// a report reads. A batch with no row sums to nothing.
+    pub async fn batch_sum(&self, batch: &S::Batch) -> Result<Vec<(UnitKey, i128)>, LedgerError> {
+        match self.store.find(batch).await? {
+            Some(row) => Ok(self.store.batch_sum(row.key).await?),
+            None => Ok(Vec::new()),
+        }
     }
 
     /// Restates one process under the running rules: every object is
@@ -223,7 +255,8 @@ impl<S: Store> Ledger<S> {
         for _attempt in 0..self.max_attempts {
             let journals = self.store.read(process).await?;
             let current = engine::fold(process, &journals, &self.registry)?;
-            let plan = engine::plan(&current, &[])
+            let resolved = self.resolve(&current, &[]).await?;
+            let plan = engine::plan(&current, &[], &resolved)
                 .map_err(|rejection| LedgerError::Rejected { process, rejection })?;
             let mut restated = Restated {
                 objects: plan.restated_objects,
@@ -235,9 +268,12 @@ impl<S: Store> Ledger<S> {
                 }
                 return Ok(restated);
             }
-            match self.commit_plan(process, &current, plan).await? {
+            match self.commit_plan(process, &current, &resolved, plan).await? {
                 Committed::Journal(lines) => restated.lines = lines,
                 Committed::Retry => continue,
+                Committed::Rejected(rejection) => {
+                    return Err(LedgerError::Rejected { process, rejection });
+                }
             }
             return Ok(restated);
         }
@@ -247,26 +283,36 @@ impl<S: Store> Ledger<S> {
         })
     }
 
-    /// What restating one process would book, without booking it.
+    /// What restating one process would book, without booking it. Only
+    /// reads, so a batch with no row stays without one.
     pub async fn preview_restatement(
         &self,
         process: ProcessId,
-    ) -> Result<RestatementPreview, LedgerError> {
+    ) -> Result<RestatementPreview<S::Batch>, LedgerError> {
         let journals = self.store.read(process).await?;
         let current = engine::fold(process, &journals, &self.registry)?;
-        let plan = engine::plan(&current, &[])
+        let resolved = self.resolve(&current, &[]).await?;
+        let plan = engine::plan(&current, &[], &resolved)
             .map_err(|rejection| LedgerError::Rejected { process, rejection })?;
-        let mut deltas: BTreeMap<(BatchKey, UnitKey), i128> = BTreeMap::new();
+        let mut sums: BTreeMap<(BatchKey, UnitKey), i128> = BTreeMap::new();
         for l in &plan.lines {
-            *deltas.entry((l.batch, l.unit)).or_insert(0) += l.amount;
+            *sums.entry((l.batch, l.unit)).or_insert(0) += l.amount;
+        }
+        let mut deltas = Vec::new();
+        let mut new_batches = Vec::new();
+        for ((key, unit), amount) in sums {
+            if amount == 0 {
+                continue;
+            }
+            match resolved.new_batch(key) {
+                Some(batch) => new_batches.push((batch.clone(), unit, amount)),
+                None => deltas.push((key, unit, amount)),
+            }
         }
         Ok(RestatementPreview {
             objects: plan.restated_objects,
-            deltas: deltas
-                .into_iter()
-                .filter(|(_, a)| *a != 0)
-                .map(|((key, unit), a)| (key, unit, a))
-                .collect(),
+            deltas,
+            new_batches,
         })
     }
 
@@ -281,7 +327,8 @@ impl<S: Store> Ledger<S> {
     /// processes back on the worklist and this pass takes them again; it
     /// settles when that replica is gone. A process whose desired states no
     /// longer balance under the new rules stops it with
-    /// `LedgerError::Rejected`.
+    /// `LedgerError::Rejected`. New rules may name new batches for old
+    /// objects: their rows land with the restatement's journal.
     pub async fn restate_behind(&self) -> Result<RestatementReport, LedgerError> {
         let mut report = RestatementReport::default();
         for (type_name, version) in self.registry.types() {
@@ -304,11 +351,26 @@ impl<S: Store> Ledger<S> {
         Ok(report)
     }
 
+    /// Finds the row of every batch the plan may name: one read per distinct
+    /// primary key, outside any transaction.
+    async fn resolve(
+        &self,
+        current: &engine::Current<S::Batch>,
+        submissions: &[Submission<S::Batch>],
+    ) -> Result<Resolved<S::Batch>, LedgerError> {
+        let mut resolved = Resolved::new();
+        for batch in engine::named_batches(current, submissions).into_values() {
+            let row = self.store.find(&batch).await?;
+            resolved.add(batch, row)?;
+        }
+        Ok(resolved)
+    }
+
     /// Books one process's submissions, retrying a lost sequence race.
     async fn book_process(
         &self,
         process: ProcessId,
-        submissions: &[Submission],
+        submissions: &[Submission<S::Batch>],
     ) -> Result<Vec<(usize, Outcome)>, LedgerError> {
         let rejected = |rejection: Rejection| {
             submissions
@@ -319,15 +381,17 @@ impl<S: Store> Ledger<S> {
         for _attempt in 0..self.max_attempts {
             let journals = self.store.read(process).await?;
             let current = engine::fold(process, &journals, &self.registry)?;
-            let plan = match engine::plan(&current, submissions) {
+            let resolved = self.resolve(&current, submissions).await?;
+            let plan = match engine::plan(&current, submissions, &resolved) {
                 Ok(plan) => plan,
                 Err(rejection) => return Ok(rejected(rejection)),
             };
             let outcomes = plan.outcomes.clone();
             if !plan.is_empty() {
-                match self.commit_plan(process, &current, plan).await? {
+                match self.commit_plan(process, &current, &resolved, plan).await? {
                     Committed::Journal(_) => {}
                     Committed::Retry => continue,
+                    Committed::Rejected(rejection) => return Ok(rejected(rejection)),
                 }
             }
             return Ok(outcomes
@@ -348,18 +412,21 @@ impl<S: Store> Ledger<S> {
         })
     }
 
-    /// Commits the plan as one journal at the process's next sequence.
+    /// Commits the plan as one journal at the process's next sequence, with
+    /// the rows of the new batches its lines land in.
     async fn commit_plan(
         &self,
         process: ProcessId,
-        current: &engine::Current,
+        current: &engine::Current<S::Batch>,
+        resolved: &Resolved<S::Batch>,
         plan: engine::Plan,
     ) -> Result<Committed, LedgerError> {
-        let commit = plan.into_commit(process, current);
+        let commit = plan.into_commit(process, current, resolved);
         let lines = commit.lines.len();
         Ok(match self.store.commit(commit).await? {
             CommitOutcome::Committed => Committed::Journal(lines),
             CommitOutcome::SequenceTaken => Committed::Retry,
+            CommitOutcome::Rejected(rejection) => Committed::Rejected(rejection),
         })
     }
 }

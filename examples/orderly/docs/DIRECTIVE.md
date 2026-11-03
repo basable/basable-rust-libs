@@ -355,6 +355,23 @@ The ledger's own contract, which the crates make mechanical:
   means is the owner's. A batch is closed when a booking of the owner's — a
   VAT return, a payout — brings its balance to zero; nothing marks it, and a
   line landing afterwards is the next claim's remainder.
+- **A batch is a value, a row and a key.** A desired state names a batch by
+  value (`Batch::Payout { .. }`, `src/ledger/batches.rs`) and reads nothing.
+  Each kind of batch the manifest lists (`owns.ledger.batches`) is a table of
+  the owner's, one row per batch, and ONE sequence allocates the `batch_key`
+  a stored line carries over all of them, never a counter per table: the same
+  number in two tables would be one batch to the ledger. It hands out
+  identity, not order (§7's rule against one is about ordering), so its gaps
+  and commit order do not matter. A row lands in one transaction with the
+  first journal that books on the batch, so a rejected booking or a lost race
+  leaves none.
+- **A row is for good.** Its primary key, `batch_key`, `ledger` and
+  `batch_type` never change and it is never deleted: the next evaluation
+  would allocate a new key and book the money across to it. A value that
+  disagrees with its row rejects. One ledger is the default; a second book
+  beside it (an accrual ledger beside the money ledger) is a second kind of
+  batch in a second ledger, only when the project needs both: each balances
+  on its own, and the same thing in both books is two batches with two keys.
 - **Rules change by version.** A changed desired state bumps the rules
   version; every process booked under the older number is restated under
   the new code by appending journals, once when the deployment carrying it
