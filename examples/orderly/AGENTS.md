@@ -1,4 +1,4 @@
-<!-- basable-scaffold plan=01-shop language=rust crates=0.10.0 template=v0.10.0 -->
+<!-- basable-scaffold plan=01-shop language=rust crates=0.11.0 template=v0.11.0 -->
 # Shop
 
 A basable nanoservice application: ONE Rust binary (`app/`) running as
