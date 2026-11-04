@@ -26,7 +26,7 @@ pub trait Accounting<O: LedgerObject>: Send + Sync + 'static {
     fn validate_balances(state: O::State, object: &O, current: &Balances<Self::Batch>, desired: &Desired<Self::Batch>) -> Result<(), Rejection> { Ok(()) }
 }
 pub trait LedgerBatch { type PrimaryKey: Ord; fn primary_key(&self) -> Self::PrimaryKey; fn ledger(&self) -> LedgerKey; fn batch_type(&self) -> BatchType; } // Debit | Credit | Memo
-pub trait PgBatch: LedgerBatch { async fn find(&self, conn: &mut PgConnection) -> ..; async fn ensure(&self, tx: &mut PgConnection) -> ..; } // rendered
+pub trait PgBatch: LedgerBatch { async fn find(&self, conn: &mut PgConnection) -> ..; async fn ensure(&self, conn: &mut PgConnection) -> ..; } // rendered
 pub trait Unit { fn unit_key(&self) -> UnitKey; }  // implemented for u32 and UnitKey
 pub fn balance<B>(batch: B, unit: impl Unit, amount: i128) -> Position<B>;  // desired![balance(..), ..]
 impl<S: Store> Ledger<S> {
@@ -74,10 +74,13 @@ is a table `<name>_batch` with its key columns, whatever else you keep about
 a batch (a GL code, a settle time), and a `batch_key` from the one sequence
 over all those tables, because a stored line carries that key alone. A booking
 makes one lookup per distinct batch its process names. A batch with no row has
-nothing booked anywhere, and the commit that first books on it creates the
-row in one transaction with the journal, so a rejected booking or a lost race
-leaves none. A required column is a field of the variant; a nullable one you
-fill later. A row is for good (the Directive §11), and a second book is a
+nothing booked anywhere. The booking that first lands a line on it creates the
+row, committed on its own just before the journal, so a rejected booking leaves
+none, and a lost race or a crash in between can leave one with nothing booked on
+it, which sums to nothing and is the row the next booking uses. So read a batch's
+balance from its lines, never from the row existing. A required column is a
+field of the variant; a nullable one you fill later. A row is for good (the
+Directive §11), and a second book is a
 second kind in another ledger, with keys of its own. A new kind later is a
 manifest entry, a new migration creating its table with `batch_key BIGINT NOT
 NULL UNIQUE DEFAULT nextval('batch_key_seq')`, and an arm in each `match` of

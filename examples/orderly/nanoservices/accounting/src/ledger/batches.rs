@@ -2,9 +2,9 @@
 //! `owns.ledger.batches` in the manifest. One value of [`Batch`] is one batch:
 //! the variant is the kind, which has a table of its own, and the fields say
 //! which one. A desired state names batches by value and reads nothing; the
-//! engine finds each one's row with [`PgBatch::find`], and the commit that
-//! first books on a batch creates its row with [`PgBatch::ensure`], in one
-//! transaction with the journal.
+//! engine finds each one's row with [`PgBatch::find`], and the booking that
+//! first lands a line on a batch creates its row with [`PgBatch::ensure`],
+//! committed on its own just before the journal.
 //!
 //! One sequence, `batch_key_seq`, allocates `batch_key` over every table here,
 //! because a stored line carries that key alone: the same number in two tables
@@ -15,8 +15,9 @@
 //! Adding a kind later: the manifest entry, a new dbmate migration creating
 //! its table with `batch_key BIGINT NOT NULL UNIQUE DEFAULT
 //! nextval('batch_key_seq')`, and an arm in each `match` below, in the same
-//! form. Never `ON CONFLICT DO UPDATE`: it would lock the row until commit,
-//! and every booking on a hot batch would queue.
+//! form. Never `ON CONFLICT DO UPDATE`, and never a transaction around the
+//! insert: a row that exists stays as it is, and a stalled client must not hold
+//! up every first use of the batch.
 
 use basable_ledger::{BatchType, LedgerBatch, LedgerKey, StoredBatch};
 use basable_ledger_postgres::{PgBatch, stored_batch};
@@ -123,7 +124,7 @@ impl PgBatch for Batch {
         row.as_ref().map(stored_batch).transpose()
     }
 
-    async fn ensure(&self, tx: &mut PgConnection) -> Result<StoredBatch, sqlx::Error> {
+    async fn ensure(&self, conn: &mut PgConnection) -> Result<StoredBatch, sqlx::Error> {
         let ledger = self.ledger().0 as i32;
         let batch_type = self.batch_type().as_i16();
         match self {
@@ -132,7 +133,7 @@ impl PgBatch for Batch {
                     .bind(order_id)
                     .bind(ledger)
                     .bind(batch_type)
-                    .execute(&mut *tx)
+                    .execute(&mut *conn)
                     .await?;
             }
             Batch::Cash { month, } => {
@@ -140,7 +141,7 @@ impl PgBatch for Batch {
                     .bind(month)
                     .bind(ledger)
                     .bind(batch_type)
-                    .execute(&mut *tx)
+                    .execute(&mut *conn)
                     .await?;
             }
             Batch::Revenue { month, } => {
@@ -148,10 +149,10 @@ impl PgBatch for Batch {
                     .bind(month)
                     .bind(ledger)
                     .bind(batch_type)
-                    .execute(&mut *tx)
+                    .execute(&mut *conn)
                     .await?;
             }
         }
-        self.find(tx).await?.ok_or(sqlx::Error::RowNotFound)
+        self.find(conn).await?.ok_or(sqlx::Error::RowNotFound)
     }
 }

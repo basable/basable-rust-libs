@@ -20,9 +20,9 @@
 //! positions, finds the row of every batch the objects name, checks each
 //! submitted object's version and state change, evaluates its desired state,
 //! diffs it against the object's booked positions, checks that left equals
-//! right per ledger and unit, and appends one journal at the process's next
-//! sequence, together with the rows of the batches it uses first. The primary
-//! key on (process, sequence) is the compare-and-set; a lost race is retried
+//! right per ledger and unit, creates the rows of the batches it uses first,
+//! and appends one journal at the process's next sequence. The primary key on
+//! (process, sequence) is the compare-and-set; a lost race is retried
 //! inside [`Ledger::book`]. Every booking re-evaluates every object of its
 //! process under the running rules, so a rules change is booked at the
 //! process's next touch like any other difference; a bump of an
@@ -62,7 +62,7 @@ pub use ledger::{
 };
 pub use memory::InMemoryStore;
 pub use object::LedgerObject;
-pub use store::{Commit, CommitOutcome, NewBatch, Store};
+pub use store::{Commit, CommitOutcome, Store};
 pub use types::{
     BatchKey, BatchType, LedgerKey, ObjectId, ProcessId, StoredBatch, Timestamp, UnitKey,
     amount_string,

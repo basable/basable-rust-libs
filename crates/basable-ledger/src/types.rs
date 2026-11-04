@@ -38,8 +38,8 @@ pub struct UnitKey(pub u32);
 
 /// The key of a batch: the one integer a line carries to name the batch it
 /// belongs to. One sequence allocates it over every batch table of the user's
-/// when a batch's row is created, in the commit that first books it. One key
-/// is one batch, in one ledger, of one type, for good.
+/// when a batch's row is created, just before the journal that first books
+/// on it. One key is one batch, in one ledger, of one type, for good.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct BatchKey(pub i64);

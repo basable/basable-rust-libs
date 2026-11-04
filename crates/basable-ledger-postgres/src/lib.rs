@@ -12,9 +12,10 @@
 //!
 //! Each kind of batch has a table of the user's, one row per batch, reached
 //! only through [`PgBatch`], and one sequence allocates `batch_key` over all
-//! of them. A row lands in the commit's transaction with the first journal
-//! that books on the batch, so a lost race or a refusal leaves none. A
-//! booking that names no new batch stays one statement. A line carries the
+//! of them. A row is committed on its own just before the first journal that
+//! books on the batch, so no booking holds a transaction open, and the journal
+//! is always one statement; a lost race or a crash in between can leave a row
+//! with nothing booked on it. A line carries the
 //! key alone. A batch's balance is the sum of its lines over every process
 //! ([`basable_ledger::Store::batch_sum`], over the expression index on the
 //! lines' batch keys), and a batch is closed when a booking of the user's

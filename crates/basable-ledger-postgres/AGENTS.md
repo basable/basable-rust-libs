@@ -10,7 +10,7 @@ is `docs/decisions/0005-declarative-ledger.md`.
 | Item | What it is |
 |---|---|
 | `MIGRATION`, `MIGRATION_FILE`, `SCHEMA_PLACEHOLDER`, `migrations()` | The dbmate migration that creates `journal` and `process_ledger_object_version`, with `nano_ledger` as the schema and role placeholder. Apply it through `basable_db::migrate::apply` with the replacement `("nano_ledger", "nano_<name>")` |
-| `PgBatch` | A batch's way to its row in the user's table: `find(&self, conn)` and `ensure(&self, tx)`. Each variant knows its table and key values, so neither takes more than a connection. The scaffold renders the impl from the manifest's kinds of batch. Here rather than in `basable-ledger` so the core stays free of `sqlx` |
+| `PgBatch` | A batch's way to its row in the user's table: `find(&self, conn)` and `ensure(&self, conn)`. Each variant knows its table and key values, so neither takes more than a connection. The scaffold renders the impl from the manifest's kinds of batch. Here rather than in `basable-ledger` so the core stays free of `sqlx` |
 | `stored_batch(&row)` | A batch's `StoredBatch` from its `batch_key`, `ledger` and `batch_type` columns, for a `PgBatch` impl |
 | `PgStore::<B>::new(pool)` | The store: `read` (every journal of a process), `find` (`PgBatch::find` on a pooled connection), `commit` (see the rules), `record_versions` (the index alone), `batch_sum` (over the expression index on the lines' batch keys), `processes_behind` (the startup restatement's worklist, from the version index) |
 
@@ -40,19 +40,17 @@ zero is a closed batch.
 
 ## Rules
 
-- **The primary key is the compare-and-set.** A commit with no new batch is
-  one autocommitted statement, a CTE that inserts the journal and upserts the
-  version index rows: two tables written, no transaction to open, no second
-  round trip, no lock of any kind. A loser's statement fails as a whole and
-  the engine reads again.
-- **A first use is a transaction.** With new batches the commit opens one, read
-  committed: `ensure` for each, in primary key order so two first uses cannot
-  deadlock, then that same statement carrying the real keys. A lost race, a
-  value disagreeing with a row or a failure rolls the rows back with the
-  journal. `ensure` is `INSERT ... ON CONFLICT (<primary key>) DO NOTHING` then
-  a read, never `DO UPDATE`, which would lock the row until commit and queue
-  every booking on a hot batch. A concurrent first use waits for the other's
-  commit and reads its row; once the row exists nothing waits.
+- **The primary key is the compare-and-set.** A commit is one autocommitted
+  statement, a CTE that inserts the journal and upserts the version index rows:
+  two tables written, no transaction to open, no second round trip, no lock of
+  any kind. A loser's statement fails as a whole and the engine reads again.
+- **A first use opens no transaction.** `ensure` is `INSERT ... ON CONFLICT
+  (<primary key>) DO NOTHING` as a statement of its own, then a read, never
+  `DO UPDATE`: a row that exists stays as it is. So a concurrent first use waits
+  for that one statement and reads the row, and no stalled client can hold a
+  batch; once the row exists nothing waits. A journal that never lands leaves
+  the row, with nothing booked on it, and the next booking on the batch finds
+  it. Decision 0005 has why the row left the journal's transaction.
 - **A booking reads the journal table and one row per distinct batch** its
   process names, outside any transaction.
 - **Amounts travel as strings** inside the jsonb and are summed as

@@ -362,9 +362,11 @@ The ledger's own contract, which the crates make mechanical:
   a stored line carries over all of them, never a counter per table: the same
   number in two tables would be one batch to the ledger. It hands out
   identity, not order (§7's rule against one is about ordering), so its gaps
-  and commit order do not matter. A row lands in one transaction with the
-  first journal that books on the batch, so a rejected booking or a lost race
-  leaves none.
+  and commit order do not matter. A row is committed on its own just before
+  the first journal that books on the batch, so no booking holds a transaction
+  open. A rejected booking leaves no row; a lost race or a crash in between can
+  leave one with nothing booked on it, which sums to nothing and is the row the
+  next booking uses.
 - **A row is for good.** Its primary key, `batch_key`, `ledger` and
   `batch_type` never change and it is never deleted: the next evaluation
   would allocate a new key and book the money across to it. A value that

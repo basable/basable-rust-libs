@@ -27,7 +27,7 @@ that there is nothing to keep in sync.
 | `Desired<B>`, `balance(batch, unit, amount)`, `desired![...]` | The positions of a state, batches by value: signed amounts in the column of each batch's type. Duplicates of one primary key are summed |
 | `Balances<B>`, `ObjectBalances` | What `validate_balances` and `Ledger::balances` see: per object, per batch key and unit, computed from the journals; `batch(&batch, unit)` over the process, `of(object).amount(&batch, unit)`, and `batch_by_key`, `amount_by_key` for any key the journals hold |
 | `Ledger<S>`, `Builder`, `Request`, `Outcome` | `Ledger::builder(store).register::<O, A>()...build()`; `book(Request)` books any mix of registered types across processes, one `Outcome` per object: `Booked`, `AlreadyBooked`, `Stale`, `Rejected(reason)`. `balances(process)`, `batch_key(&batch)`, `batch_sum(&batch)`, `restate(process)`, `preview_restatement(process)` (the per-process dry run, which only reads: the net deltas per batch key and unit, and on batches with no row yet by value); `restate_behind()`, called once when a deployment starts, restates every process the store's version index lists behind the running rules of a registered type and reports `RestatementReport { processes, objects, lines }` |
-| `Store` | The persistence interface: `Batch`, `read` (a process's journals), `find` (a batch's row), `commit` (in one transaction the rows of the new batches, the journal row and the version index row of every type in the process, latest wins), `record_versions` (the index alone, for a restatement with nothing to book), `batch_sum`, `processes_behind` (the startup restatement's worklist, from the index); `Commit`, `NewBatch`, `Commit::resolved_lines`, `CommitOutcome::{Committed, SequenceTaken, Rejected}` |
+| `Store` | The persistence interface: `Batch`, `read` (a process's journals), `find` (a batch's row), `ensure` (a batch's row, created if it has none and committed on its own), `commit` (atomically the journal row and the version index row of every type in the process, latest wins), `record_versions` (the index alone, for a restatement with nothing to book), `batch_sum`, `processes_behind` (the startup restatement's worklist, from the index); `Commit`, `CommitOutcome::{Committed, SequenceTaken}` |
 | `InMemoryStore<B>` | The reference store, for tests: one key per primary key from one counter, `batch_count()` |
 | `Journal`, `Line`, `SnapshotDiff`, `lines_to_json`, `lines_from_json` | The stored shape: `(process_id, sequence, booked_at, lines, snapshot_diffs)`, lines grouped by object, `{"<object_id>": [[batch_key, unit_key, amount], ...], ...}` (amounts as decimal strings; a line carries its batch's key alone, the ledger and type are in the batch's row), diffs `{object_id, type, full | patch}` |
 | `jsonpatch::{diff, apply}` | RFC 7386 merge patch, how diffs are made and folded |
@@ -44,8 +44,9 @@ that there is nothing to keep in sync.
 1b. **Find the batches.** Evaluate the desired states the plan will need (every
    current object, every submission that is not stale or a duplicate) and
    `find` each distinct primary key's row. A batch with no row has nothing
-   booked anywhere, since a row and the first journal naming it commit together,
-   so it takes a placeholder key (a value no sequence reaches) for the plan.
+   booked anywhere, since a line only ever carries the key of a row already
+   committed, so it takes a placeholder key (a value no sequence reaches) for
+   the plan. The reverse does not hold: a row can have nothing booked on it.
 2. **Re-evaluate every current object** under the running rules and queue
    the difference between its desired state and its booked positions.
    Under unchanged rules that is nothing, by path independence; after a
@@ -66,13 +67,15 @@ that there is nothing to keep in sync.
    enforces, so it balances by construction.
 4. **One rejection rejects the process's part of the call**, naming the
    object and the reason; other processes in the call are unaffected.
-5. **Commit** one journal at `sequence + 1` with every delta line and one
+5. **Create the rows** of the new batches a line lands in with `ensure`, each
+   committed on its own, and swap the real keys in for the placeholders. A
+   batch named with nothing to book gets no row. A row another first use just
+   created under another ledger or type rejects the process's part of the call.
+   A row whose journal never lands stays, with nothing booked on it, and the
+   next booking on the batch finds it.
+6. **Commit** one journal at `sequence + 1` with every delta line and one
    snapshot diff per booked object (full the first time, a merge patch
-   afterwards). In one transaction the store first creates the row of each
-   new batch a line lands in, in primary key order so two first uses cannot
-   deadlock, and swaps the real keys in for the placeholders; a batch named
-   with nothing to book gets no row, and a booking with no new batch is one
-   statement. With the journal the store upserts, for every type
+   afterwards). With the journal the store upserts, for every type
    present in the process, the running `VERSION` into its version index,
    latest wins: two tables written per process, one read. The primary key
    on (process, sequence) is the compare-and-set; a lost race is retried,
@@ -143,9 +146,11 @@ batches), `tests/walk.rs` (random histories: every journal balances, path
 independence, replay books nothing), `tests/restatement.rs` (the startup
 restatement over every process behind, the run after it finding nothing,
 a booking by an older replica converging at the next run) and
-`tests/batches.rs` (a batch's row: it lands with the first journal that books
-on the batch and not with a rejected, stale or nothing-to-book one, one primary
-key is one batch wherever named and whatever else the value carries, two books
-are two keys, a value disagreeing with its row rejects, a restatement creates
-the rows of new batches) and `tests/conformance_memory.rs` (the store suite
+`tests/batches.rs` (a batch's row: it lands just before the first journal that
+books on the batch and not for a rejected, stale or nothing-to-book one, one
+primary key is one batch wherever named and whatever else the value carries, two
+books are two keys, a value disagreeing with its row rejects, across calls,
+within one and against a concurrent first use, a lost race keeps the row for the
+retry, a row with no journal is the one the next booking uses, a restatement
+creates the rows of new batches) and `tests/conformance_memory.rs` (the store suite
 over `InMemoryStore`).

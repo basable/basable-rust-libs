@@ -92,7 +92,22 @@ impl<B: LedgerBatch> Store for InMemoryStore<B> {
         Ok(g.batches.get(&batch.primary_key()).copied())
     }
 
-    async fn commit(&self, commit: Commit<B>) -> Result<CommitOutcome, StoreError> {
+    async fn ensure(&self, batch: &B) -> Result<StoredBatch, StoreError> {
+        let mut g = self.inner.lock().expect("store lock");
+        let inner = &mut *g;
+        Ok(
+            *inner.batches.entry(batch.primary_key()).or_insert_with(|| {
+                inner.last_key += 1;
+                StoredBatch {
+                    key: BatchKey(inner.last_key),
+                    ledger: batch.ledger(),
+                    batch_type: batch.batch_type(),
+                }
+            }),
+        )
+    }
+
+    async fn commit(&self, commit: Commit) -> Result<CommitOutcome, StoreError> {
         let mut g = self.inner.lock().expect("store lock");
         let inner = &mut *g;
         let last = inner
@@ -104,30 +119,6 @@ impl<B: LedgerBatch> Store for InMemoryStore<B> {
         if last != commit.after_sequence {
             return Ok(CommitOutcome::SequenceTaken);
         }
-        // Checked before anything changes: nothing of a refused commit lands.
-        for new in &commit.new_batches {
-            if let Some(row) = inner.batches.get(&new.batch.primary_key())
-                && let Err(rejection) = row.check(&new.batch)
-            {
-                return Ok(CommitOutcome::Rejected(rejection));
-            }
-        }
-        let mut keys = Vec::with_capacity(commit.new_batches.len());
-        for new in &commit.new_batches {
-            let row = inner
-                .batches
-                .entry(new.batch.primary_key())
-                .or_insert_with(|| {
-                    inner.last_key += 1;
-                    StoredBatch {
-                        key: BatchKey(inner.last_key),
-                        ledger: new.batch.ledger(),
-                        batch_type: new.batch.batch_type(),
-                    }
-                });
-            keys.push(row.key);
-        }
-        let lines = commit.resolved_lines(&keys);
         for (type_name, version) in &commit.versions {
             inner
                 .versions
@@ -141,7 +132,7 @@ impl<B: LedgerBatch> Store for InMemoryStore<B> {
                 process_id: commit.process_id,
                 sequence: last + 1,
                 booked_at: chrono::Utc::now(),
-                lines,
+                lines: commit.lines,
                 snapshot_diffs: commit.snapshot_diffs,
             });
         Ok(CommitOutcome::Committed)

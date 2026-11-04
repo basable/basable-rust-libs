@@ -13,8 +13,9 @@
 //! runtime resolves the values first: the row of each batch that has one
 //! ([`named_batches`], [`Resolved`]), and a placeholder for each that has
 //! none. A placeholder is sound because such a batch has nothing booked: a
-//! row and the first journal naming it commit together. The store swaps the
-//! real keys in when it creates the rows.
+//! line only ever carries the key of a row already committed. After the plan
+//! the runtime creates the rows its lines land in, and the commit carries
+//! their real keys.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,7 +28,7 @@ use crate::erased::{ErasedObject, Registry};
 use crate::error::{LedgerError, Rejection, StoreError};
 use crate::journal::{Journal, Line, SnapshotDiff};
 use crate::jsonpatch;
-use crate::store::{Commit, NewBatch};
+use crate::store::Commit;
 use crate::types::{BatchKey, BatchType, LedgerKey, ObjectId, ProcessId, StoredBatch, UnitKey};
 
 /// One object as the process currently books it: its folded snapshot and
@@ -221,34 +222,45 @@ impl Plan {
         self.lines.is_empty() && self.diffs.is_empty()
     }
 
-    /// The commit: one journal at the process's next sequence, with a row to
-    /// create for each new batch a line actually lands in, in primary key
-    /// order. A batch named with nothing to book gets no row.
-    pub(crate) fn into_commit<B: LedgerBatch>(
-        self,
-        process: ProcessId,
-        current: &Current<B>,
-        resolved: &Resolved<B>,
-    ) -> Commit<B> {
+    /// The new batches a line actually lands in, each with its placeholder,
+    /// in primary key order. A batch named with nothing to book gets no row.
+    pub(crate) fn new_batches<'a, B: LedgerBatch>(
+        &self,
+        resolved: &'a Resolved<B>,
+    ) -> Vec<(BatchKey, &'a B)> {
         let used: BTreeSet<BatchKey> = self.lines.iter().map(|l| l.batch).collect();
-        let new_batches = resolved
+        resolved
             .new
             .iter()
             .filter_map(|(primary_key, batch)| {
                 let placeholder = resolved.rows.get(primary_key)?.key;
-                used.contains(&placeholder).then(|| NewBatch {
-                    placeholder,
-                    batch: batch.clone(),
-                })
+                used.contains(&placeholder).then_some((placeholder, batch))
+            })
+            .collect()
+    }
+
+    /// The commit: one journal at the process's next sequence, with each
+    /// placeholder replaced by the key its row got.
+    pub(crate) fn into_commit<B: LedgerBatch>(
+        self,
+        process: ProcessId,
+        current: &Current<B>,
+        keys: &BTreeMap<BatchKey, BatchKey>,
+    ) -> Commit {
+        let lines: Vec<Line> = self
+            .lines
+            .iter()
+            .map(|l| Line {
+                batch: keys.get(&l.batch).copied().unwrap_or(l.batch),
+                ..*l
             })
             .collect();
         Commit {
             process_id: process,
             after_sequence: current.sequence,
-            lines: self.lines,
+            lines: net(&lines),
             snapshot_diffs: self.diffs,
             versions: self.versions,
-            new_batches,
         }
     }
 }
@@ -484,7 +496,7 @@ fn apply_delta<B: LedgerBatch>(working: &mut Balances<B>, delta: &[Line]) {
 
 /// Sums the lines per (object, batch, unit), drops the zeros and orders
 /// them by that key.
-pub(crate) fn net(lines: &[Line]) -> Vec<Line> {
+fn net(lines: &[Line]) -> Vec<Line> {
     let mut sums: BTreeMap<(ObjectId, BatchKey, UnitKey), i128> = BTreeMap::new();
     for l in lines {
         *sums.entry((l.object_id, l.batch, l.unit)).or_insert(0) += l.amount;

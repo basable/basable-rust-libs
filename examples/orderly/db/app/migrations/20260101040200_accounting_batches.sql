@@ -3,8 +3,8 @@
 -- The batch tables of the ledger owned by nanoservice `accounting`,
 -- rendered from owns.ledger.batches: one table per kind of batch, one row per
 -- batch, and ONE sequence allocating batch_key over all of them, because a
--- stored line carries that key alone (the Directive §11). A row lands in the
--- commit that first books on the batch, and it is for good.
+-- stored line carries that key alone (the Directive §11). A row lands just
+-- before the first journal that books on the batch, and it is for good.
 
 SET LOCAL ROLE nano_accounting;
 SET LOCAL search_path = nano_accounting;

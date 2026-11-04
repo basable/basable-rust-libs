@@ -1,12 +1,20 @@
-//! What a batch's row does through the engine: it lands with the first journal
-//! that books on the batch and not otherwise, one primary key is one batch
-//! wherever it is named, a value that disagrees with its row rejects, and new
-//! rules may name new batches for old objects.
+//! What a batch's row does through the engine: it lands just before the first
+//! journal that books on the batch and not otherwise, one primary key is one
+//! batch wherever it is named, a value that disagrees with its row rejects, a
+//! row whose journal never landed stays and is used, and new rules may name
+//! new batches for old objects.
 
-use basable_ledger::{BatchType, LedgerKey, Outcome, Request, Restated, UnitKey};
+use std::collections::BTreeMap;
+use std::sync::Mutex;
+
+use basable_ledger::{
+    BatchKey, BatchType, Commit, CommitOutcome, InMemoryStore, Journal, Ledger, LedgerKey, Outcome,
+    ProcessId, Request, Restated, Store, StoreError, StoredBatch, UnitKey,
+};
 use basable_ledger_testkit::Scenario;
 use basable_ledger_testkit::fixture::{
-    Batch, Currency, InvoiceLedgerV2, InvoiceState, new_invoice, new_transfer,
+    Batch, Currency, InvoiceLedgerV2, InvoiceState, Transfer, TransferLedger, new_invoice,
+    new_transfer,
 };
 
 fn named(name: &str, batch_type: BatchType) -> Batch {
@@ -26,7 +34,7 @@ fn debit(name: &str) -> Batch {
 }
 
 #[tokio::test]
-async fn a_batch_gets_its_row_with_the_first_journal_that_books_on_it() {
+async fn a_batch_gets_its_row_when_a_journal_first_books_on_it() {
     let s = Scenario::new();
     let draft = new_invoice(100, 21, Currency::Eur);
     assert_eq!(
@@ -264,4 +272,143 @@ async fn one_journal_books_on_several_new_batches_with_the_diffs() {
     {
         assert!(journal.lines.iter().all(|l| l.batch.0 > 0), "{journal:?}");
     }
+}
+
+/// Another writer getting in between a booking's plan and its first row.
+enum Interference {
+    /// A concurrent first use creates this row.
+    Row(Batch),
+    /// A concurrent booking of the same process takes the sequence.
+    Journal(Commit),
+}
+
+/// The in-memory store, with one [`Interference`] on the first `ensure`.
+struct Interfered {
+    inner: InMemoryStore<Batch>,
+    pending: Mutex<Option<Interference>>,
+}
+
+impl Store for Interfered {
+    type Batch = Batch;
+
+    async fn read(&self, process: ProcessId) -> Result<Vec<Journal>, StoreError> {
+        self.inner.read(process).await
+    }
+
+    async fn find(&self, batch: &Batch) -> Result<Option<StoredBatch>, StoreError> {
+        self.inner.find(batch).await
+    }
+
+    async fn ensure(&self, batch: &Batch) -> Result<StoredBatch, StoreError> {
+        let pending = self.pending.lock().expect("lock").take();
+        match pending {
+            Some(Interference::Row(other)) => {
+                self.inner.ensure(&other).await?;
+            }
+            Some(Interference::Journal(commit)) => {
+                self.inner.commit(commit).await?;
+            }
+            None => {}
+        }
+        self.inner.ensure(batch).await
+    }
+
+    async fn commit(&self, commit: Commit) -> Result<CommitOutcome, StoreError> {
+        self.inner.commit(commit).await
+    }
+
+    async fn record_versions(
+        &self,
+        process: ProcessId,
+        versions: &BTreeMap<String, u32>,
+    ) -> Result<(), StoreError> {
+        self.inner.record_versions(process, versions).await
+    }
+
+    async fn batch_sum(&self, batch: BatchKey) -> Result<Vec<(UnitKey, i128)>, StoreError> {
+        self.inner.batch_sum(batch).await
+    }
+
+    async fn processes_behind(
+        &self,
+        type_name: &str,
+        version: u32,
+        limit: u32,
+    ) -> Result<Vec<ProcessId>, StoreError> {
+        self.inner.processes_behind(type_name, version, limit).await
+    }
+}
+
+fn interfered(interference: Interference) -> Ledger<Interfered> {
+    let store = Interfered {
+        inner: InMemoryStore::new(),
+        pending: Mutex::new(Some(interference)),
+    };
+    Ledger::builder(store)
+        .register::<Transfer, TransferLedger>()
+        .build()
+}
+
+/// Both first uses saw no row, and the other one created it under another type:
+/// this booking is refused, the row stays as the other wrote it, and a row this
+/// booking had already created stays with nothing booked on it.
+#[tokio::test]
+async fn a_value_that_disagrees_with_a_concurrent_first_use_rejects() {
+    let contested = debit("z contested");
+    let ledger = interfered(Interference::Row(credit("z contested")));
+    let t = new_transfer(contested.clone(), credit("a first"), 5);
+    let outcomes = ledger.book(Request::new().with(t.clone())).await.unwrap();
+    match &outcomes[0] {
+        Outcome::Rejected(r) => assert!(r.message().contains("as credit"), "{r}"),
+        other => panic!("expected a rejection, got {other:?}"),
+    }
+    let store = &ledger.store().inner;
+    assert!(store.journals(t.process_id).is_empty());
+    assert_eq!(store.batch_count(), 2);
+    let row = store.find(&contested).await.unwrap().expect("a row");
+    assert_eq!(row.batch_type, BatchType::Credit);
+    assert_eq!(ledger.batch_sum(&credit("a first")).await.unwrap(), vec![]);
+}
+
+/// A booking that loses the sequence after creating its row reads again, finds
+/// the row and books on it.
+#[tokio::test]
+async fn a_lost_race_keeps_the_row_and_the_retry_books_on_it() {
+    let t = new_transfer(debit("left"), credit("right"), 5);
+    let ledger = interfered(Interference::Journal(Commit {
+        process_id: t.process_id,
+        after_sequence: 0,
+        lines: Vec::new(),
+        snapshot_diffs: Vec::new(),
+        versions: BTreeMap::new(),
+    }));
+    assert_eq!(
+        ledger.book(Request::new().with(t.clone())).await.unwrap(),
+        vec![Outcome::Booked]
+    );
+    let store = &ledger.store().inner;
+    assert_eq!(store.batch_count(), 2);
+    let journals = store.journals(t.process_id);
+    assert_eq!(journals.len(), 2);
+    let key = ledger.batch_key(&debit("left")).await.unwrap().unwrap();
+    assert!(journals[1].lines.iter().any(|l| l.batch == key));
+    assert!(journals[1].lines.iter().all(|l| l.batch.0 > 0));
+}
+
+/// A crash between a row and its journal leaves a row with nothing booked on
+/// it: it sums to nothing, and the next booking on the batch uses it.
+#[tokio::test]
+async fn a_row_with_no_journal_is_the_batch_the_next_booking_uses() {
+    let s = Scenario::new();
+    let left = debit("left");
+    let row = s.store().ensure(&left).await.unwrap();
+    assert_eq!(s.ledger().batch_sum(&left).await.unwrap(), vec![]);
+    s.booked(new_transfer(left.clone(), credit("right"), 5))
+        .await;
+    assert_eq!(s.key(&left).await, row.key);
+    assert_eq!(s.store().batch_count(), 2);
+    assert_eq!(
+        s.ledger().batch_sum(&left).await.unwrap(),
+        vec![(UnitKey(978), 5)]
+    );
 }

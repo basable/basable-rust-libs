@@ -151,7 +151,7 @@ enum Committed {
     Journal(usize),
     /// The sequence was taken under the commit: read again, recompute.
     Retry,
-    /// A concurrent first use created a row this commit's value disagrees
+    /// A concurrent first use created a row this call's value disagrees
     /// with.
     Rejected(Rejection),
 }
@@ -328,7 +328,7 @@ impl<S: Store> Ledger<S> {
     /// settles when that replica is gone. A process whose desired states no
     /// longer balance under the new rules stops it with
     /// `LedgerError::Rejected`. New rules may name new batches for old
-    /// objects: their rows land with the restatement's journal.
+    /// objects: their rows land just before the restatement's journal.
     pub async fn restate_behind(&self) -> Result<RestatementReport, LedgerError> {
         let mut report = RestatementReport::default();
         for (type_name, version) in self.registry.types() {
@@ -412,8 +412,11 @@ impl<S: Store> Ledger<S> {
         })
     }
 
-    /// Commits the plan as one journal at the process's next sequence, with
-    /// the rows of the new batches its lines land in.
+    /// Creates the rows of the new batches the plan's lines land in, each
+    /// committed on its own, then commits the plan as one journal at the
+    /// process's next sequence. A row another first use just created under
+    /// another ledger or type rejects the call; rows created before that stay,
+    /// with nothing booked on them.
     async fn commit_plan(
         &self,
         process: ProcessId,
@@ -421,12 +424,19 @@ impl<S: Store> Ledger<S> {
         resolved: &Resolved<S::Batch>,
         plan: engine::Plan,
     ) -> Result<Committed, LedgerError> {
-        let commit = plan.into_commit(process, current, resolved);
+        let mut keys = BTreeMap::new();
+        for (placeholder, batch) in plan.new_batches(resolved) {
+            let row = self.store.ensure(batch).await?;
+            if let Err(rejection) = row.check(batch) {
+                return Ok(Committed::Rejected(rejection));
+            }
+            keys.insert(placeholder, row.key);
+        }
+        let commit = plan.into_commit(process, current, &keys);
         let lines = commit.lines.len();
         Ok(match self.store.commit(commit).await? {
             CommitOutcome::Committed => Committed::Journal(lines),
             CommitOutcome::SequenceTaken => Committed::Retry,
-            CommitOutcome::Rejected(rejection) => Committed::Rejected(rejection),
         })
     }
 }

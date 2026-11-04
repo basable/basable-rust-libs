@@ -25,14 +25,15 @@ pub trait PgBatch: LedgerBatch {
         conn: &mut PgConnection,
     ) -> impl Future<Output = Result<Option<StoredBatch>, sqlx::Error>> + Send;
 
-    /// Creates the batch's row if it has none and returns it, inside the
-    /// commit's transaction, read committed: `INSERT ... ON CONFLICT (<primary
-    /// key>) DO NOTHING`, then a read. Never `DO UPDATE`: it would lock the
-    /// row until commit, and every booking on a hot batch would queue. A
-    /// concurrent first use waits for the other's commit and reads its row.
+    /// Creates the batch's row if it has none and returns it:
+    /// `INSERT ... ON CONFLICT (<primary key>) DO NOTHING` as a statement of
+    /// its own, so it is committed when it returns, then a read. A concurrent
+    /// first use waits for that one statement and reads its row. Never opens a
+    /// transaction, which would let a stalled client hold every first use of
+    /// the batch, and never `DO UPDATE`: a row that exists stays as it is.
     fn ensure(
         &self,
-        tx: &mut PgConnection,
+        conn: &mut PgConnection,
     ) -> impl Future<Output = Result<StoredBatch, sqlx::Error>> + Send;
 }
 
@@ -96,44 +97,6 @@ fn corrupt(what: &str, e: impl std::fmt::Display) -> StoreError {
     StoreError::Corrupt(format!("{what}: {e}"))
 }
 
-/// One statement: the journal row, and the upserts into the version index for
-/// every type present in the process, latest wins. A primary-key violation on
-/// the journal fails the statement as a whole.
-async fn insert_journal<'e, E>(
-    executor: E,
-    process: ProcessId,
-    sequence: i64,
-    lines: &Value,
-    diffs: &Value,
-    versions: &Value,
-) -> Result<CommitOutcome, StoreError>
-where
-    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
-{
-    let inserted = sqlx::query(
-        "WITH j AS ( \
-             INSERT INTO journal (process_id, sequence, lines, snapshot_diffs) \
-             VALUES ($1, $2, $3, $4) RETURNING process_id \
-         ) \
-         INSERT INTO process_ledger_object_version (process_id, type_name, version) \
-         SELECT j.process_id, v.key, v.value::integer FROM j, jsonb_each_text($5) AS v \
-         ON CONFLICT (process_id, type_name) DO UPDATE SET version = EXCLUDED.version \
-         WHERE process_ledger_object_version.version <> EXCLUDED.version",
-    )
-    .bind(process.0)
-    .bind(sequence)
-    .bind(lines)
-    .bind(diffs)
-    .bind(versions)
-    .execute(executor)
-    .await;
-    match inserted {
-        Ok(_) => Ok(CommitOutcome::Committed),
-        Err(e) if sqlstate::is_unique_violation(&e) => Ok(CommitOutcome::SequenceTaken),
-        Err(e) => Err(backend(e)),
-    }
-}
-
 impl<B: PgBatch> Store for PgStore<B> {
     type Batch = B;
 
@@ -171,52 +134,43 @@ impl<B: PgBatch> Store for PgStore<B> {
         batch.find(&mut conn).await.map_err(backend)
     }
 
-    /// With no new batch, the one statement of [`insert_journal`]: no
-    /// transaction to open, no second round trip, no lock of any kind. With
-    /// new batches, a transaction around their rows and that statement, so a
-    /// lost race, a refusal or a failure leaves no row behind.
-    async fn commit(&self, commit: Commit<B>) -> Result<CommitOutcome, StoreError> {
+    async fn ensure(&self, batch: &B) -> Result<StoredBatch, StoreError> {
+        let mut conn = self.pool.acquire().await.map_err(backend)?;
+        batch.ensure(&mut conn).await.map_err(backend)
+    }
+
+    /// One statement, with no transaction to open and no lock of any kind: the
+    /// journal row, and the upserts into the version index for every type
+    /// present in the process, latest wins. A primary-key violation on the
+    /// journal fails the statement as a whole.
+    async fn commit(&self, commit: Commit) -> Result<CommitOutcome, StoreError> {
+        let lines = lines_to_json(&commit.lines);
         let diffs =
             serde_json::to_value(&commit.snapshot_diffs).map_err(|e| corrupt("diffs", e))?;
         let versions =
             serde_json::to_value(&commit.versions).map_err(|e| corrupt("versions", e))?;
-        let sequence = commit.after_sequence + 1;
-        if commit.new_batches.is_empty() {
-            let lines = lines_to_json(&commit.lines);
-            return insert_journal(
-                &self.pool,
-                commit.process_id,
-                sequence,
-                &lines,
-                &diffs,
-                &versions,
-            )
-            .await;
-        }
-        // Dropping the transaction on any return below rolls it back.
-        let mut tx = self.pool.begin().await.map_err(backend)?;
-        let mut keys = Vec::with_capacity(commit.new_batches.len());
-        for new in &commit.new_batches {
-            let row = new.batch.ensure(&mut tx).await.map_err(backend)?;
-            if let Err(rejection) = row.check(&new.batch) {
-                return Ok(CommitOutcome::Rejected(rejection));
-            }
-            keys.push(row.key);
-        }
-        let lines = lines_to_json(&commit.resolved_lines(&keys));
-        let outcome = insert_journal(
-            &mut *tx,
-            commit.process_id,
-            sequence,
-            &lines,
-            &diffs,
-            &versions,
+        let inserted = sqlx::query(
+            "WITH j AS ( \
+                 INSERT INTO journal (process_id, sequence, lines, snapshot_diffs) \
+                 VALUES ($1, $2, $3, $4) RETURNING process_id \
+             ) \
+             INSERT INTO process_ledger_object_version (process_id, type_name, version) \
+             SELECT j.process_id, v.key, v.value::integer FROM j, jsonb_each_text($5) AS v \
+             ON CONFLICT (process_id, type_name) DO UPDATE SET version = EXCLUDED.version \
+             WHERE process_ledger_object_version.version <> EXCLUDED.version",
         )
-        .await?;
-        if outcome == CommitOutcome::Committed {
-            tx.commit().await.map_err(backend)?;
+        .bind(commit.process_id.0)
+        .bind(commit.after_sequence + 1)
+        .bind(&lines)
+        .bind(&diffs)
+        .bind(&versions)
+        .execute(&self.pool)
+        .await;
+        match inserted {
+            Ok(_) => Ok(CommitOutcome::Committed),
+            Err(e) if sqlstate::is_unique_violation(&e) => Ok(CommitOutcome::SequenceTaken),
+            Err(e) => Err(backend(e)),
         }
-        Ok(outcome)
     }
 
     async fn record_versions(

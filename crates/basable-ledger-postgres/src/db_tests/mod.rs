@@ -138,7 +138,7 @@ impl PgBatch for Batch {
         row.as_ref().map(stored_batch).transpose()
     }
 
-    async fn ensure(&self, tx: &mut PgConnection) -> Result<StoredBatch, sqlx::Error> {
+    async fn ensure(&self, conn: &mut PgConnection) -> Result<StoredBatch, sqlx::Error> {
         use basable_ledger::LedgerBatch;
         let ledger = self.ledger().0 as i32;
         let batch_type = self.batch_type().as_i16();
@@ -152,7 +152,7 @@ impl PgBatch for Batch {
                 .bind(id)
                 .bind(ledger)
                 .bind(batch_type)
-                .execute(&mut *tx)
+                .execute(&mut *conn)
                 .await?;
             }
             (Some(Keyed::Period(kind, period)), _) => {
@@ -164,7 +164,7 @@ impl PgBatch for Batch {
                 .bind(period)
                 .bind(ledger)
                 .bind(batch_type)
-                .execute(&mut *tx)
+                .execute(&mut *conn)
                 .await?;
             }
             (
@@ -182,7 +182,7 @@ impl PgBatch for Batch {
                 .bind(settle_day)
                 .bind(ledger)
                 .bind(batch_type)
-                .execute(&mut *tx)
+                .execute(&mut *conn)
                 .await?;
             }
             (None, Batch::Named { name, .. }) => {
@@ -193,7 +193,7 @@ impl PgBatch for Batch {
                 .bind(name)
                 .bind(ledger)
                 .bind(batch_type)
-                .execute(&mut *tx)
+                .execute(&mut *conn)
                 .await?;
             }
             (None, Batch::InBook { name, .. }) => {
@@ -204,12 +204,12 @@ impl PgBatch for Batch {
                 .bind(name)
                 .bind(ledger)
                 .bind(batch_type)
-                .execute(&mut *tx)
+                .execute(&mut *conn)
                 .await?;
             }
             (None, _) => unreachable!("every other kind is keyed"),
         }
-        self.find(tx).await?.ok_or(sqlx::Error::RowNotFound)
+        self.find(conn).await?.ok_or(sqlx::Error::RowNotFound)
     }
 }
 

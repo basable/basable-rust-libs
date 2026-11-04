@@ -96,23 +96,28 @@ first.
   retry above.
 - **Before the plan**, one `find` per distinct primary key reads the rows
   that exist. The plan compares by key. A primary key with no row takes a
-  placeholder, which is sound because it has nothing booked: a row and the
-  first journal naming it commit together. So a booking makes one more read
-  than the journals: one lookup per distinct batch, which small processes
-  keep small.
-- **The commit** is one transaction, read committed: for each batch with no
-  row, in primary key order so two first uses cannot deadlock, `ensure` runs
-  `INSERT ... ON CONFLICT DO NOTHING` and reads the key; the real keys
-  replace the placeholders; then the journal and the version index go in. A
-  lost sequence race rolls the rows back with the journal. A concurrent
-  first use of one batch waits for the other's commit and takes its key, and
-  once the row exists nothing waits. A booking that names no new batch is
-  the one statement it always was. `ON CONFLICT DO UPDATE` is ruled out: it
-  would lock the row until commit, and bookings on a hot batch would queue.
-- A rejected booking, a lost race and `preview_restatement` leave no row. A
-  preview only reads, and reports a batch with no row as new.
-- `restate_behind` commits the same way, so a rule change may name a new
-  batch for objects booked long ago.
+  placeholder, which is sound because it has nothing booked: a line only
+  ever carries the key of a row already committed. So a booking makes one
+  more read than the journals: one lookup per distinct batch, which small
+  processes keep small.
+- **Between the plan and the commit**, `ensure` creates the row of each new
+  batch a line lands in: `INSERT ... ON CONFLICT DO NOTHING`, committed on its
+  own, then a read. The real keys replace the placeholders. A concurrent first
+  use of one batch waits for that one statement, which no stalled client can
+  hold open, and takes the same key; once the row exists nothing waits.
+  `ensure` never touches a row that exists, so `ON CONFLICT DO UPDATE` is ruled
+  out.
+- **The commit** is one statement, on every booking: the journal and the
+  version index. No booking holds a transaction across round trips.
+- A rejected booking, a batch named with nothing to book and
+  `preview_restatement` leave no row; a preview only reads, and reports a batch
+  with no row as new. A lost sequence race, a crash between the row and the
+  journal, or a value refused after an earlier row landed can leave a row with
+  nothing booked on it. It stays, as every row does, and sums to nothing; the
+  next booking on that batch finds it. So no row means nothing booked, and a
+  row does not mean something was.
+- `restate_behind` books the same way, so a rule change may name a new batch
+  for objects booked long ago.
 - `find` and `ensure` return the row's ledger and type with its key, and a
   value whose row says otherwise rejects, across calls as well as within
   one. One key named under two ledgers or types was only caught within a
@@ -192,6 +197,18 @@ first.
   type). One counter would hold by construction and no SQL would be
   generated. Declined to keep typed key columns per kind and the 2026-10-18
   decision that the framework keeps no batch table.
+- **The row in the journal's transaction** (0.10.0, replaced 2026-11-04). A
+  booking that failed left no row, and a first use took one durable commit
+  instead of two. But that transaction spanned client round trips: a first
+  writer stalled between its insert and its commit (a throttled pod, a partition,
+  a lost node, where only TCP keepalive frees it) held up every booking naming
+  that batch, because `find` still saw no row, and each waiter held a pool
+  connection, so requests that never named the batch starved too. Nothing
+  bounded it. Speed did not decide this: on a laptop with a simulated 0.5 ms
+  round trip, a booking that was a first use took 5.07 ms in one transaction and
+  3.33 ms row first on a cheap commit, and 11.78 ms and 15.17 ms on a real flush,
+  while bookings on one batch shared by 16 clients stayed within 5% either way.
+  Empty rows are the price, and they sum to nothing.
 
 ## Deviations the Rust shape made
 
@@ -240,7 +257,8 @@ first.
    booking re-evaluates its whole process, the index is written by the
    commit's statement, and an older replica's booking converges at the next
    run instead of being refused.
-5. Batches resolved in the commit (done 2026-11-04, released in 0.10.0): the
+5. Batches resolved at booking time (done 2026-11-04, released in 0.10.0 with
+   the rows in the journal's transaction, moved ahead of it the same day): the
    three crates, the conformance suite, the Go port in the monorepo's
    `lib/ledger`, and the scaffold (the manifest's kinds of batch, the tables,
    the one sequence, `find` and `ensure`, the Directive's §11). A

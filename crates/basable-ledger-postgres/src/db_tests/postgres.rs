@@ -306,7 +306,6 @@ async fn the_batch_sum_matches_keys_only() {
             ],
             snapshot_diffs: Vec::new(),
             versions: BTreeMap::new(),
-            new_batches: Vec::new(),
         })
         .await
         .expect("commit");
@@ -434,8 +433,9 @@ async fn batches_get_their_rows_on_postgres() {
 }
 
 /// Two processes using the same new batches for the first time, naming them
-/// in opposite orders, cannot deadlock: the commit creates rows in primary key
-/// order. Postgres would abort one with 40P01, which this would surface.
+/// in opposite orders, cannot deadlock: each row commits on its own, so no
+/// booking holds one while it waits for another. Postgres would abort one with
+/// 40P01, which this would surface.
 #[tokio::test]
 async fn first_uses_in_opposite_orders_do_not_deadlock() {
     let Some(db) = db().await else {
@@ -478,5 +478,75 @@ async fn first_uses_in_opposite_orders_do_not_deadlock() {
             vec![(UnitKey(978), 8)]
         );
     }
+    db.finish().await;
+}
+
+/// A booking stuck before its journal holds up nobody: its row is already
+/// committed, so another booking on the batch goes straight through. With the
+/// row in the journal's transaction this one would wait until the stuck one
+/// ended.
+#[tokio::test]
+async fn a_stuck_journal_holds_up_no_other_booking_on_its_batch() {
+    let Some(db) = db().await else {
+        eprintln!("TEST_DATABASE_URL unset: skipping");
+        return;
+    };
+    let store = store(&db).await;
+    let ledger = std::sync::Arc::new(ledger(store.clone()));
+    let wait = std::time::Duration::from_secs(10);
+    let named = |name: &str, batch_type: BatchType| Batch::Named {
+        name: name.into(),
+        ledger: LedgerKey(1),
+        batch_type,
+    };
+    let shared = named("shared", BatchType::Debit);
+    let stuck = new_transfer(shared.clone(), named("stuck", BatchType::Credit), 1);
+
+    // An open transaction holds the sequence the booking needs: its journal
+    // waits on this until it ends.
+    let mut holder = store.pool().begin().await.expect("begin");
+    sqlx::query(
+        "INSERT INTO journal (process_id, sequence, lines, snapshot_diffs) \
+         VALUES ($1, 1, '{}', '[]')",
+    )
+    .bind(stuck.process_id.0)
+    .execute(&mut *holder)
+    .await
+    .expect("hold the sequence");
+    let booking = tokio::spawn({
+        let ledger = ledger.clone();
+        let stuck = stuck.clone();
+        async move { ledger.book(Request::new().with(stuck)).await }
+    });
+
+    let key = tokio::time::timeout(wait, async {
+        loop {
+            if let Some(key) = ledger.batch_key(&shared).await.expect("find") {
+                return key;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the row lands while the journal waits");
+
+    let other = new_transfer(shared.clone(), named("other", BatchType::Credit), 2);
+    let outcomes = tokio::time::timeout(wait, ledger.book(Request::new().with(other)))
+        .await
+        .expect("the other booking does not wait")
+        .expect("book");
+    assert_eq!(outcomes, vec![Outcome::Booked]);
+    assert!(!booking.is_finished(), "the first journal is still waiting");
+
+    holder.rollback().await.expect("rollback");
+    assert_eq!(
+        booking.await.expect("task").expect("book"),
+        vec![Outcome::Booked]
+    );
+    assert_eq!(ledger.batch_key(&shared).await.expect("find"), Some(key));
+    assert_eq!(
+        ledger.batch_sum(&shared).await.expect("sum"),
+        vec![(UnitKey(978), 3)]
+    );
     db.finish().await;
 }

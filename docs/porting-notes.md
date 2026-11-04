@@ -1297,3 +1297,17 @@ of it changed, in the crates and in the templates:
     it upgrades, or the first evaluation allocates a new key and books the money
     across. The scaffold renders the tables, the sequence and `batches.rs` from
     `owns.ledger.batches` in the manifest. Released in 0.10.0.
+
+106. **A batch's row commits ahead of its journal (2026-11-04, decision 0005).**
+    Both sides changed in the same piece of work, and the behaviour is the same.
+    `Store::ensure` creates a row, committed on its own, between the plan and the
+    commit, and the engine compares it with the value, so `Commit` lost
+    `new_batches` and `resolved_lines` and is always one statement,
+    `CommitOutcome::Rejected` is gone, and a lost race or a crash in between can
+    leave a row with nothing booked on it. The transaction it replaces spanned
+    client round trips, so a first writer stalled inside it held up every booking
+    naming that batch, each holding a pool connection, with nothing bounding the
+    wait. `PgBatch::ensure` now runs on a plain connection and must open no
+    transaction. What differs on purpose: Go's `Batches` methods take the pool,
+    since `Querier` only existed to pass the commit's transaction, and
+    `CommitOutcome` went back to a plain integer without its rejection.
